@@ -1,0 +1,13 @@
+.git
+.gitignore
+.vscode
+frontend/node_modules
+frontend/dist
+backend/.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log
+demo
+docs
