@@ -11,6 +11,18 @@ export default defineConfig({
   },
   build: {
     outDir: "../backend/app/static",
-    emptyOutDir: true
-  }
+    emptyOutDir: true,
+    sourcemap: false,
+    cssMinify: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ["react", "react-dom"],
+        },
+        entryFileNames: "assets/[name]-[hash].js",
+        chunkFileNames: "assets/[name]-[hash].js",
+        assetFileNames: "assets/[name]-[hash][extname]",
+      },
+    },
+  },
 });

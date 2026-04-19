@@ -1,9 +1,9 @@
 ---
-name: css-shape-fit
-description: Generate CSS that can be imported into the 千星图片编辑器 as positioned shape elements. Use when the user wants AI to output CSS that fits or approximates an image with a limited number of elements, especially for rectangle, ellipse, or triangle shapes. If the user does not provide the maximum element count, ask for it before generating the CSS.
+name: miliastra-image-css-builder
+description: Generate CSS that can be imported into the 千星图片编辑器 (https://github.com/1475505/Miliastra-image-editor-webui) as positioned shape elements. Use when the user wants AI to output CSS that fits or approximates an image with a limited number of elements, especially for rectangle, ellipse, or triangle shapes. If the user does not provide the maximum element count, ask for it before generating the CSS.
 ---
 
-# CSS Shape Fit
+# 千星图片编辑器-css生成
 
 Generate importable CSS for the 千星图片编辑器.
 
