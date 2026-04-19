@@ -664,25 +664,18 @@ def _normalize_element_name(element, fallback):
 
 
 def _order_elements_for_image_mode(elements):
-    foreground = []
-    background = []
-    for element in elements or []:
-        if element.get("is_background"):
-            background.append(element)
-        else:
-            foreground.append(element)
-    return background + list(reversed(foreground))
+    # `scene_to_gia_document()` already serializes elements in editor order:
+    # background/bottom first, topmost last. GIA image-mode children are
+    # interpreted in the opposite direction, so we reverse the full list here
+    # to keep the exported stacking consistent with the editor.
+    return list(reversed(list(elements or [])))
 
 
 def _storage_order_elements_for_image_mode(elements):
-    foreground = []
-    background = []
-    for element in elements or []:
-        if element.get("is_background"):
-            background.append(element)
-        else:
-            foreground.append(element)
-    return background + list(reversed(foreground))
+    # Keep the resource entry order aligned with the UI child order so layer
+    # numbering, generated payload indices, and stored child references all
+    # describe the same top-to-bottom stack in GIA image mode.
+    return list(reversed(list(elements or [])))
 
 def create_ui_image_payload(guid, index, parent_guid, offset_x, offset_y, size_x, size_y,
                              image_asset_ref=100002, packed_color=0x80FFFFFF, rot_z=0.0,
