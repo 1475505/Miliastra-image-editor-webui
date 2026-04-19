@@ -255,7 +255,7 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
                 y=element.y,
                 width=max(1.0, element.width),
                 height=max(1.0, element.height),
-                rotation=element.rotation,
+                rotation=normalize_rotation(element.rotation),
                 color=normalize_color(element.color),
                 opacity=max(0.0, min(1.0, element.opacity)),
                 zIndex=index,
@@ -273,6 +273,15 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
         ),
         library=normalize_library(scene.library),
     )
+
+
+def normalize_rotation(value: float) -> float:
+    if not math.isfinite(value):
+        return 0.0
+    normalized = ((value + 180.0) % 360.0) - 180.0
+    if abs(normalized + 180.0) < 1e-9 and value > 0:
+        return 180.0
+    return 0.0 if abs(normalized) < 1e-9 else normalized
 
 
 def get_element_bounds(element: SceneElementModel) -> tuple[float, float, float, float]:
@@ -767,7 +776,7 @@ def scene_to_css(scene: SceneDocumentModel) -> str:
                 f"  height: {element.height:.2f}px;",
                 f"  background: {element.color};",
                 f"  opacity: {element.opacity:.4f};",
-                f"  transform: translate(-50%, -50%) rotate({element.rotation:.2f}deg);",
+                f"  transform: translate(-50%, -50%) rotate({-element.rotation:.2f}deg);",
                 "  transform-origin: 50% 50%;",
                 f"  z-index: {element.zIndex};",
             ]
@@ -787,7 +796,7 @@ def scene_to_svg(scene: SceneDocumentModel) -> str:
     ]
 
     for element in sorted(scene.elements, key=lambda item: item.zIndex):
-        transform = f'rotate({element.rotation:.2f} {element.x:.2f} {element.y:.2f})'
+        transform = f'rotate({-element.rotation:.2f} {element.x:.2f} {element.y:.2f})'
         opacity = f'{element.opacity:.4f}'
         if element.type == "ellipse":
             parts.append(
@@ -988,7 +997,8 @@ def parse_float(value: str | None, default: float) -> float:
 
 def parse_rotation(transform: str) -> float:
     match = re.search(r"rotate\((-?\d+(\.\d+)?)deg\)", transform)
-    return float(match.group(1)) if match else 0.0
+    # Scene rotation uses CCW-positive semantics, so screen-space CSS needs the opposite sign.
+    return -float(match.group(1)) if match else 0.0
 
 
 def normalize_color(value: str) -> str:
@@ -1086,7 +1096,8 @@ def rotate_points(points: list[tuple[float, float]], cx: float, cy: float, degre
 def draw_polygon(draw: ImageDraw.ImageDraw, points: list[tuple[float, float]], fill: tuple[int, int, int, int], rotation: float) -> None:
     cx = sum(point[0] for point in points) / len(points)
     cy = sum(point[1] for point in points) / len(points)
-    draw.polygon(rotate_points(points, cx, cy, rotation), fill=fill)
+    # PIL drawing happens in screen coordinates, so invert CCW-positive scene rotation.
+    draw.polygon(rotate_points(points, cx, cy, -rotation), fill=fill)
 
 
 def draw_rect(draw: ImageDraw.ImageDraw, element: SceneElementModel, fill: tuple[int, int, int, int]) -> None:
