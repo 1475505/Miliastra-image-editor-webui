@@ -37,6 +37,30 @@ FROM python:3.13-slim
 
 所以部署时不需要再额外拷贝 GIA 工具箱。
 
+## 构建前端静态文件
+
+如果你从源码开始构建镜像，或者 `backend/app/static/` 目录下缺少构建产物，需要先编译前端：
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+这会生成前端静态文件并自动输出到 `backend/app/static/` 中，随后再进行镜像构建或部署。
+
+## 后端环境准备
+
+如果你从源码直接运行（非 Docker），需要先准备 Python 虚拟环境：
+
+```bash
+cd backend
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+> **注意：** 项目按 **Python 3.13** 设计。请确保创建虚拟环境时使用的 `python3` 为 3.13 版本，以避免 `.pyc` 等构建产物的跨版本兼容问题。
+
 ## 推荐方案：ClawCloud Run + App Launchpad
 
 这是最推荐的部署方式，因为它符合 ClawCloud Run 官方文档当前的"容器镜像部署"流程。
@@ -72,6 +96,16 @@ docker push ghcr.io/<YOUR_GITHUB_USERNAME>/qianxing-image-editor-webui:latest
 推送完成后，确认这个镜像在 ClawCloud 所在环境可访问。
 
 如果仓库是私有镜像仓库，你还需要在 ClawCloud 侧配置镜像拉取凭证。
+
+### 替代方案：GitHub Actions 自动构建
+
+仓库已内置 [`.github/workflows/docker-image.yml`](../../.github/workflows/docker-image.yml)。推送代码到 `main`/`master` 分支或打 `v*` 标签时，GitHub Actions 会自动：
+
+1. 安装前端依赖并执行 `npm run build`
+2. 构建 Docker 镜像
+3. 推送到 `ghcr.io/<用户名>/<仓库名>:latest`
+
+你需要在仓库 **Settings → Actions → General → Workflow permissions** 中确保 `Read and write permissions` 已开启，以便 `GITHUB_TOKEN` 能推送镜像到 GHCR。
 
 ## 第 4 步：进入 ClawCloud Run 控制台
 

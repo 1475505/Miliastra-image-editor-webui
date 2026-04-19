@@ -23,7 +23,19 @@ chmod +x start.sh
 
 The app will start at `http://localhost:8439`.
 
-### 3. Frontend development mode
+### 3. Python environment
+
+The backend requires a Python virtual environment. `start.sh` will create `.venv` automatically, but if you are starting the backend manually, create it first:
+
+```bash
+cd backend
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+> **Note:** The project is designed for **Python 3.13**. If your system default is a different version, make sure the `python3` used above points to 3.13.
+
+### 4. Frontend development mode
 
 Backend:
 
@@ -57,5 +69,7 @@ npm run build
 ```
 
 This writes the built frontend into `backend/app/static/`.
+
+> **Deployment note:** If you are building a Docker image or deploying to production, run this step first to ensure `backend/app/static/` contains the latest frontend assets.
 
 More documentation is in [docs/README.md](docs/README.md) and [docs/deploy.md](docs/deploy.md).
