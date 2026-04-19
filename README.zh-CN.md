@@ -23,7 +23,19 @@ chmod +x start.sh
 
 启动后访问：`http://localhost:8439`
 
-### 3. 前后端开发模式
+### 3. Python 环境
+
+后端需要 Python 虚拟环境。`start.sh` 会自动创建 `.venv`，但如果你手动启动后端，需先执行：
+
+```bash
+cd backend
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+> **注意：** 项目按 **Python 3.13** 设计。如果你的系统默认 Python 版本不同，请确保上面的 `python3` 指向 3.13。
+
+### 4. 前后端开发模式
 
 后端：
 
@@ -57,6 +69,8 @@ npm run build
 ```
 
 构建产物会写入 `backend/app/static/`。
+
+> **部署注意：** 如果你要构建 Docker 镜像或部署到生产环境，请先执行此步骤，确保 `backend/app/static/` 中包含最新的前端构建产物。
 
 ### 5. 更多文档
 
