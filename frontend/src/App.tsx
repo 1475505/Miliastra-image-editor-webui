@@ -356,7 +356,7 @@ function App() {
         const local = rotateVector(
           pointer.x - action.centerX,
           pointer.y - action.centerY,
-          -action.rotation
+          action.rotation
         );
         replaceScene((current) => ({
           ...current,
@@ -385,7 +385,7 @@ function App() {
             element.id === action.id
               ? {
                   ...element,
-                  rotation: action.baseRotation + radiansToDegrees(angle - action.startAngle)
+                  rotation: normalizeRotation(action.baseRotation - radiansToDegrees(angle - action.startAngle))
                 }
               : element
           )
@@ -522,7 +522,7 @@ function App() {
       y: scene.canvas.height / 2,
       width: override?.width ?? libraryItem?.width ?? 90,
       height: override?.height ?? libraryItem?.height ?? 90,
-      rotation: override?.rotation ?? 0,
+      rotation: normalizeRotation(override?.rotation ?? 0),
       color: override?.color ?? libraryItem?.color ?? "#4f46e5",
       opacity: override?.opacity ?? 0.85,
       zIndex: scene.elements.length,
@@ -554,12 +554,14 @@ function App() {
       return;
     }
 
+    const normalizedPatch = normalizeElementPatch(patch);
     commitScene((current) => {
       const target = current.elements.find((element) => element.id === selectedId);
       const elements = current.elements.map((element) =>
-        element.id === selectedId ? { ...element, ...patch } : element
+        element.id === selectedId ? { ...element, ...normalizedPatch } : element
       );
-      const shouldSyncPresetColor = typeof patch.color === "string" && !!target && isBasicShape(target.type);
+      const shouldSyncPresetColor =
+        typeof normalizedPatch.color === "string" && !!target && isBasicShape(target.type);
       return {
         ...current,
         elements,
@@ -569,7 +571,7 @@ function App() {
               baseShapePresets: syncBaseShapePresetColor(
                 current.library.baseShapePresets,
                 target.type,
-                patch.color as string
+                normalizedPatch.color as string
               )
             }
           : current.library
@@ -582,12 +584,14 @@ function App() {
       return;
     }
 
+    const normalizedPatch = normalizeElementPatch(patch);
     commitScene((current) => {
       const target = current.elements.find((element) => element.id === quickEdit.targetId);
       const elements = current.elements.map((element) =>
-        element.id === quickEdit.targetId ? { ...element, ...patch } : element
+        element.id === quickEdit.targetId ? { ...element, ...normalizedPatch } : element
       );
-      const shouldSyncPresetColor = typeof patch.color === "string" && !!target && isBasicShape(target.type);
+      const shouldSyncPresetColor =
+        typeof normalizedPatch.color === "string" && !!target && isBasicShape(target.type);
       return {
         ...current,
         elements,
@@ -597,7 +601,7 @@ function App() {
               baseShapePresets: syncBaseShapePresetColor(
                 current.library.baseShapePresets,
                 target.type,
-                patch.color as string
+                normalizedPatch.color as string
               )
             }
           : current.library
@@ -1175,7 +1179,7 @@ function App() {
                 </label>
                 <label className="field">
                   <span>旋转</span>
-                  <input type="number" value={selectedElement.rotation} onChange={(event) => updateSelected({ rotation: Number(event.target.value) })} />
+                  <input type="number" min="-180" max="180" value={selectedElement.rotation} onChange={(event) => updateSelected({ rotation: Number(event.target.value) })} />
                 </label>
                 <label className="field checkbox">
                   <input type="checkbox" checked={selectedElement.isBackground} onChange={(event) => updateSelected({ isBackground: event.target.checked })} />
@@ -1355,6 +1359,27 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
+function normalizeRotation(value: number) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  const normalized = ((value + 180) % 360 + 360) % 360 - 180;
+  if (Math.abs(normalized + 180) < 1e-9 && value > 0) {
+    return 180;
+  }
+  return Object.is(normalized, -0) ? 0 : normalized;
+}
+
+function normalizeElementPatch(patch: Partial<SceneElement>) {
+  if (patch.rotation === undefined) {
+    return patch;
+  }
+  return {
+    ...patch,
+    rotation: normalizeRotation(patch.rotation)
+  };
+}
+
 function rotateVector(x: number, y: number, degrees: number) {
   const radians = (degrees * Math.PI) / 180;
   const cos = Math.cos(radians);
@@ -1424,7 +1449,8 @@ function shapeStyle(element: SceneElement) {
     top: `${element.y}px`,
     width: `${element.width}px`,
     height: `${element.height}px`,
-    transform: `translate(-50%, -50%) rotate(${element.rotation}deg)`,
+    // Scene rotation is CCW-positive; CSS rotate() appears clockwise on screen.
+    transform: `translate(-50%, -50%) rotate(${-element.rotation}deg)`,
     opacity: element.opacity,
     zIndex: element.zIndex
   } as const;

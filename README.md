@@ -2,6 +2,10 @@
 
 [中文 README](README.zh-CN.md)
 
+> TODO: 支持官方其他图片素材。
+
+使用请遵守奇匠守则。不要生成任何不适宜的内容，不要侵权。
+
 ## How To Get Started
 
 Runtime note: deploy with Python `3.13`. This repository currently assumes Python 3.13 compatibility for bundled Python build artifacts.
