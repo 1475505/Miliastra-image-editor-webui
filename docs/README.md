@@ -17,9 +17,10 @@ Production deployment is intentionally simple: one FastAPI process serves both t
 ### Import
 
 - Paste or upload `css / json / svg`
-- Parse `.shaper-container` width and height as the canvas when importing CSS
+- Prefer `.shaper-container` width and height as the canvas when importing CSS
 - Ignore `.shaper-container` background color by design; use a full-canvas rectangle element if a visual background is needed
-- Keep CSS container size and render with the same `overflow: hidden` behavior
+- Auto-expand the canvas when positioned CSS elements overflow `.shaper-container`
+- Auto-fit the canvas from parsed elements when `.shaper-container` is missing
 - Parse positioned CSS rules without requiring a fixed `.shaper-element.shaper-eN` naming pattern
 - Auto-fit canvas bounds for simplified JSON when `canvas` is missing
 - Keep `library` information in the scene structure, including categories, presets, and saved items
