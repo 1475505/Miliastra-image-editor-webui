@@ -534,9 +534,6 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
         height = parse_px(find_css_value(body, "height"), DEFAULT_CANVAS_HEIGHT)
         if find_css_value(body, "background") is not None or find_css_value(body, "background-color") is not None:
             warnings.append("已忽略 .shaper-container 的背景颜色；如需背景，请使用铺满画布的矩形图元表示。")
-    else:
-        warnings.append("未找到 .shaper-container，已回退为默认画布尺寸。")
-
     pattern = re.compile(r"(?P<selector>[^{}]+)\{(?P<body>.*?)\}", re.S)
     elements: list[SceneElementModel] = []
     for match in pattern.finditer(content):
@@ -610,6 +607,11 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
         elements=elements,
         meta=MetaModel(sourceType="css", sourceName="", warnings=warnings),
     )
+
+    if not canvas_match:
+        scene.meta.warnings.append("未找到 .shaper-container，已根据图元范围自动拟合画布尺寸。")
+        return normalize_scene(fit_scene_canvas_to_elements(scene, expand_only=False))
+
     has_overflow = False
     for element in elements:
         left, top, right, bottom = get_element_bounds(element)
@@ -618,8 +620,10 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
             break
 
     if has_overflow:
-        scene.meta.warnings.append(
-            "检测到部分图元超出 CSS 容器范围。当前会保留 shaper-container 原始尺寸，并按 overflow:hidden 的方式渲染。"
+        scene = fit_scene_canvas_to_elements(
+            scene,
+            expand_only=True,
+            warning_message="检测到部分图元超出 CSS 容器范围，已自动扩展画布以容纳全部图元。",
         )
 
     return normalize_scene(scene)

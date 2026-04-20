@@ -125,7 +125,7 @@ type SceneLibrary = {
 
 ### CSS
 - 兼容 `Primitive Shaper` 风格输出
-- 读取 `.shaper-container` 的宽高作为画布
+- 优先读取 `.shaper-container` 的宽高作为画布；缺失时根据图元范围自动拟合
 - 忽略 `.shaper-container` 的背景颜色；如需视觉背景，使用铺满画布的矩形图元
 - 读取任意具备 `left / top / width / height` 的规则作为候选图元，不依赖固定类名
 - 映射：
@@ -136,14 +136,14 @@ type SceneLibrary = {
   - `rotate(...) -> rotation`
   - `z-index -> zIndex`
 - `border-radius: 50% -> ellipse`
-- 为保持与原始 CSS 一致，保留 `.shaper-container` 的原始宽高
-- 如果图元超出容器，则继续按 `overflow:hidden` 进行裁剪，而不是自动扩画布
-- 同时写入 warning，提醒用户当前存在被裁切的图元
+- 若存在 `.shaper-container`，先读取其原始宽高作为初始画布
+- 如果图元超出容器，则自动扩展画布；如果图元坐标为负，还会整体平移到可见区域
+- 同时写入 warning，提醒用户当前已为越界图元自动调整画布
 
 ### CSS 到渲染流程
 1. 前端在左侧 `基础模板` 中接收用户粘贴或上传的 CSS 文本。
 2. 用户点击“导入到画布”后，前端通过 `POST /api/import` 把 `{ sourceType: "css", content }` 发给后端。
-3. 后端 `parse_css_scene()` 先读取 `.shaper-container` 的 `width / height`，建立画布尺寸；容器背景颜色会被忽略。
+3. 后端 `parse_css_scene()` 优先读取 `.shaper-container` 的 `width / height` 建立画布尺寸；如果缺失，则在解析完图元后根据外接范围自动拟合画布。容器背景颜色会被忽略。
 4. 后端逐个解析 `.shaper-element.shaper-eN`，提取：
    - `left / top`
    - `width / height`
@@ -157,7 +157,7 @@ type SceneLibrary = {
    - `rotate -> rotation`
    - `border-radius: 50% -> ellipse`
    - 其他基础块 -> rectangle
-6. 后端检查图元是否超出 `.shaper-container`；如果超出，只追加 warning，不改变画布尺寸。
+6. 如果存在 `.shaper-container`，后端会检查图元是否超出容器；如果超出，会自动扩展画布并追加 warning。若不存在 `.shaper-container`，则直接按图元范围自动拟合画布。
 7. 后端返回标准化后的 `SceneDocument` 给前端。
 8. 前端执行 `ensureSceneLibrary()`，补齐 `library` 相关字段，再写入当前页面状态。
 9. 前端在中间画布里按 `shapeStyle()` 把每个图元渲染成绝对定位 DOM，并使用：
@@ -165,7 +165,7 @@ type SceneLibrary = {
    - `rotate(...)`
    - `opacity`
    - `border-radius`
-10. 因为 CSS 导入遵循 `shaper-container + overflow:hidden`，所以画布最终效果会优先贴近原始 CSS 自身的裁剪和构图，而不是把所有图元完整展开。
+10. 如果 CSS 图元超出 `shaper-container`，导入时会自动扩展画布以容纳全部图元，而不是继续按 `overflow:hidden` 裁切。
 
 ### 右侧显示名
 - 右侧详情和图元列表统一使用“层级-文件名-图元名”的显示名
@@ -312,7 +312,7 @@ type SceneLibrary = {
 
 ### 功能
 - `demo/demo.css` 可导入
-- 超出容器范围的 CSS 会保持原始容器尺寸，并按 `overflow:hidden` 渲染
+- 超出容器范围的 CSS 会自动扩展画布并完整导入
 - 基础图形可拖入、旋转、缩放、调色
 - 未选中图元时右侧能显示图元列表
 - 基础图形改色后，图片库和后续拖入颜色同步更新
