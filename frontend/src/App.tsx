@@ -194,6 +194,7 @@ function App() {
   const sceneRef = useRef(scene);
   const historyRef = useRef<SceneDocument[]>([cloneScene(EMPTY_SCENE())]);
   const historyIndexRef = useRef(0);
+  const saveAndApplyRef = useRef<() => Promise<void>>(async () => {});
 
   const orderedElements = useMemo(
     () => [...scene.elements].sort((a, b) => a.zIndex - b.zIndex),
@@ -279,6 +280,12 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.ctrlKey && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        saveAndApplyRef.current();
+        return;
+      }
+
       if (!canCaptureShortcut(event.target)) {
         return;
       }
@@ -287,6 +294,7 @@ function App() {
       }
 
       const key = event.key.toLowerCase();
+
       if (key === "z") {
         event.preventDefault();
         if (historyIndexRef.current > 0) {
@@ -488,6 +496,10 @@ function App() {
     await refreshPreviews(nextScene);
     setStatus("已保存并应用，当前画布图元已同步到导出浏览区与已保存图元库。");
   }
+
+  useEffect(() => {
+    saveAndApplyRef.current = handleSaveAndApply;
+  }, [handleSaveAndApply]);
 
   async function handleTemplateUpload(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -834,19 +846,19 @@ function App() {
               <div className="left-scroll">
                 <div className="stack">
                   <p className="helper-text">
-                    默认是空图片。这里可以粘贴或上传 <code>css / json / svg</code>，留空导入时会得到空画布。
+                    默认是空图片。这里可以粘贴或上传 <code>svg / css / json</code>，留空导入时会得到空画布。
                   </p>
                   <label className="field">
                     <span>模板格式</span>
                     <select value={sourceType} onChange={(event) => setSourceType(event.target.value as SourceType)}>
+                      <option value="svg">SVG</option>
                       <option value="css">CSS</option>
                       <option value="json">JSON</option>
-                      <option value="svg">SVG</option>
                     </select>
                   </label>
                   <label className="upload-box">
                     <input type="file" accept=".css,.json,.svg,text/css,application/json,image/svg+xml" onChange={handleTemplateUpload} />
-                    <span>上传 css / json / svg</span>
+                    <span>上传 svg / css / json</span>
                   </label>
                   <label className="field">
                     <span>粘贴内容</span>
@@ -965,7 +977,7 @@ function App() {
           <div className="canvas-head">
             <div>
               <strong>画布</strong>
-              <span>默认居中显示。左键拖动空白区域可移动视图，滚动条与缩放滑块同时可用</span>
+              <span>从图形库拖入图元放置在画布上，右键图元可以快速配置颜色和透明度。</span>
             </div>
             <div className="canvas-tools">
               <div className="zoom-tool">
@@ -1027,8 +1039,8 @@ function App() {
             <div
               className="canvas-sizer"
               style={{
-                width: `max(${scene.canvas.width * zoom + 48}px, 100%)`,
-                height: `max(${scene.canvas.height * zoom + 48}px, 100%)`
+                width: `max(${scene.canvas.width * zoom + 80}px, 100%)`,
+                height: `max(${scene.canvas.height * zoom + 80}px, 100%)`
               }}
             >
               <div
@@ -1138,109 +1150,111 @@ function App() {
             <span>{selectedElement ? `层级 ${selectedElement.zIndex + 1}` : "图元列表"}</span>
           </div>
 
-          {selectedElement ? (
-            <div className="detail-stack">
-              <div className="selected-preview">
-                <ShapeGlyph type={selectedElement.type} color={selectedElement.color} />
-                <div>
-                  <strong>{shapeLabels[selectedElement.type]}</strong>
-                  <span>{getElementDisplayName(selectedElement, scene)}</span>
+          <div className="right-scroll">
+            {selectedElement ? (
+              <div className="detail-stack">
+                <div className="selected-preview">
+                  <ShapeGlyph type={selectedElement.type} color={selectedElement.color} />
+                  <div>
+                    <strong>{shapeLabels[selectedElement.type]}</strong>
+                    <span>{getElementDisplayName(selectedElement, scene)}</span>
+                  </div>
                 </div>
-              </div>
 
-              <div className="empty-detail">
-                旋转和缩放优先在画布上直接操作。蓝色手柄用于旋转，橙色手柄用于缩放；右侧继续负责数值和层级编辑。
-              </div>
+                <div className="empty-detail">
+                  旋转和缩放推荐在画布上直接操作。右键可以快速设置图元颜色等。
+                </div>
 
-              <div className="property-grid">
-                <label className="field">
-                  <span>X</span>
-                  <input type="number" value={selectedElement.x} onChange={(event) => updateSelected({ x: Number(event.target.value) })} />
-                </label>
-                <label className="field">
-                  <span>Y</span>
-                  <input type="number" value={selectedElement.y} onChange={(event) => updateSelected({ y: Number(event.target.value) })} />
-                </label>
-                <label className="field">
-                  <span>宽度</span>
-                  <input type="number" value={selectedElement.width} onChange={(event) => updateSelected({ width: Number(event.target.value) })} />
-                </label>
-                <label className="field">
-                  <span>高度</span>
-                  <input type="number" value={selectedElement.height} onChange={(event) => updateSelected({ height: Number(event.target.value) })} />
-                </label>
-                <label className="field">
-                  <span>颜色 #{formatColorCode(selectedElement.color)}</span>
-                  <input type="color" value={toColorInput(selectedElement.color)} onChange={(event) => updateSelected({ color: event.target.value })} />
-                </label>
-                <label className="field">
-                  <span>透明度 {selectedElement.opacity.toFixed(2)}</span>
-                  <input type="range" min="0" max="1" step="0.01" value={selectedElement.opacity} onChange={(event) => updateSelected({ opacity: Number(event.target.value) })} />
-                </label>
-                <label className="field">
-                  <span>旋转</span>
-                  <input type="number" min="-180" max="180" value={selectedElement.rotation} onChange={(event) => updateSelected({ rotation: Number(event.target.value) })} />
-                </label>
-                <label className="field checkbox">
-                  <input type="checkbox" checked={selectedElement.isBackground} onChange={(event) => updateSelected({ isBackground: event.target.checked })} />
-                  <span>背景图元</span>
-                </label>
-              </div>
+                <div className="property-grid">
+                  <label className="field">
+                    <span>X</span>
+                    <input type="number" value={selectedElement.x} onChange={(event) => updateSelected({ x: Number(event.target.value) })} />
+                  </label>
+                  <label className="field">
+                    <span>Y</span>
+                    <input type="number" value={selectedElement.y} onChange={(event) => updateSelected({ y: Number(event.target.value) })} />
+                  </label>
+                  <label className="field">
+                    <span>宽度</span>
+                    <input type="number" value={selectedElement.width} onChange={(event) => updateSelected({ width: Number(event.target.value) })} />
+                  </label>
+                  <label className="field">
+                    <span>高度</span>
+                    <input type="number" value={selectedElement.height} onChange={(event) => updateSelected({ height: Number(event.target.value) })} />
+                  </label>
+                  <label className="field">
+                    <span>颜色 #{formatColorCode(selectedElement.color)}</span>
+                    <input type="color" value={toColorInput(selectedElement.color)} onChange={(event) => updateSelected({ color: event.target.value })} />
+                  </label>
+                  <label className="field">
+                    <span>透明度 {selectedElement.opacity.toFixed(2)}</span>
+                    <input type="range" min="0" max="1" step="0.01" value={selectedElement.opacity} onChange={(event) => updateSelected({ opacity: Number(event.target.value) })} />
+                  </label>
+                  <label className="field">
+                    <span>旋转</span>
+                    <input type="number" min="-180" max="180" value={selectedElement.rotation} onChange={(event) => updateSelected({ rotation: Number(event.target.value) })} />
+                  </label>
+                  <label className="field checkbox" title="勾选后导出 GIA 时该图元强制置于最底层，不受层级顺序影响">
+                    <input type="checkbox" checked={selectedElement.isBackground} onChange={(event) => updateSelected({ isBackground: event.target.checked })} />
+                    <span>
+                      背景图元
+                      <em className="field-hint">导出置底</em>
+                    </span>
+                  </label>
+                </div>
 
-              <div className="layer-input-row">
-                <label className="field">
-                  <span>层级</span>
-                  <input
-                    type="number"
-                    min="1"
-                    max={orderedElements.length}
-                    value={selectedElement.zIndex + 1}
-                    onChange={(event) => moveLayerToPosition(Number(event.target.value) || 1)}
-                  />
-                </label>
-                <button onClick={() => moveLayerToPosition(selectedElement.zIndex)}>层级 -1</button>
-                <button onClick={() => moveLayerToPosition(selectedElement.zIndex + 2)}>层级 +1</button>
-              </div>
+                <div className="layer-row">
+                  <label className="layer-number">
+                    <span>层级</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max={orderedElements.length}
+                      value={selectedElement.zIndex + 1}
+                      onChange={(event) => moveLayerToPosition(Number(event.target.value) || 1)}
+                    />
+                  </label>
+                  <div className="layer-buttons">
+                    <button onClick={() => moveLayer("top")}>置顶</button>
+                    <button onClick={() => moveLayer("up")}>上移</button>
+                    <button onClick={() => moveLayer("down")}>下移</button>
+                    <button onClick={() => moveLayer("bottom")}>置底</button>
+                  </div>
+                </div>
 
-              <div className="layer-toolbox">
-                <button onClick={() => moveLayer("top")}>置顶</button>
-                <button onClick={() => moveLayer("up")}>上移</button>
-                <button onClick={() => moveLayer("down")}>下移</button>
-                <button onClick={() => moveLayer("bottom")}>置底</button>
+                <button className="danger-btn" onClick={removeSelected}>
+                  删除当前图元
+                </button>
               </div>
-
-              <button className="danger-btn" onClick={removeSelected}>
-                删除当前图元
-              </button>
-            </div>
-          ) : (
-            <>
-              <div className="empty-detail">
-                未选中图元时，这里显示当前图元列表。点击列表项可直接选中；选中后可在画布上拖动旋转和缩放手柄。
-              </div>
-              <div className="element-list">
-                {listElements.length === 0 ? (
-                  <div className="empty-inline">当前画布还没有图元</div>
-                ) : (
-                  listElements.map((element) => (
-                    <button
-                      key={element.id}
-                      className="element-list-item"
-                      onClick={() => setSelectedId(element.id)}
-                    >
-                      <ShapeGlyph type={element.type} color={element.color} />
-                      <div>
-                        <strong>{getElementDisplayName(element, scene)}</strong>
-                        <span>
-                          {Math.round(element.width)} × {Math.round(element.height)} / 旋转 {Math.round(element.rotation)}°
-                        </span>
-                      </div>
-                    </button>
-                  ))
-                )}
-              </div>
-            </>
-          )}
+            ) : (
+              <>
+                <div className="empty-detail">
+                  未选中图元时，这里显示当前图元列表。点击列表项可直接选中；选中后可在画布上拖动旋转和缩放手柄。
+                </div>
+                <div className="element-list">
+                  {listElements.length === 0 ? (
+                    <div className="empty-inline">当前画布还没有图元</div>
+                  ) : (
+                    listElements.map((element) => (
+                      <button
+                        key={element.id}
+                        className="element-list-item"
+                        onClick={() => setSelectedId(element.id)}
+                      >
+                        <ShapeGlyph type={element.type} color={element.color} />
+                        <div>
+                          <strong>{getElementDisplayName(element, scene)}</strong>
+                          <span>
+                            {Math.round(element.width)} × {Math.round(element.height)} / 旋转 {Math.round(element.rotation)}°
+                          </span>
+                        </div>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </>
+            )}
+          </div>
         </section>
       </main>
 
@@ -1253,6 +1267,7 @@ function App() {
           <button className="primary-btn compact" onClick={handleSaveAndApply}>
             保存并应用
           </button>
+          <span className="kbd-hint">Ctrl+S</span>
           <button onClick={() => downloadExport("/api/export/gia", `${giaGroupName}.gia`)}>下载 GIA</button>
           <button onClick={() => downloadExport("/api/export/css", `${giaGroupName}.css`)}>下载 CSS</button>
           <button onClick={() => downloadExport("/api/export/svg", `${giaGroupName}.svg`)}>下载 SVG</button>
@@ -1287,7 +1302,10 @@ function App() {
       {quickEdit && quickEditElement ? (
         <div
           className="quick-edit-menu"
-          style={{ left: quickEdit.x + 12, top: quickEdit.y + 12 }}
+          style={{
+            left: Math.min(quickEdit.x + 12, window.innerWidth - 252),
+            top: Math.min(quickEdit.y + 12, window.innerHeight - 240)
+          }}
           onClick={(event) => event.stopPropagation()}
         >
           <div className="section-mini-head">
