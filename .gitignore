@@ -44,3 +44,6 @@ pnpm-debug.log*
 # Local runtime artifacts
 backend/app/__pycache__/
 backend/app/static/assets/
+
+# WorkBuddy agent workspace
+.workbuddy/
