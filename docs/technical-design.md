@@ -87,7 +87,7 @@ type SceneDocument = {
 ```ts
 type SceneElement = {
   id: string;
-  type: "ellipse" | "rectangle" | "triangle" | "four_point_star" | "five_point_star" | "other";
+  type: "ellipse" | "rectangle" | "triangle" | "four_point_star" | "five_point_star" | "ring" | "other";
   x: number;
   y: number;
   width: number;
@@ -136,6 +136,7 @@ type SceneLibrary = {
   - `rotate(...) -> rotation`
   - `z-index -> zIndex`
 - `border-radius: 50% -> ellipse`
+- `background: radial-gradient(closest-side, transparent 79.5%, <color> 80.5%) -> ring`（内径:外径 = 0.8，颜色从第二段 stop 提取）
 - 若存在 `.shaper-container`，先读取其原始宽高作为初始画布
 - 如果图元超出容器，则自动扩展画布；如果图元坐标为负，还会整体平移到可见区域
 - 同时写入 warning，提醒用户当前已为越界图元自动调整画布
@@ -189,6 +190,7 @@ type SceneLibrary = {
   - 等腰三角形
   - 四角星
   - 五角星
+  - 圆环（内径:外径 = 0.8，GIA 素材 100006）
 - 其他分类预留但暂不支持
 
 ### 画布交互
@@ -261,6 +263,7 @@ type SceneLibrary = {
 
 ### SVG
 - 从统一场景模型直接生成
+- 圆环（`ring`）在 SVG 导出时被**忽略**（SVG 导入器不支持 `<path>`，无法无损往返），并在 SVG 文件头部写入 `Miliastra-Warning` 警告注释；前端代码预览区会同步显示强提醒横幅。需要圆环请导出 CSS 或 JSON。
 
 ### GIA
 - 后端将 `SceneDocument` 规范化为 GIA 所需结构

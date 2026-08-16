@@ -32,6 +32,10 @@ DEFAULT_CANVAS_BACKGROUND = "#ffffff"
 DEFAULT_SHAPE_SIZE = 80.0
 HEX_COLOR_RE = re.compile(r"^[0-9a-f]+$")
 TRIANGLE_CLIP_PATH = "polygon(50% 0%, 0% 100%, 100% 100%)"
+RING_INNER_RATIO = 0.8
+RING_GRADIENT_RE = re.compile(
+    r"radial-gradient\([^)]*transparent\s+[\d.]+%\s*,\s*(#[0-9a-f]{3,8}|rgb\([^)]*\)|[a-z]+)\s*[\d.]+%"
+)
 
 IMAGE_ASSET_REFS = {
     "rectangle": 100001,
@@ -39,6 +43,7 @@ IMAGE_ASSET_REFS = {
     "triangle": 100003,
     "four_point_star": 100004,
     "five_point_star": 100005,
+    "ring": 100006,
 }
 
 IMPORT_SOURCE_TYPES = {"json", "css", "svg"}
@@ -48,6 +53,7 @@ SHAPE_TYPES = {
     "triangle",
     "four_point_star",
     "five_point_star",
+    "ring",
     "other",
 }
 GIA_SHAPE_TYPES = {
@@ -56,6 +62,7 @@ GIA_SHAPE_TYPES = {
     "triangle",
     "four_point_star",
     "five_point_star",
+    "ring",
 }
 LIBRARY_CATEGORY_DEFINITIONS = [
     {"key": "function-icon-mono", "label": "功能图标-单色", "supported": False},
@@ -86,6 +93,7 @@ def default_base_shape_presets() -> list["LibraryBaseShapePresetModel"]:
         LibraryBaseShapePresetModel(type="triangle", color="#7c3aed", width=96, height=86),
         LibraryBaseShapePresetModel(type="four_point_star", color="#0f4c81", width=90, height=90),
         LibraryBaseShapePresetModel(type="five_point_star", color="#be123c", width=92, height=92),
+        LibraryBaseShapePresetModel(type="ring", color="#f59e0b", width=92, height=92),
     ]
 
 
@@ -548,6 +556,8 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
 
         index = len(elements)
         triangle_border = parse_triangle_border(body)
+        background = find_css_value(body, "background") or ""
+        ring_gradient = RING_GRADIENT_RE.search(background.lower()) if "radial-gradient" in background.lower() else None
         color = normalize_color(resolve_css_fill_color(body, DEFAULT_CANVAS_BACKGROUND))
         opacity = parse_float(find_css_value(body, "opacity"), 1.0)
         rotation = parse_rotation(find_css_value(body, "transform") or "")
@@ -566,6 +576,13 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
             shape_height = parse_px(find_css_value(body, "height"), DEFAULT_SHAPE_SIZE)
             shape_x = parse_px(find_css_value(body, "left"), width / 2)
             shape_y = parse_px(find_css_value(body, "top"), height / 2)
+        elif ring_gradient is not None:
+            shape_type = "ring"
+            shape_width = parse_px(find_css_value(body, "width"), DEFAULT_SHAPE_SIZE)
+            shape_height = parse_px(find_css_value(body, "height"), DEFAULT_SHAPE_SIZE)
+            shape_x = parse_px(find_css_value(body, "left"), width / 2)
+            shape_y = parse_px(find_css_value(body, "top"), height / 2)
+            color = normalize_color(ring_gradient.group(1))
         elif border_radius == "50%":
             shape_type = "ellipse"
             shape_width = parse_px(find_css_value(body, "width"), DEFAULT_SHAPE_SIZE)
@@ -778,7 +795,16 @@ def scene_to_css(scene: SceneDocumentModel) -> str:
                 f"  top: {element.y:.2f}px;",
                 f"  width: {element.width:.2f}px;",
                 f"  height: {element.height:.2f}px;",
-                f"  background: {element.color};",
+            ]
+        )
+        if element.type == "ring":
+            lines.append(
+                f"  background: radial-gradient(closest-side, transparent 79.5%, {element.color} 80.5%);"
+            )
+        else:
+            lines.append(f"  background: {element.color};")
+        lines.extend(
+            [
                 f"  opacity: {element.opacity:.4f};",
                 f"  transform: translate(-50%, -50%) rotate({-element.rotation:.2f}deg);",
                 "  transform-origin: 50% 50%;",
@@ -794,12 +820,20 @@ def scene_to_css(scene: SceneDocumentModel) -> str:
 
 
 def scene_to_svg(scene: SceneDocumentModel) -> str:
+    sorted_elements = sorted(scene.elements, key=lambda item: item.zIndex)
+    ring_count = sum(1 for element in sorted_elements if element.type == "ring")
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{scene.canvas.width:.0f}" height="{scene.canvas.height:.0f}" viewBox="0 0 {scene.canvas.width:.0f} {scene.canvas.height:.0f}">',
         f'<rect x="0" y="0" width="{scene.canvas.width:.0f}" height="{scene.canvas.height:.0f}" fill="{scene.canvas.background}" />',
     ]
+    if ring_count:
+        parts.append(
+            f'<!-- Miliastra-Warning: SVG 导出已忽略 {ring_count} 个圆环图元；如需圆环，请改用 CSS 或 JSON 导出。 -->'
+        )
 
-    for element in sorted(scene.elements, key=lambda item: item.zIndex):
+    for element in sorted_elements:
+        if element.type == "ring":
+            continue
         transform = f'rotate({-element.rotation:.2f} {element.x:.2f} {element.y:.2f})'
         opacity = f'{element.opacity:.4f}'
         if element.type == "ellipse":
@@ -844,6 +878,8 @@ def scene_to_png_bytes(scene: SceneDocumentModel) -> bytes:
             draw_polygon(draw, star_points(element.x, element.y, element.width, element.height, 4, 0.45), rgba, element.rotation)
         elif element.type == "five_point_star":
             draw_polygon(draw, star_points(element.x, element.y, element.width, element.height, 5, 0.42), rgba, element.rotation)
+        elif element.type == "ring":
+            draw_ring(draw, element, rgba)
         else:
             draw_rect(draw, element, rgba)
 
@@ -1122,17 +1158,34 @@ def draw_ellipse(draw: ImageDraw.ImageDraw, element: SceneElementModel, fill: tu
     if abs(element.rotation) < 0.001:
         draw.ellipse([left, top, right, bottom], fill=fill)
         return
+    draw_polygon(draw, ellipse_points(element.x, element.y, element.width, element.height), fill, element.rotation)
 
-    polygon: list[tuple[float, float]] = []
-    for index in range(36):
-        angle = math.tau * index / 36
-        polygon.append(
-            (
-                element.x + math.cos(angle) * element.width / 2,
-                element.y + math.sin(angle) * element.height / 2,
-            )
+
+def ellipse_points(
+    cx: float,
+    cy: float,
+    width: float,
+    height: float,
+    ratio: float = 1.0,
+    segments: int = 36,
+) -> list[tuple[float, float]]:
+    return [
+        (
+            cx + math.cos(math.tau * index / segments) * width / 2 * ratio,
+            cy + math.sin(math.tau * index / segments) * height / 2 * ratio,
         )
-    draw_polygon(draw, polygon, fill, element.rotation)
+        for index in range(segments)
+    ]
+
+
+def draw_ring(draw: ImageDraw.ImageDraw, element: SceneElementModel, fill: tuple[int, int, int, int]) -> None:
+    draw_polygon(draw, ellipse_points(element.x, element.y, element.width, element.height), fill, element.rotation)
+    draw_polygon(
+        draw,
+        ellipse_points(element.x, element.y, element.width, element.height, RING_INNER_RATIO),
+        (0, 0, 0, 0),
+        element.rotation,
+    )
 
 
 def color_with_alpha(color: str, opacity: float) -> tuple[int, int, int, int]:

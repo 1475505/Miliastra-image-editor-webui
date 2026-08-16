@@ -34,6 +34,7 @@ Production deployment is intentionally simple: one FastAPI process serves both t
   - triangle
   - four-point star
   - five-point star
+  - ring (圆环, fixed inner:outer radius ratio 0.8, GIA asset ref 100006)
 - Other categories are reserved in the UI and JSON interface
 - Drag shapes into canvas or double-click to add
 - Canvas supports:
@@ -121,6 +122,7 @@ For deeper implementation details, see [technical-design.md](technical-design.md
 ## Known Limitations
 
 - Complex SVG is not guaranteed to round-trip correctly
+- SVG export skips ring (圆环) elements and writes a `Miliastra-Warning` comment in the file head; use CSS or JSON export for rings
 - Non-basic library categories are placeholders today
 - Current transform editing is single-element only
 - Undo / redo is session-level and not persisted

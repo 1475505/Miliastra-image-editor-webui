@@ -22,7 +22,7 @@ description: 生成可导入千星图片编辑器（https://github.com/1475505/M
 
 - 构图天然轴对齐（山体、徽章、UI 风、像素风场景）→ SVG 合适，继续。
 - 构图需要倾斜形状、旋转的柔光椭圆、对角线动势 → **停手，改用 `miliastra-image-css-builder`**（CSS 导入保留 `transform: rotate(...)`）。高还原度的 Primitive Shaper 风格（`demo/demo.css`）靠旋转半透明椭圆构建，在可导入 SVG 里根本无法复现。
-- 需要精确的四角星/五角星或旋转三角形 → 推荐 JSON 导入（见 §升级路径）。
+- 需要精确的四角星/五角星、圆环或旋转三角形 → 推荐 JSON 导入（见 §升级路径）。**注意：编辑器导出 SVG 时会直接忽略圆环图元**，并在 SVG 文件头部写入 `Miliastra-Warning` 警告注释——需要圆环的成品请用 CSS 或 JSON 导出。
 
 需要切换时简短说明一句；不要沉默地产出退化的旋转 SVG。
 
@@ -72,6 +72,7 @@ description: 生成可导入千星图片编辑器（https://github.com/1475505/M
 ### 会被丢弃并产生警告的（`部分 SVG 节点未导入: <tags>`）
 
 - `<path>`、`<line>`、`<polyline>`、`<use>`、`<text>`、`<image>`、`<style>`、`<defs>`、渐变、滤镜、clip-path、蒙版。
+- 圆环（`ring`）无法用 SVG 表达（编辑器 SVG 导出会忽略它并写入警告注释；手写 `<path>` 也无法导入）——需要圆环请用 CSS 或 JSON。
 - 点数 ≠ 3 的 `<polygon>`——所以四角星（8 点）、五角星（10 点）**不能**用 polygon 导入。
 - `<g>` 本身会进警告列表，**但它的子元素仍会被导入**（`<g>` 上的 `fill`/`transform` 不起作用）。最简单的原则：不要用 `<g>`。
 
@@ -184,7 +185,7 @@ EOF
 }
 ```
 
-`type` ∈ `ellipse | rectangle | triangle | four_point_star | five_point_star`；`x`/`y` = 中心坐标；rotation 逆时针为正。
+`type` ∈ `ellipse | rectangle | triangle | four_point_star | five_point_star | ring`；`x`/`y` = 中心坐标；rotation 逆时针为正。
 
 ## 星星近似方案（无法改用 JSON 时的兜底）
 

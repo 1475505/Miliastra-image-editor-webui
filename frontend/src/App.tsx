@@ -6,6 +6,7 @@ type ShapeType =
   | "triangle"
   | "four_point_star"
   | "five_point_star"
+  | "ring"
   | "other";
 
 type SourceType = "json" | "css" | "svg";
@@ -173,6 +174,7 @@ const shapeLabels: Record<ShapeType, string> = {
   triangle: "等腰三角形",
   four_point_star: "四角星",
   five_point_star: "五角星",
+  ring: "圆环",
   other: "其他图形"
 };
 
@@ -187,7 +189,8 @@ const defaultBaseShapePresets: LibraryBaseShapePreset[] = [
   { type: "rectangle", color: "#c2410c", width: 102, height: 70 },
   { type: "triangle", color: "#7c3aed", width: 96, height: 86 },
   { type: "four_point_star", color: "#0f4c81", width: 90, height: 90 },
-  { type: "five_point_star", color: "#be123c", width: 92, height: 92 }
+  { type: "five_point_star", color: "#be123c", width: 92, height: 92 },
+  { type: "ring", color: "#f59e0b", width: 92, height: 92 }
 ];
 
 const EXPORT_FORMATS = [
@@ -209,6 +212,7 @@ function App() {
   const [generatedJson, setGeneratedJson] = useState(JSON.stringify(EMPTY_SCENE(), null, 2));
   const [generatedCss, setGeneratedCss] = useState("");
   const [generatedSvg, setGeneratedSvg] = useState("");
+  const [svgExportWarning, setSvgExportWarning] = useState<string | null>(null);
   const [giaGroupName, setGiaGroupName] = useState(() => formatGiaGroupName(new Date()));
   const [warnings, setWarnings] = useState<string[]>([]);
   const [status, setStatus] = useState("欢迎使用，点击顶部「教程」可快速上手");
@@ -631,6 +635,7 @@ function App() {
     ]);
     setGeneratedCss(cssText);
     setGeneratedSvg(svgText);
+    setSvgExportWarning(extractSvgExportWarning(svgText));
   }
 
   async function handleSaveAndApply() {
@@ -882,13 +887,21 @@ function App() {
     }
 
     const blob = await response.blob();
+    let warning: string | null = null;
+    if (endpoint === "/api/export/svg") {
+      warning = extractSvgExportWarning(await blob.text());
+      setSvgExportWarning(warning);
+      if (warning) {
+        setStatus(warning);
+      }
+    }
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
     link.download = filename;
     link.click();
     URL.revokeObjectURL(url);
-    setStatus(`已下载 ${filename}`);
+    setStatus(warning ? `已下载 ${filename}（注意：圆环未包含在内）` : `已下载 ${filename}`);
   }
 
   function updateCanvasSize(field: "width" | "height", value: number) {
@@ -1720,6 +1733,11 @@ function App() {
                     </button>
                   ))}
                 </div>
+                {previewTab === "svg" && svgExportWarning ? (
+                  <div className="message-box warning" data-tour="svg-ring-warning">
+                    <p>{svgExportWarning}</p>
+                  </div>
+                ) : null}
                 <textarea
                   readOnly
                   spellCheck={false}
@@ -2143,6 +2161,7 @@ function ShapeGlyph({ type, color }: { type: ShapeType; color: string }) {
       {type === "five_point_star" ? <div className="star star-five" style={{ background: color }} /> : null}
       {type === "ellipse" ? <div className="glyph-fill ellipse" style={{ background: color }} /> : null}
       {type === "rectangle" ? <div className="glyph-fill rectangle" style={{ background: color }} /> : null}
+      {type === "ring" ? <div className="glyph-fill ring" style={{ background: ringGradient(color) }} /> : null}
     </div>
   );
 }
@@ -2156,6 +2175,11 @@ async function fetchTextExport(endpoint: string, scene: SceneDocument) {
     body: JSON.stringify({ scene })
   });
   return await response.text();
+}
+
+function extractSvgExportWarning(text: string) {
+  const match = text.match(/<!--\s*Miliastra-Warning:\s*([\s\S]*?)\s*-->/);
+  return match ? match[1].trim() : null;
 }
 
 function normalizeZIndex(elements: SceneElement[]) {
@@ -2323,7 +2347,8 @@ function isBasicShape(type: ShapeType) {
     type === "rectangle" ||
     type === "triangle" ||
     type === "four_point_star" ||
-    type === "five_point_star"
+    type === "five_point_star" ||
+    type === "ring"
   );
 }
 
@@ -2350,6 +2375,10 @@ function syncBaseShapePresetColor(
   );
 }
 
+function ringGradient(color: string) {
+  return `radial-gradient(closest-side, transparent 79.5%, ${color} 80.5%)`;
+}
+
 function shapeStyle(element: SceneElement) {
   const common = {
     left: `${element.x}px`,
@@ -2367,6 +2396,9 @@ function shapeStyle(element: SceneElement) {
   }
   if (element.type === "triangle" || element.type === "four_point_star" || element.type === "five_point_star") {
     return { ...common, background: "transparent" };
+  }
+  if (element.type === "ring") {
+    return { ...common, background: ringGradient(element.color) };
   }
   return { ...common, background: element.color };
 }
