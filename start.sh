@@ -3,8 +3,17 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_DIR="$SCRIPT_DIR/backend"
+FRONTEND_DIR="$SCRIPT_DIR/frontend"
 VENV_DIR="$BACKEND_DIR/.venv"
 REQ_FILE="$BACKEND_DIR/requirements.txt"
+
+# 构建前端（输出到 backend/app/static）
+if command -v npm >/dev/null 2>&1 && [ -f "$FRONTEND_DIR/package.json" ]; then
+    echo "Building frontend..."
+    cd "$FRONTEND_DIR"
+    npm install --no-audit --no-fund
+    npm run build
+fi
 
 cd "$BACKEND_DIR"
 
