@@ -9,6 +9,7 @@ DEFAULT_IMAGE_ASSET_REFS = {
     'triangle': 100003,
     'four_point_star': 100004,
     'five_point_star': 100005,
+    'ring': 100006,
 }
 
 # ==========================================
@@ -933,6 +934,13 @@ def _normalize_element_shape_type(shape_type):
         '5star': 'five_point_star',
         'star5': 'five_point_star',
         '五角星': 'five_point_star',
+        'ring': 'ring',
+        'circle_ring': 'ring',
+        'circle-ring': 'ring',
+        'circle ring': 'ring',
+        'donut': 'ring',
+        'annulus': 'ring',
+        '圆环': 'ring',
     }
     return aliases.get(lowered, lowered)
 
@@ -1251,7 +1259,7 @@ def _convert_decoration_mode(json_data, header, content_len, root_fields, tail, 
                 base_badge_x, base_badge_y = 0.3, 0.3
                 sx = (rx * 2.0) / base_badge_x
                 sy = (ry * 2.0) / base_badge_y
-        elif shape_type in ('rectangle', 'triangle', 'four_point_star', 'five_point_star'):
+        elif shape_type in ('rectangle', 'triangle', 'four_point_star', 'five_point_star', 'ring'):
             type_id = element_type_id if element_type_id else 20002129
             w = float(size.get('width', 1.0))
             h = float(size.get('height', 1.0))
@@ -1350,7 +1358,7 @@ def _convert_image_mode(json_data, header, content_len, root_fields, tail, verbo
             ry = float(size.get('ry', 1.0))
             size_x = rx * 2.0
             size_y = ry * 2.0
-        elif shape_type in ('rectangle', 'triangle', 'four_point_star', 'five_point_star'):
+        elif shape_type in ('rectangle', 'triangle', 'four_point_star', 'five_point_star', 'ring'):
             size_x = float(size.get('width', 1.0))
             size_y = float(size.get('height', 1.0))
         else:
