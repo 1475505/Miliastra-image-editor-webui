@@ -1,6 +1,6 @@
 ---
 name: miliastra-image-css-builder
-description: 生成可导入千星图片编辑器（https://github.com/1475505/Miliastra-image-editor-webui）并导出 GIA 的 CSS。当用户提供图片（或图片描述）、希望用有限数量的图元拟合时使用。支持旋转矩形/椭圆、原生三角形（精确 clip-path 字符串）与圆环（radial-gradient 两段式）——旋转是 CSS 相对 SVG 导入的独有优势。若用户未给出图元数量上限或画布尺寸，先提问再生成。
+description: 生成可导入千星图片编辑器（https://github.com/1475505/Miliastra-image-editor-webui）并导出 GIA 的 CSS。当用户提供图片（或图片描述）、希望用有限数量的图元拟合时使用。支持旋转矩形/椭圆、原生三角形（精确 clip-path 字符串）与圆环（radial-gradient 三段式）——旋转是 CSS 相对 SVG 导入的独有优势。若用户未给出图元数量上限或画布尺寸，先提问再生成。
 ---
 
 # 千星图片编辑器 CSS 生成
@@ -94,18 +94,19 @@ clip-path: polygon(50% 0%, 0% 100%, 100% 100%);
 - 只存在**apex-up（尖朝上）**三角形。需要朝下/朝侧的三角形时：对三角形图元使用 `rotate(...)` 是有效的（旋转整个包围盒），`rotate(180deg)` 即得到尖朝下的三角形。
 - 字符串与模板有任何偏差（例如 `polygon(50% 0%,0% 100%,100% 100%)` 少了空格）会静默导入为**矩形**。
 
-### 4. 圆环（radial-gradient 两段式）
+### 4. 圆环（radial-gradient 三段式）
 
 加下面这段**精确写法**作为 `background`（空格位置敏感——匹配前只做空白归一化，是字面匹配）：
 
 ```css
-background: radial-gradient(closest-side, transparent 79.5%, #f59e0b 80.5%);
+background: radial-gradient(closest-side, transparent 79.5%, #f59e0b 80.5%, transparent 100%);
 ```
 
 导入为原生圆环（`type: ring`，内径:外径 = 0.8，GIA 素材 100006），颜色从第二段 stop 提取。定位/尺寸约定与矩形完全一致（`left`/`top` = 圆环外接包围盒的中心，`width`/`height` = 外接直径）。这也是编辑器 CSS 导出器自己使用的写法，可以无损 round-trip。
 
 - 圆环比例固定为 0.8，不需要（也不能）手动调整 stop 百分比；第二段 stop 的颜色会被解析为图元颜色。
-- 只有 `transparent → 纯色` 两段式的 `radial-gradient` 会被识别为圆环；其他渐变（`linear-gradient`、无 transparent 段的径向渐变）仍按旧行为落入默认紫色并静默变成矩形。
+- 尾部 `transparent 100%` 必须保留：radial-gradient 在结束形状（100%）之外会用最后一个 stop 的颜色填满四角，少了它会变成「带圆洞的矩形」而非圆环。
+- 只有 `transparent → 纯色`（可尾随 transparent 收尾）的 `radial-gradient` 会被识别为圆环；其他渐变（`linear-gradient`、无 transparent 首段的径向渐变）仍按旧行为落入默认紫色并静默变成矩形。
 
 ### 四角星 / 五角星
 
@@ -308,7 +309,7 @@ CSS 没有能编码原生星星的写法。要么用矩形 + 旋转正方形近�
 | `width: 50%`（任何百分比） | 静默变成 `50px` |
 | `background: rgba(234,88,12,0.3)` | alpha 被剥掉 → 颜色 `#ea580c` 且 `opacity: 1` |
 | `background: linear-gradient(...)` / `url(...)` | 颜色解析失败 → 默认紫 `#4f46e5` |
-| radial-gradient 缺 `transparent → 纯色` 两段式 | 不识别为圆环 → 同左，静默变成矩形 |
+| radial-gradient 缺 `transparent → 纯色` 首段结构 | 不识别为圆环 → 同左，静默变成矩形 |
 | 基础规则 `.shaper-element {}` 里写 left/top/width/height | 基础规则本身被导入为一个幽灵图元 |
 | `border-left/right/bottom` 三角形 hack | 能导入为 triangle，但 `top` 被当作包围盒**顶边**而非中心——不要用，用 clip-path |
 | 图元（旋转后的包围盒）超出画布左/上边缘 | **所有图元被整体平移**，构图静默错位；超右/下则画布被撑大 |
@@ -321,10 +322,10 @@ CSS 没有能编码原生星星的写法。要么用矩形 + 旋转正方形近�
 - [ ] 图元总数 ≤ 上限（含背景矩形），并在注释中写明 `N/M`
 - [ ] `shaper-e0` 是满画布背景矩形，颜色取自图片主背景色
 - [ ] 每条图元规则都有完整的 8 行样板（含 `translate(-50%, -50%) rotate(Ndeg)` 与 `transform-origin`）
-- [ ] 三角形只用精确 clip-path 字符串；ellipse 都有 `border-radius: 50%`；圆环只用两段式 radial-gradient
+- [ ] 三角形只用精确 clip-path 字符串；ellipse 都有 `border-radius: 50%`；圆环只用三段式 radial-gradient（尾部 `transparent 100%` 收尾）
 - [ ] 所有图元的**旋转后包围盒**都在 `[0,0]→[W,H]` 内
 - [ ] `z-index` 从 0 连续编号且与文档顺序一致
-- [ ] 无渐变（圆环的两段式 radial-gradient 除外）、无 rgba、无百分比、无伪元素、无 border hack
+- [ ] 无渐变（圆环的三段式 radial-gradient 除外）、无 rgba、无百分比、无伪元素、无 border hack
 
 ## 自校验（可选，服务在本地时强烈推荐）
 
