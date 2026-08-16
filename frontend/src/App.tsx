@@ -892,7 +892,7 @@ function App() {
       warning = extractSvgExportWarning(await blob.text());
       setSvgExportWarning(warning);
       if (warning) {
-        setStatus(warning);
+        window.alert("圆环不支持导出为 SVG，已自动从导出文件中删除。如需圆环，请改用 CSS 或 JSON 导出。");
       }
     }
     const url = URL.createObjectURL(blob);
@@ -2376,7 +2376,7 @@ function syncBaseShapePresetColor(
 }
 
 function ringGradient(color: string) {
-  return `radial-gradient(closest-side, transparent 79.5%, ${color} 80.5%)`;
+  return `radial-gradient(closest-side, transparent 79.5%, ${color} 80.5%, ${color} 100%, transparent 100%)`;
 }
 
 function shapeStyle(element: SceneElement) {

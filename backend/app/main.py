@@ -556,8 +556,12 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
 
         index = len(elements)
         triangle_border = parse_triangle_border(body)
-        background = find_css_value(body, "background") or ""
-        ring_gradient = RING_GRADIENT_RE.search(background.lower()) if "radial-gradient" in background.lower() else None
+        element_background = find_css_value(body, "background") or ""
+        ring_gradient = (
+            RING_GRADIENT_RE.search(element_background.lower())
+            if "radial-gradient" in element_background.lower()
+            else None
+        )
         color = normalize_color(resolve_css_fill_color(body, DEFAULT_CANVAS_BACKGROUND))
         opacity = parse_float(find_css_value(body, "opacity"), 1.0)
         rotation = parse_rotation(find_css_value(body, "transform") or "")
@@ -799,7 +803,7 @@ def scene_to_css(scene: SceneDocumentModel) -> str:
         )
         if element.type == "ring":
             lines.append(
-                f"  background: radial-gradient(closest-side, transparent 79.5%, {element.color} 80.5%);"
+                f"  background: radial-gradient(closest-side, transparent 79.5%, {element.color} 80.5%, {element.color} 100%, transparent 100%);"
             )
         else:
             lines.append(f"  background: {element.color};")
@@ -879,7 +883,7 @@ def scene_to_png_bytes(scene: SceneDocumentModel) -> bytes:
         elif element.type == "five_point_star":
             draw_polygon(draw, star_points(element.x, element.y, element.width, element.height, 5, 0.42), rgba, element.rotation)
         elif element.type == "ring":
-            draw_ring(draw, element, rgba)
+            draw_ring(image, element, rgba)
         else:
             draw_rect(draw, element, rgba)
 
@@ -1178,14 +1182,17 @@ def ellipse_points(
     ]
 
 
-def draw_ring(draw: ImageDraw.ImageDraw, element: SceneElementModel, fill: tuple[int, int, int, int]) -> None:
-    draw_polygon(draw, ellipse_points(element.x, element.y, element.width, element.height), fill, element.rotation)
+def draw_ring(image: Image.Image, element: SceneElementModel, fill: tuple[int, int, int, int]) -> None:
+    layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    layer_draw = ImageDraw.Draw(layer, "RGBA")
+    draw_polygon(layer_draw, ellipse_points(element.x, element.y, element.width, element.height), fill, element.rotation)
     draw_polygon(
-        draw,
+        layer_draw,
         ellipse_points(element.x, element.y, element.width, element.height, RING_INNER_RATIO),
         (0, 0, 0, 0),
         element.rotation,
     )
+    image.paste(layer, (0, 0), layer)
 
 
 def color_with_alpha(color: str, opacity: float) -> tuple[int, int, int, int]:

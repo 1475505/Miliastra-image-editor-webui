@@ -136,7 +136,7 @@ type SceneLibrary = {
   - `rotate(...) -> rotation`
   - `z-index -> zIndex`
 - `border-radius: 50% -> ellipse`
-- `background: radial-gradient(closest-side, transparent 79.5%, <color> 80.5%) -> ring`（内径:外径 = 0.8，颜色从第二段 stop 提取）
+- `background: radial-gradient(closest-side, transparent 79.5%, <color> 80.5%, transparent 100%) -> ring`（内径:外径 = 0.8，颜色从第二段 stop 提取；尾部 transparent 使环外四角透明）
 - 若存在 `.shaper-container`，先读取其原始宽高作为初始画布
 - 如果图元超出容器，则自动扩展画布；如果图元坐标为负，还会整体平移到可见区域
 - 同时写入 warning，提醒用户当前已为越界图元自动调整画布
