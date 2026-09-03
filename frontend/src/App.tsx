@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { registerEditorTools, type AddElementInput, type EditorBridge } from "./webmcp";
+import { useI18n, type TranslateFn } from "./i18n";
 
-type ShapeType =
+export type ShapeType =
   | "ellipse"
   | "rectangle"
   | "triangle"
@@ -9,12 +11,12 @@ type ShapeType =
   | "ring"
   | "other";
 
-type SourceType = "json" | "css" | "svg";
+export type SourceType = "json" | "css" | "svg";
 type LeftTab = "layers" | "library" | "import";
 type RightTab = "props" | "code";
 type PreviewTab = "json" | "css" | "svg";
 
-type SceneElement = {
+export type SceneElement = {
   id: string;
   name: string;
   type: ShapeType;
@@ -56,7 +58,7 @@ type SceneLibrary = {
   savedItems: SavedLibraryItem[];
 };
 
-type SceneDocument = {
+export type SceneDocument = {
   canvas: {
     width: number;
     height: number;
@@ -161,22 +163,12 @@ const EMPTY_SCENE = (): SceneDocument => ({
     warnings: []
   },
   library: {
-    activeCategory: "基础形状",
+    activeCategory: "basic-shape",
     categories: libraryCategories,
     baseShapePresets: defaultBaseShapePresets,
     savedItems: []
   }
 });
-
-const shapeLabels: Record<ShapeType, string> = {
-  ellipse: "圆形",
-  rectangle: "矩形",
-  triangle: "等腰三角形",
-  four_point_star: "四角星",
-  five_point_star: "五角星",
-  ring: "圆环",
-  other: "其他图形"
-};
 
 const previewLabels: Record<PreviewTab, string> = {
   json: "JSON",
@@ -194,13 +186,26 @@ const defaultBaseShapePresets: LibraryBaseShapePreset[] = [
 ];
 
 const EXPORT_FORMATS = [
-  { endpoint: "/api/export/gia", ext: "gia", label: "GIA", desc: "游戏素材格式" },
-  { endpoint: "/api/export/css", ext: "css", label: "CSS", desc: "Web 样式代码" },
-  { endpoint: "/api/export/svg", ext: "svg", label: "SVG", desc: "矢量图形" },
-  { endpoint: "/api/export/json", ext: "json", label: "JSON", desc: "场景源数据" }
+  { endpoint: "/api/export/gia", ext: "gia", label: "GIA" },
+  { endpoint: "/api/export/css", ext: "css", label: "CSS" },
+  { endpoint: "/api/export/svg", ext: "svg", label: "SVG" },
+  { endpoint: "/api/export/json", ext: "json", label: "JSON" }
 ] as const;
 
 function App() {
+  const { t, lang, toggleLang } = useI18n();
+  const shapeLabels = useMemo<Record<ShapeType, string>>(
+    () => ({
+      ellipse: t("shape.ellipse"),
+      rectangle: t("shape.rectangle"),
+      triangle: t("shape.triangle"),
+      four_point_star: t("shape.four_point_star"),
+      five_point_star: t("shape.five_point_star"),
+      ring: t("shape.ring"),
+      other: t("shape.other")
+    }),
+    [t]
+  );
   const [scene, setScene] = useState<SceneDocument>(EMPTY_SCENE);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [leftTab, setLeftTab] = useState<LeftTab>("library");
@@ -215,7 +220,7 @@ function App() {
   const [svgExportWarning, setSvgExportWarning] = useState<string | null>(null);
   const [giaGroupName, setGiaGroupName] = useState(() => formatGiaGroupName(new Date()));
   const [warnings, setWarnings] = useState<string[]>([]);
-  const [status, setStatus] = useState("欢迎使用，点击顶部「教程」可快速上手");
+  const [status, setStatus] = useState(() => t("statusbar.welcome"));
   const [zoom, setZoom] = useState(1);
   const [lockAspectRatio, setLockAspectRatio] = useState(true);
   const [quickEdit, setQuickEdit] = useState<QuickEditState>(null);
@@ -258,8 +263,10 @@ function App() {
     [orderedElements, quickEdit]
   );
 
-  const activeCategory = scene.library.activeCategory || "基础形状";
-  const categoryInfo = scene.library.categories.find((item) => item.label === activeCategory) ?? scene.library.categories[0];
+  const activeCategory = scene.library.activeCategory || "basic-shape";
+  const categoryInfo =
+    scene.library.categories.find((item) => item.key === activeCategory || item.label === activeCategory) ??
+    scene.library.categories[0];
   const baseShapePresets = scene.library.baseShapePresets ?? defaultBaseShapePresets;
 
   useEffect(() => {
@@ -353,7 +360,7 @@ function App() {
     setScene(snapshot);
     setSelectedId(null);
     setQuickEdit(null);
-    setStatus("已撤销上一步");
+    setStatus(t("statusbar.undone"));
     syncHistoryState();
   }
 
@@ -367,7 +374,7 @@ function App() {
     setScene(snapshot);
     setSelectedId(null);
     setQuickEdit(null);
-    setStatus("已重做下一步");
+    setStatus(t("statusbar.redone"));
     syncHistoryState();
   }
 
@@ -591,12 +598,12 @@ function App() {
       commitScene(emptyScene);
       setSelectedId(null);
       setWarnings([]);
-      setStatus("已加载空画布");
+      setStatus(t("statusbar.emptyLoaded"));
       await refreshPreviews(emptyScene);
       return;
     }
 
-    setStatus("正在导入基础模板...");
+    setStatus(t("statusbar.importing"));
     const response = await fetch("/api/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -608,7 +615,7 @@ function App() {
     });
 
     if (!response.ok) {
-      setStatus(`导入失败: ${await response.text()}`);
+      setStatus(t("statusbar.importFailed", { msg: await response.text() }));
       return;
     }
 
@@ -622,7 +629,7 @@ function App() {
     setWarnings(data.warnings);
     setQuickEdit(null);
     setLeftTab("layers");
-    setStatus("基础模板已导入到画布");
+    setStatus(t("statusbar.imported"));
     await refreshPreviews(ensureSceneLibrary(data.scene));
     window.setTimeout(() => fitCanvasToStage(), 60);
   }
@@ -647,20 +654,175 @@ function App() {
           .filter((element) => element.type !== "other")
           .map((element, index) => ({
             id: `${element.id}-saved-${index}`,
-            name: getElementDisplayName(element, scene),
-            category: "基础形状",
+            name: getElementDisplayName(element, scene, shapeLabels),
+            category: "basic-shape",
             element: { ...element }
           }))
       }
     };
     commitScene(nextScene);
     await refreshPreviews(nextScene);
-    setStatus("已保存并应用，当前画布图元已同步到代码预览与已保存图元库");
+    setStatus(t("statusbar.saved"));
   }
 
   useEffect(() => {
     saveAndApplyRef.current = handleSaveAndApply;
   }, [handleSaveAndApply]);
+
+  // ---- WebMCP：向浏览器 AI 代理（Chrome WebMCP / ChatGPT site tools）暴露编辑器工具 ----
+  const webmcpBridgeRef = useRef<EditorBridge | null>(null);
+
+  function schedulePreviewRefresh() {
+    window.setTimeout(() => {
+      void refreshPreviews(sceneRef.current);
+    }, 0);
+  }
+
+  webmcpBridgeRef.current = {
+    getScene: () => sceneRef.current,
+    addElement: (input: AddElementInput) => {
+      const element = addShapeToCanvas(input.type, input.x, input.y, {
+        name: input.name,
+        width: input.width,
+        height: input.height,
+        rotation: input.rotation,
+        color: input.color,
+        opacity: input.opacity
+      });
+      if (!element) {
+        return { ok: false, error: "The \"other\" shape type is not available" };
+      }
+      schedulePreviewRefresh();
+      return { ok: true, element };
+    },
+    updateElement: (id, patch) => {
+      const target = sceneRef.current.elements.find((element) => element.id === id);
+      if (!target) {
+        return { ok: false, error: `Element not found: ${id}` };
+      }
+      updateElementById(id, patch);
+      schedulePreviewRefresh();
+      return { ok: true };
+    },
+    removeElement: (id) => {
+      const target = sceneRef.current.elements.find((element) => element.id === id);
+      if (!target) {
+        return { ok: false, error: `Element not found: ${id}` };
+      }
+      removeElementById(id);
+      schedulePreviewRefresh();
+      return { ok: true };
+    },
+    setCanvas: (patch) => {
+      const current = sceneRef.current;
+      const next = {
+        ...current,
+        canvas: {
+          ...current.canvas,
+          ...(patch.width !== undefined
+            ? { width: clamp(Math.round(patch.width) || 1, 1, 2048) }
+            : {}),
+          ...(patch.height !== undefined
+            ? { height: clamp(Math.round(patch.height) || 1, 1, 2048) }
+            : {}),
+          ...(patch.background !== undefined ? { background: patch.background } : {})
+        }
+      };
+      commitScene(next);
+      schedulePreviewRefresh();
+      return { ok: true };
+    },
+    clearCanvas: () => {
+      const emptyScene = EMPTY_SCENE();
+      commitScene(emptyScene);
+      setSelectedId(null);
+      setQuickEdit(null);
+      setWarnings([]);
+      setStatus(t("statusbar.aiCleared"));
+      void refreshPreviews(emptyScene);
+      return { ok: true };
+    },
+    importSource: async (sourceType, content, name) => {
+      const response = await fetch("/api/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceType,
+          content,
+          sourceName: name || `webmcp.${sourceType}`
+        })
+      });
+      if (!response.ok) {
+        return { ok: false, error: await readApiError(response) };
+      }
+      const data = (await response.json()) as { scene: SceneDocument; warnings: string[] };
+      const next = ensureSceneLibrary(data.scene);
+      commitScene(next);
+      setSelectedId(next.elements[0]?.id ?? null);
+      setWarnings(data.warnings);
+      setQuickEdit(null);
+      setLeftTab("layers");
+      setStatus(t("statusbar.aiImported"));
+      await refreshPreviews(next);
+      window.setTimeout(() => fitCanvasToStage(), 60);
+      return { ok: true, warnings: data.warnings ?? [] };
+    },
+    exportScene: async (format) => {
+      if (format === "json") {
+        return JSON.stringify(sceneRef.current, null, 2);
+      }
+      return fetchTextExport(`/api/export/${format}`, sceneRef.current);
+    },
+    getCanvasPreview: async (maxSize) => {
+      const current = sceneRef.current;
+      const response = await fetch("/api/export/png", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scene: current })
+      });
+      if (!response.ok) {
+        return { ok: false, error: await readApiError(response) };
+      }
+      try {
+        const blob = await response.blob();
+        const bitmap = await createImageBitmap(blob);
+        const scale = Math.min(1, maxSize / Math.max(bitmap.width, bitmap.height));
+        const width = Math.max(1, Math.round(bitmap.width * scale));
+        const height = Math.max(1, Math.round(bitmap.height * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d")?.drawImage(bitmap, 0, 0, width, height);
+        bitmap.close();
+        return { ok: true, dataUrl: canvas.toDataURL("image/png"), width, height };
+      } catch (error) {
+        return {
+          ok: false,
+          error: `Failed to generate canvas preview: ${error instanceof Error ? error.message : String(error)}`
+        };
+      }
+    },
+    undo: () => {
+      if (historyIndexRef.current <= 0) {
+        return { ok: false, error: "Nothing to undo" };
+      }
+      undoScene();
+      schedulePreviewRefresh();
+      return { ok: true };
+    },
+    redo: () => {
+      if (historyIndexRef.current >= historyRef.current.length - 1) {
+        return { ok: false, error: "Nothing to redo" };
+      }
+      redoScene();
+      schedulePreviewRefresh();
+      return { ok: true };
+    }
+  };
+
+  useEffect(() => {
+    return registerEditorTools(() => webmcpBridgeRef.current);
+  }, []);
 
   async function handleTemplateUpload(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -681,18 +843,18 @@ function App() {
     const fileNameWithoutExt = file.name.replace(/\.[^/.]+$/, "");
     setGiaGroupName(fileNameWithoutExt);
     setSourceContent(content);
-    setStatus(`已读取文件 ${file.name}`);
+    setStatus(t("statusbar.fileRead", { name: file.name }));
     event.target.value = "";
   }
 
   function loadSampleScene() {
-    const sample = buildSampleScene();
+    const sample = buildSampleScene(shapeLabels, t("sample.sceneName"));
     commitScene(sample);
     setSelectedId(null);
     setQuickEdit(null);
     setWarnings([]);
     setLeftTab("layers");
-    setStatus("已载入示例场景，可拖拽编辑，或点击顶部「导出」查看效果");
+    setStatus(t("statusbar.sampleLoaded"));
     void refreshPreviews(sample);
     window.setTimeout(() => fitCanvasToStage(), 60);
   }
@@ -702,7 +864,7 @@ function App() {
     const text = previewTab === "json" ? generatedJson : previewTab === "css" ? generatedCss : generatedSvg;
     try {
       await navigator.clipboard.writeText(text);
-      setStatus(`已复制 ${label} 到剪贴板`);
+      setStatus(t("statusbar.copied", { label }));
     } catch {
       const helper = document.createElement("textarea");
       helper.value = text;
@@ -710,9 +872,9 @@ function App() {
       helper.select();
       try {
         document.execCommand("copy");
-        setStatus(`已复制 ${label} 到剪贴板`);
+        setStatus(t("statusbar.copied", { label }));
       } catch {
-        setStatus("复制失败，请手动选择文本复制");
+        setStatus(t("statusbar.copyFailed"));
       }
       document.body.removeChild(helper);
     }
@@ -736,10 +898,15 @@ function App() {
     };
   }
 
-  function addShapeToCanvas(type: ShapeType, x?: number, y?: number, override?: Partial<SceneElement>) {
+  function addShapeToCanvas(
+    type: ShapeType,
+    x?: number,
+    y?: number,
+    override?: Partial<SceneElement>
+  ): SceneElement | null {
     if (type === "other") {
-      setStatus("“其他图形”尚未开放");
-      return;
+      setStatus(t("statusbar.otherShape"));
+      return null;
     }
 
     const next = createShape(type, override);
@@ -752,7 +919,8 @@ function App() {
       elements: normalizeZIndex([...current.elements, next])
     }));
     setSelectedId(next.id);
-    setStatus(`已将 ${shapeLabels[type]} 放入画布`);
+    setStatus(t("statusbar.shapeAdded", { name: shapeLabels[type] }));
+    return next;
   }
 
   function updateSelected(patch: Partial<SceneElement>) {
@@ -860,7 +1028,7 @@ function App() {
     if (selectedIdRef.current === id) {
       setSelectedId(null);
     }
-    setStatus("已删除当前图元");
+    setStatus(t("statusbar.elementDeleted"));
   }
 
   function removeSelected() {
@@ -872,7 +1040,7 @@ function App() {
 
   async function downloadExport(endpoint: string, filename: string) {
     setExportOpen(false);
-    setStatus(`正在准备 ${filename}...`);
+    setStatus(t("statusbar.preparing", { name: filename }));
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -882,7 +1050,7 @@ function App() {
       })
     });
     if (!response.ok) {
-      setStatus(`导出失败: ${await response.text()}`);
+      setStatus(t("statusbar.exportFailed", { msg: await readApiError(response) }));
       return;
     }
 
@@ -892,7 +1060,7 @@ function App() {
       warning = extractSvgExportWarning(await blob.text());
       setSvgExportWarning(warning);
       if (warning) {
-        window.alert("圆环不支持导出为 SVG，已自动从导出文件中删除。如需圆环，请改用 CSS 或 JSON 导出。");
+        window.alert(t("statusbar.ringSvgAlert"));
       }
     }
     const url = URL.createObjectURL(blob);
@@ -901,7 +1069,7 @@ function App() {
     link.download = filename;
     link.click();
     URL.revokeObjectURL(url);
-    setStatus(warning ? `已下载 ${filename}（注意：圆环未包含在内）` : `已下载 ${filename}`);
+    setStatus(warning ? t("statusbar.downloadedWithRingWarning", { name: filename }) : t("statusbar.downloaded", { name: filename }));
   }
 
   function updateCanvasSize(field: "width" | "height", value: number) {
@@ -1010,7 +1178,7 @@ function App() {
       const y = clamp((event.clientY - rect.top) / zoom, 0, scene.canvas.height);
       addShapeToCanvas(data.type, x, y, data.override);
     } catch {
-      setStatus("拖入图形失败");
+      setStatus(t("statusbar.dropFailed"));
     }
   }
 
@@ -1018,12 +1186,12 @@ function App() {
     event.dataTransfer.setData("application/miliastra-shape", JSON.stringify({ type, override }));
   }
 
-  function updateLibraryCategory(label: string) {
+  function updateLibraryCategory(categoryKey: string) {
     commitScene((current) => ({
       ...current,
       library: {
         ...current.library,
-        activeCategory: label
+        activeCategory: categoryKey
       }
     }));
   }
@@ -1038,23 +1206,23 @@ function App() {
     <div className="app-shell" onClick={() => setQuickEdit(null)}>
       <header className="topbar">
         <div className="topbar-group">
-          <div className="brand" title="千星图片编辑器">
+          <div className="brand" title={t("brand.title")}>
             <span className="brand-mark">
               <Icon name="sparkle" size={13} />
             </span>
-            <span className="brand-name">千星图片编辑器</span>
+            <span className="brand-name">{t("brand.name")}</span>
           </div>
           <span className="divider" />
-          <button className="icon-btn" onClick={undoScene} disabled={!historyState.canUndo} title="撤销 (Ctrl/⌘+Z)">
+          <button className="icon-btn" onClick={undoScene} disabled={!historyState.canUndo} title={t("topbar.undoShort")}>
             <Icon name="undo" size={15} />
           </button>
-          <button className="icon-btn" onClick={redoScene} disabled={!historyState.canRedo} title="重做 (Ctrl/⌘+Shift+Z)">
+          <button className="icon-btn" onClick={redoScene} disabled={!historyState.canRedo} title={t("topbar.redoShort")}>
             <Icon name="redo" size={15} />
           </button>
         </div>
 
         <div className="topbar-group topbar-center">
-          <label className="doc-name" title="素材组名称，将作为导出文件名">
+          <label className="doc-name" title={t("topbar.docName")}>
             <Icon name="artboard" size={13} />
             <input
               value={giaGroupName}
@@ -1066,9 +1234,9 @@ function App() {
         </div>
 
         <div className="topbar-group">
-          <button className="btn btn-primary" onClick={handleSaveAndApply} title={`保存并应用 (${isMac ? "⌘" : "Ctrl+"}S)`}>
+          <button className="btn btn-primary" onClick={handleSaveAndApply} title={t("topbar.saveShort", { mod: isMac ? "⌘" : "Ctrl+" })}>
             <Icon name="save" size={13} />
-            <span>保存并应用</span>
+            <span>{t("topbar.save")}</span>
             <kbd className="btn-kbd">{saveShortcut}</kbd>
           </button>
           <div className="menu-wrap" data-tour="export">
@@ -1080,7 +1248,7 @@ function App() {
               }}
             >
               <Icon name="download" size={13} />
-              <span>导出</span>
+              <span>{t("topbar.export")}</span>
               <Icon name="chevronDown" size={11} />
             </button>
             {exportOpen ? (
@@ -1094,7 +1262,7 @@ function App() {
                     <Icon name="download" size={14} />
                     <div>
                       <strong>{item.label}</strong>
-                      <span>{item.desc}</span>
+                      <span>{t(`export.${item.ext}.desc`)}</span>
                     </div>
                   </button>
                 ))}
@@ -1102,16 +1270,20 @@ function App() {
             ) : null}
           </div>
           <span className="divider" />
-          <button className="btn btn-ghost btn-text-icon" onClick={openTour} title="打开新手教程">
+          <button className="btn btn-ghost btn-text-icon" onClick={openTour} title={t("topbar.tourTitle")}>
             <Icon name="help" size={13} />
-            <span>教程</span>
+            <span>{t("topbar.tour")}</span>
           </button>
-          <a className="icon-btn" href="https://github.com/1475505/Miliastra-image-editor-webui" target="_blank" rel="noreferrer" title="GitHub 仓库">
+          <a className="icon-btn" href="https://github.com/1475505/Miliastra-image-editor-webui" target="_blank" rel="noreferrer" title={t("topbar.github")}>
             <Icon name="gitBranch" size={15} />
           </a>
-          <a className="icon-btn" href="https://ugc.070077.xyz" target="_blank" rel="noreferrer" title="知识库文档">
+          <a className="icon-btn" href="https://ugc.070077.xyz" target="_blank" rel="noreferrer" title={t("topbar.docs")}>
             <Icon name="globe" size={15} />
           </a>
+          <span className="divider" />
+          <button className="icon-btn lang-toggle" onClick={toggleLang} title={t("topbar.lang")} aria-label={t("topbar.lang")}>
+            <span className="lang-toggle-text">{lang === "zh" ? "EN" : "中"}</span>
+          </button>
         </div>
       </header>
 
@@ -1121,15 +1293,15 @@ function App() {
             <div className="seg">
               <button className={leftTab === "layers" ? "active" : ""} onClick={() => setLeftTab("layers")}>
                 <Icon name="layers" size={13} />
-                <span>图层</span>
+                <span>{t("tab.layers")}</span>
               </button>
               <button className={leftTab === "library" ? "active" : ""} onClick={() => setLeftTab("library")}>
                 <Icon name="layoutGrid" size={13} />
-                <span>图形库</span>
+                <span>{t("tab.library")}</span>
               </button>
               <button className={leftTab === "import" ? "active" : ""} onClick={() => setLeftTab("import")}>
                 <Icon name="upload" size={13} />
-                <span>导入</span>
+                <span>{t("tab.import")}</span>
               </button>
             </div>
           </div>
@@ -1141,11 +1313,11 @@ function App() {
                   <div className="empty-box-icon">
                     <Icon name="layers" size={18} />
                   </div>
-                  <strong>还没有图元</strong>
-                  <p>从图形库拖入基础形状，或导入 SVG / CSS / JSON 模板</p>
+                  <strong>{t("layers.empty.title")}</strong>
+                  <p>{t("layers.empty.desc")}</p>
                   <div className="empty-box-actions">
-                    <button className="btn btn-primary" onClick={() => setLeftTab("library")}>浏览图形库</button>
-                    <button className="btn btn-ghost" onClick={() => setLeftTab("import")}>导入模板</button>
+                    <button className="btn btn-primary" onClick={() => setLeftTab("library")}>{t("layers.empty.browse")}</button>
+                    <button className="btn btn-ghost" onClick={() => setLeftTab("import")}>{t("layers.empty.import")}</button>
                   </div>
                 </div>
               ) : (
@@ -1158,7 +1330,7 @@ function App() {
                     >
                       <ShapeGlyph type={element.type} color={element.color} />
                       <div className="layer-info">
-                        <strong>{getElementBaseName(element)}</strong>
+                        <strong>{getElementBaseName(element, shapeLabels)}</strong>
                         <span>
                           {Math.round(element.width)} × {Math.round(element.height)} · {Math.round(element.rotation)}°
                         </span>
@@ -1172,11 +1344,11 @@ function App() {
           ) : leftTab === "library" ? (
             <div className="panel-scroll stack">
               <label className="field">
-                <span>图形分类</span>
+                <span>{t("library.category")}</span>
                 <select value={activeCategory} onChange={(event) => updateLibraryCategory(event.target.value)}>
                   {scene.library.categories.map((category) => (
-                    <option key={category.key} value={category.label}>
-                      {category.label}
+                    <option key={category.key} value={category.key}>
+                      {t(`category.${category.key}`)}
                     </option>
                   ))}
                 </select>
@@ -1191,7 +1363,7 @@ function App() {
                       draggable
                       onDragStart={(event) => startShapeDrag(event, item.type)}
                       onDoubleClick={() => addShapeToCanvas(item.type)}
-                      title="拖入画布或双击添加"
+                      title={t("library.dragHint")}
                     >
                       <ShapeGlyph type={item.type} color={item.color} />
                       <strong>{shapeLabels[item.type]}</strong>
@@ -1199,16 +1371,16 @@ function App() {
                   ))}
                 </div>
               ) : (
-                <div className="tip-box">当前分类暂不支持，已预留接口，后续可直接接入。</div>
+                <div className="tip-box">{t("library.unsupported")}</div>
               )}
 
               <div className="section-head">
-                <span>已保存图元</span>
-                <em>{savedLibrary.length} 个</em>
+                <span>{t("library.saved")}</span>
+                <em>{t("library.savedCount", { count: savedLibrary.length })}</em>
               </div>
               <div className="saved-list">
                 {savedLibrary.length === 0 ? (
-                  <div className="tip-box">「保存并应用」后，画布图元会出现在这里，可重复拖入复用。</div>
+                  <div className="tip-box">{t("library.savedEmpty")}</div>
                 ) : (
                   savedLibrary.map((item) => (
                     <button
@@ -1252,10 +1424,10 @@ function App() {
             <>
               <div className="panel-scroll stack">
                 <div className="tip-box">
-                  支持粘贴或上传 <code>svg / css / json</code> 模板；内容留空时导入将得到 300 × 300 空画布。
+                  {t("import.tip")}
                 </div>
                 <label className="field">
-                  <span>模板格式</span>
+                  <span>{t("import.format")}</span>
                   <select value={sourceType} onChange={(event) => setSourceType(event.target.value as SourceType)}>
                     <option value="svg">SVG</option>
                     <option value="css">CSS</option>
@@ -1265,15 +1437,15 @@ function App() {
                 <label className="upload-box">
                   <input type="file" accept=".css,.json,.svg,text/css,application/json,image/svg+xml" onChange={handleTemplateUpload} />
                   <Icon name="upload" size={16} />
-                  <strong>点击上传文件</strong>
+                  <strong>{t("import.upload")}</strong>
                   <span>.svg / .css / .json</span>
                 </label>
                 <label className="field field-grow">
-                  <span>或粘贴内容</span>
+                  <span>{t("import.paste")}</span>
                   <textarea
                     value={sourceContent}
                     onChange={(event) => setSourceContent(event.target.value)}
-                    placeholder="留空时点击「导入到画布」会得到空画布"
+                    placeholder={t("import.pastePlaceholder")}
                   />
                 </label>
                 {warnings.length > 0 ? (
@@ -1285,12 +1457,12 @@ function App() {
                 ) : null}
                 <button className="btn btn-ghost" onClick={loadSampleScene}>
                   <Icon name="image" size={13} />
-                  <span>载入示例场景</span>
+                  <span>{t("import.sample")}</span>
                 </button>
               </div>
               <div className="sidebar-footer">
                 <button className="btn btn-primary btn-block" onClick={handleImport}>
-                  导入到画布
+                  {t("import.submit")}
                 </button>
               </div>
             </>
@@ -1299,30 +1471,30 @@ function App() {
 
         <section className="canvas-area" data-tour="canvas">
           <div className="canvas-toolbar">
-            <button className="icon-btn" onClick={() => handleZoomChange(zoom - 0.1)} disabled={zoom <= 0.25} title="缩小">
+            <button className="icon-btn" onClick={() => handleZoomChange(zoom - 0.1)} disabled={zoom <= 0.25} title={t("canvas.zoomOut")}>
               <Icon name="minus" size={13} />
             </button>
-            <button className="zoom-display" onClick={() => handleZoomChange(1)} title="当前缩放，点击重置为 100%">
+            <button className="zoom-display" onClick={() => handleZoomChange(1)} title={t("canvas.zoomReset")}>
               {Math.round(zoom * 100)}%
             </button>
-            <button className="icon-btn" onClick={() => handleZoomChange(zoom + 0.1)} disabled={zoom >= 4} title="放大">
+            <button className="icon-btn" onClick={() => handleZoomChange(zoom + 0.1)} disabled={zoom >= 4} title={t("canvas.zoomIn")}>
               <Icon name="plus" size={13} />
             </button>
             <span className="divider" />
-            <button className="icon-btn" onClick={fitCanvasToStage} title="适应窗口：缩放画布以完整显示">
+            <button className="icon-btn" onClick={fitCanvasToStage} title={t("canvas.fit")}>
               <Icon name="fit" size={14} />
             </button>
             <span className="divider" />
             <button
               className={`tool-toggle ${snapConfig.enabled ? "active" : ""}`}
               onClick={() => setSnapConfig((c) => ({ ...c, enabled: !c.enabled }))}
-              title="智能吸附：拖动图元时自动对齐其他图元的边缘与中心"
+              title={t("canvas.snapTitle")}
             >
               <Icon name="magnet" size={13} />
-              <span>吸附</span>
+              <span>{t("canvas.snap")}</span>
             </button>
-            <label className="tool-field" title="网格吸附：拖动时坐标按此像素值取整，0 = 关闭">
-              <span>网格</span>
+            <label className="tool-field" title={t("canvas.gridTitle")}>
+              <span>{t("canvas.grid")}</span>
               <input
                 type="number"
                 min="0"
@@ -1333,8 +1505,8 @@ function App() {
               />
               <em>px</em>
             </label>
-            <label className="tool-field" title="角度步进：旋转手柄时按此角度吸附，0 = 关闭；按住 Ctrl/⌘ 可临时关闭">
-              <span>角度</span>
+            <label className="tool-field" title={t("canvas.angleTitle")}>
+              <span>{t("canvas.angle")}</span>
               <input
                 type="number"
                 min="0"
@@ -1504,17 +1676,17 @@ function App() {
                 <div className="empty-box-icon">
                   <Icon name="image" size={20} />
                 </div>
-                <h3>画布还是空的</h3>
-                <p>先确认画布尺寸，再从图形库拖入形状，或导入 SVG / CSS / JSON 模板</p>
-                <div className="canvas-quick-setup" title="画布尺寸，也可稍后在右侧「属性 → 画布」中修改">
-                  <span>画布尺寸</span>
+                <h3>{t("canvas.empty.title")}</h3>
+                <p>{t("canvas.empty.desc")}</p>
+                <div className="canvas-quick-setup" title={t("canvas.empty.sizeTitle")}>
+                  <span>{t("canvas.empty.size")}</span>
                   <input
                     type="number"
                     min="1"
                     max="2048"
                     value={Math.round(scene.canvas.width)}
                     onChange={(event) => updateCanvasSize("width", Number(event.target.value))}
-                    aria-label="画布宽度"
+                    aria-label={t("canvas.empty.widthAria")}
                   />
                   <em>×</em>
                   <input
@@ -1523,23 +1695,23 @@ function App() {
                     max="2048"
                     value={Math.round(scene.canvas.height)}
                     onChange={(event) => updateCanvasSize("height", Number(event.target.value))}
-                    aria-label="画布高度"
+                    aria-label={t("canvas.empty.heightAria")}
                   />
                   <em>px</em>
                 </div>
                 <div className="empty-box-actions">
-                  <button className="btn btn-primary" onClick={() => setLeftTab("library")}>浏览图形库</button>
-                  <button className="btn btn-ghost" onClick={() => setLeftTab("import")}>导入模板</button>
-                  <button className="btn btn-ghost" onClick={openTour}>观看教程</button>
+                  <button className="btn btn-primary" onClick={() => setLeftTab("library")}>{t("layers.empty.browse")}</button>
+                  <button className="btn btn-ghost" onClick={() => setLeftTab("import")}>{t("layers.empty.import")}</button>
+                  <button className="btn btn-ghost" onClick={openTour}>{t("canvas.empty.watchTour")}</button>
                 </div>
-                <button className="link-btn" onClick={loadSampleScene}>或先试试示例场景 →</button>
+                <button className="link-btn" onClick={loadSampleScene}>{t("canvas.empty.sample")}</button>
               </div>
             </div>
           ) : null}
 
           <button
             className="canvas-meta-chip"
-            title="画布尺寸，点击编辑画布属性"
+            title={t("canvas.metaTitle")}
             onClick={() => {
               setRightTab("props");
               setPropsView("canvas");
@@ -1554,11 +1726,11 @@ function App() {
             <div className="seg">
               <button className={rightTab === "props" ? "active" : ""} onClick={() => setRightTab("props")}>
                 <Icon name="artboard" size={13} />
-                <span>属性</span>
+                <span>{t("tab.props")}</span>
               </button>
               <button className={rightTab === "code" ? "active" : ""} onClick={() => setRightTab("code")}>
                 <Icon name="code" size={13} />
-                <span>代码</span>
+                <span>{t("tab.code")}</span>
               </button>
             </div>
           </div>
@@ -1571,16 +1743,16 @@ function App() {
                     disabled={!selectedElement}
                     className={selectedElement && propsView === "element" ? "active" : ""}
                     onClick={() => selectedElement && setPropsView("element")}
-                    title={selectedElement ? "查看选中图元的属性" : "先在画布或图层列表中选中一个图元"}
+                    title={selectedElement ? t("props.elementTitle") : t("props.elementEmpty")}
                   >
-                    图元
+                    {t("props.element")}
                   </button>
                   <button
                     className={!selectedElement || propsView === "canvas" ? "active" : ""}
                     onClick={() => setPropsView("canvas")}
-                    title="画布尺寸、背景色等设置"
+                    title={t("props.canvasTitle")}
                   >
-                    画布
+                    {t("props.canvas")}
                   </button>
                 </div>
               </div>
@@ -1590,20 +1762,20 @@ function App() {
                   <div className="inspector-head">
                     <ShapeGlyph type={selectedElement.type} color={selectedElement.color} />
                     <div className="layer-info">
-                      <strong>{getElementBaseName(selectedElement)}</strong>
-                      <span>{shapeLabels[selectedElement.type]} · 第 {selectedElement.zIndex + 1} 层</span>
+                      <strong>{getElementBaseName(selectedElement, shapeLabels)}</strong>
+                      <span>{shapeLabels[selectedElement.type]} · {t("props.layer", { n: selectedElement.zIndex + 1 })}</span>
                     </div>
                   </div>
 
-                  <div className="section-head"><span>变换</span></div>
+                  <div className="section-head"><span>{t("props.transform")}</span></div>
                   <div className="grid-2">
                     <NumField label="X" value={Math.round(selectedElement.x)} onChange={(value) => updateSelected({ x: value })} />
                     <NumField label="Y" value={Math.round(selectedElement.y)} onChange={(value) => updateSelected({ y: value })} />
-                    <NumField label="宽" value={Math.round(selectedElement.width)} min={4} onChange={(value) => updateSelected({ width: Math.max(4, value) })} />
-                    <NumField label="高" value={Math.round(selectedElement.height)} min={4} onChange={(value) => updateSelected({ height: Math.max(4, value) })} />
+                    <NumField label={t("props.width")} value={Math.round(selectedElement.width)} min={4} onChange={(value) => updateSelected({ width: Math.max(4, value) })} />
+                    <NumField label={t("props.height")} value={Math.round(selectedElement.height)} min={4} onChange={(value) => updateSelected({ height: Math.max(4, value) })} />
                   </div>
                   <div className="field">
-                    <span>旋转角度</span>
+                    <span>{t("props.rotation")}</span>
                     <div className="row">
                       <input
                         type="number"
@@ -1612,19 +1784,19 @@ function App() {
                         value={Math.round(selectedElement.rotation)}
                         onChange={(event) => updateSelected({ rotation: Number(event.target.value) })}
                       />
-                      <button className="icon-btn" onClick={() => updateSelected({ rotation: 0 })} title="复位角度">
+                      <button className="icon-btn" onClick={() => updateSelected({ rotation: 0 })} title={t("props.rotationReset")}>
                         <Icon name="rotateCw" size={13} />
                       </button>
                     </div>
                   </div>
 
-                  <div className="section-head"><span>外观</span></div>
+                  <div className="section-head"><span>{t("props.appearance")}</span></div>
                   <div className="field">
-                    <span>填充颜色</span>
+                    <span>{t("props.fillColor")}</span>
                     <ColorField value={selectedElement.color} onChange={(color) => updateSelected({ color })} />
                   </div>
                   <div className="field">
-                    <span>不透明度</span>
+                    <span>{t("props.opacity")}</span>
                     <div className="row">
                       <input
                         type="range"
@@ -1645,7 +1817,7 @@ function App() {
                     </div>
                   </div>
 
-                  <div className="section-head"><span>层级</span></div>
+                  <div className="section-head"><span>{t("props.layerSection")}</span></div>
                   <div className="layer-controls">
                     <input
                       type="number"
@@ -1653,68 +1825,68 @@ function App() {
                       max={Math.max(1, orderedElements.length)}
                       value={selectedElement.zIndex + 1}
                       onChange={(event) => moveLayerToPosition(Number(event.target.value) || 1)}
-                      title="层级序号"
+                      title={t("props.layerNumberTitle")}
                     />
                     <div className="icon-row">
-                      <button className="icon-btn" onClick={() => moveLayer("top")} title="置顶">
+                      <button className="icon-btn" onClick={() => moveLayer("top")} title={t("props.layerTop")}>
                         <Icon name="arrowTop" size={13} />
                       </button>
-                      <button className="icon-btn" onClick={() => moveLayer("up")} title="上移一层">
+                      <button className="icon-btn" onClick={() => moveLayer("up")} title={t("props.layerUp")}>
                         <Icon name="arrowUp" size={13} />
                       </button>
-                      <button className="icon-btn" onClick={() => moveLayer("down")} title="下移一层">
+                      <button className="icon-btn" onClick={() => moveLayer("down")} title={t("props.layerDown")}>
                         <Icon name="arrowDown" size={13} />
                       </button>
-                      <button className="icon-btn" onClick={() => moveLayer("bottom")} title="置底">
+                      <button className="icon-btn" onClick={() => moveLayer("bottom")} title={t("props.layerBottom")}>
                         <Icon name="arrowBottom" size={13} />
                       </button>
                     </div>
                   </div>
-                  <label className="check-row" title="勾选后导出 GIA 时该图元强制置于最底层">
+                  <label className="check-row" title={t("props.bgTitle")}>
                     <input
                       type="checkbox"
                       checked={selectedElement.isBackground}
                       onChange={(event) => updateSelected({ isBackground: event.target.checked })}
                     />
                     <span>
-                      背景图元
-                      <em>导出 GIA 时强制置底</em>
+                      {t("props.bgLabel")}
+                      <em>{t("props.bgHint")}</em>
                     </span>
                   </label>
 
                   <div className="section-spacer" />
                   <button className="btn btn-danger-ghost btn-block" onClick={removeSelected}>
                     <Icon name="trash" size={13} />
-                    <span>删除图元</span>
+                    <span>{t("props.delete")}</span>
                   </button>
                 </>
               ) : (
                 <>
-                  <div className="section-head"><span>画布设置</span></div>
+                  <div className="section-head"><span>{t("props.canvasSettings")}</span></div>
                   <div className="grid-2">
-                    <NumField label="宽 W" value={Math.round(scene.canvas.width)} min={1} max={2048} onChange={(value) => updateCanvasSize("width", value)} />
-                    <NumField label="高 H" value={Math.round(scene.canvas.height)} min={1} max={2048} onChange={(value) => updateCanvasSize("height", value)} />
+                    <NumField label={t("props.widthW")} value={Math.round(scene.canvas.width)} min={1} max={2048} onChange={(value) => updateCanvasSize("width", value)} />
+                    <NumField label={t("props.heightH")} value={Math.round(scene.canvas.height)} min={1} max={2048} onChange={(value) => updateCanvasSize("height", value)} />
                   </div>
-                  <label className="check-row" title="修改宽度或高度时保持比例">
+                  <label className="check-row" title={t("props.lockAspectTitle")}>
                     <input type="checkbox" checked={lockAspectRatio} onChange={(event) => setLockAspectRatio(event.target.checked)} />
-                    <span>等比缩放</span>
+                    <span>{t("props.lockAspect")}</span>
                   </label>
                   <div className="field">
-                    <span>背景色</span>
+                    <span>{t("props.bgColor")}</span>
                     <ColorField value={scene.canvas.background} onChange={updateCanvasBackground} />
                   </div>
 
-                  <div className="section-head"><span>统计</span></div>
+                  <div className="section-head"><span>{t("props.stats")}</span></div>
                   <div className="stat-row">
-                    <span>图元数量</span>
+                    <span>{t("props.elementCount")}</span>
                     <strong>{orderedElements.length}</strong>
                   </div>
                   <div className="stat-row">
-                    <span>画布尺寸</span>
+                    <span>{t("props.canvasSize")}</span>
                     <strong>{Math.round(scene.canvas.width)} × {Math.round(scene.canvas.height)}</strong>
                   </div>
 
-                  <div className="tip-box">这里设置画布的尺寸与背景色；选中图元后切换到上方「图元」页可编辑其坐标、颜色与层级。吸附开关在画布顶部工具条上。</div>
+                  <div className="tip-box">{t("props.canvasTip")}</div>
                 </>
               )}
               </div>
@@ -1745,13 +1917,13 @@ function App() {
                 />
               </div>
               <div className="sidebar-footer sidebar-footer-row">
-                <button className="btn btn-ghost" onClick={() => refreshPreviews(scene)} title="以当前画布重新生成代码">
+                <button className="btn btn-ghost" onClick={() => refreshPreviews(scene)} title={t("code.refreshTitle")}>
                   <Icon name="rotateCw" size={13} />
-                  <span>刷新</span>
+                  <span>{t("code.refresh")}</span>
                 </button>
                 <button className="btn btn-primary" onClick={copyCurrentCode}>
                   <Icon name="copy" size={13} />
-                  <span>复制 {previewLabels[previewTab]}</span>
+                  <span>{t("code.copy", { label: previewLabels[previewTab] })}</span>
                 </button>
               </div>
             </>
@@ -1765,11 +1937,11 @@ function App() {
           <span>{status}</span>
         </div>
         <div className="status-right">
-          <span>图元 {orderedElements.length}</span>
+          <span>{t("statusbar.elements")} {orderedElements.length}</span>
           <i />
           <span>{Math.round(scene.canvas.width)} × {Math.round(scene.canvas.height)}</span>
           <i />
-          <span>QQ 群 1007538100</span>
+          <span>{t("statusbar.qq")}</span>
         </div>
       </footer>
 
@@ -1783,15 +1955,15 @@ function App() {
           onClick={(event) => event.stopPropagation()}
         >
           <div className="section-head">
-            <span>快捷编辑</span>
+            <span>{t("quick.edit")}</span>
             <em>{shapeLabels[quickEditElement.type]}</em>
           </div>
           <div className="field">
-            <span>填充颜色</span>
+            <span>{t("props.fillColor")}</span>
             <ColorField value={quickEditElement.color} onChange={(color) => updateQuickEdit({ color })} />
           </div>
           <div className="field">
-            <span>不透明度 {Math.round(quickEditElement.opacity * 100)}%</span>
+            <span>{t("props.opacity")} {Math.round(quickEditElement.opacity * 100)}%</span>
             <input
               type="range"
               min="0"
@@ -1802,8 +1974,8 @@ function App() {
             />
           </div>
           <div className="quick-scale-actions">
-            <button className="btn btn-ghost" onClick={() => scaleQuickEdit(0.9)}>缩小 10%</button>
-            <button className="btn btn-ghost" onClick={() => scaleQuickEdit(1.1)}>放大 10%</button>
+            <button className="btn btn-ghost" onClick={() => scaleQuickEdit(0.9)}>{t("quick.shrink")}</button>
+            <button className="btn btn-ghost" onClick={() => scaleQuickEdit(1.1)}>{t("quick.grow")}</button>
           </div>
         </div>
       ) : null}
@@ -1812,7 +1984,7 @@ function App() {
         <TourOverlay
           stepIndex={tourStep}
           onPrev={() => setTourStep((step) => (step === null ? null : Math.max(0, step - 1)))}
-          onNext={() => setTourStep((step) => (step === null ? null : Math.min(TOUR_STEPS.length - 1, step + 1)))}
+          onNext={() => setTourStep((step) => (step === null ? null : Math.min(TOUR_STEPS_COUNT - 1, step + 1)))}
           onSkip={closeTour}
         />
       ) : null}
@@ -1827,85 +1999,83 @@ type TourStepConfig = {
   body: React.ReactNode;
 };
 
-const TOUR_STEPS: TourStepConfig[] = [
-  {
-    title: "欢迎使用千星图片编辑器",
-    placement: "center",
-    body: (
-      <p>
-        这是一款面向游戏图片素材的可视化编辑器：导入模板或拖入基础形状，在画布上直接编排，
-        最后一键导出 <b>GIA / CSS / SVG / JSON</b>。接下来用 30 秒了解界面布局。
-      </p>
-    )
-  },
-  {
-    title: "左侧面板：素材从这里来",
-    target: "left-panel",
-    placement: "right",
-    body: (
-      <p>
-        <b>图形库</b>：把基础形状拖入画布（或双击添加）；<b>导入</b>：粘贴或上传 SVG / CSS / JSON 模板；
-        <b>图层</b>：查看并点选画布上的全部图元。
-      </p>
-    )
-  },
-  {
-    title: "画布：所见即所得",
-    target: "canvas",
-    placement: "center",
-    body: (
-      <p>
-        拖动图元即可移动；选中后用<b>右下角手柄缩放</b>、<b>顶部手柄旋转</b>；<b>右键</b>打开快捷编辑。
-        顶部悬浮条从左到右依次是：缩放、适应窗口、<b>吸附开关</b>（自动对齐其他图元）、
-        <b>网格</b>（坐标按像素取整）、<b>角度</b>（旋转步进）。拖动空白处平移视图。
-      </p>
-    )
-  },
-  {
-    title: "右侧：属性检查器与代码",
-    target: "right-panel",
-    placement: "left",
-    body: (
-      <p>
-        「属性」页顶部可在<b>图元 / 画布</b>之间切换：<b>画布</b>页设置尺寸与背景色（也可以直接点画布右下角的尺寸徽标）；
-        选中图元后自动切到<b>图元</b>页，精确调整坐标、颜色、透明度与层级。<b>代码</b>页可查看并一键复制 JSON / CSS / SVG。
-      </p>
-    )
-  },
-  {
-    title: "保存与导出",
-    target: "export",
-    placement: "bottom",
-    body: (
-      <p>
-        <kbd>Ctrl/⌘</kbd> + <kbd>S</kbd> 随时保存并应用；点击<b>导出</b>可下载 GIA、CSS、SVG、JSON，
-        文件名使用顶栏中央的素材组名称。撤销 / 重做按钮在顶栏左侧。
-      </p>
-    )
-  },
-  {
-    title: "常用快捷键",
-    placement: "center",
-    body: (
-      <>
-        <div className="kbd-grid">
-          <span><kbd>Ctrl/⌘</kbd> <kbd>S</kbd></span><span>保存并应用</span>
-          <span><kbd>Ctrl/⌘</kbd> <kbd>Z</kbd></span><span>撤销</span>
-          <span><kbd>Ctrl/⌘</kbd> <kbd>Shift</kbd> <kbd>Z</kbd></span><span>重做</span>
-          <span><kbd>Delete</kbd></span><span>删除选中图元</span>
-          <span><kbd>Shift</kbd> + 拖拽</span><span>轴锁定移动</span>
-          <span><kbd>Alt</kbd> + 拖拽</span><span>复制图元</span>
-          <span><kbd>Ctrl/⌘</kbd> + 旋转</span><span>临时关闭角度吸附</span>
-        </div>
-        <div className="tour-links">
-          <a href="https://github.com/1475505/Miliastra-image-editor-webui" target="_blank" rel="noreferrer">GitHub 仓库</a>
-          <a href="https://ugc.070077.xyz" target="_blank" rel="noreferrer">知识库文档</a>
-          <a href="https://space.bilibili.com/233587917" target="_blank" rel="noreferrer">作者 B 站</a>
-        </div>
-      </>
-    )
-  }
-];
+const TOUR_STEPS_COUNT = 6;
+
+function buildTourSteps(t: TranslateFn): TourStepConfig[] {
+  return [
+    {
+      title: t("tour.step1.title"),
+      placement: "center",
+      body: (
+        <p>
+          {t("tour.step1.body")}
+        </p>
+      )
+    },
+    {
+      title: t("tour.step2.title"),
+      target: "left-panel",
+      placement: "right",
+      body: (
+        <p>
+          {t("tour.step2.body")}
+        </p>
+      )
+    },
+    {
+      title: t("tour.step3.title"),
+      target: "canvas",
+      placement: "center",
+      body: (
+        <p>
+          {t("tour.step3.body")}
+        </p>
+      )
+    },
+    {
+      title: t("tour.step4.title"),
+      target: "right-panel",
+      placement: "left",
+      body: (
+        <p>
+          {t("tour.step4.body")}
+        </p>
+      )
+    },
+    {
+      title: t("tour.step5.title"),
+      target: "export",
+      placement: "bottom",
+      body: (
+        <p>
+          {t("tour.step5.body")}
+        </p>
+      )
+    },
+    {
+      title: t("tour.step6.title"),
+      placement: "center",
+      body: (
+        <>
+          <div className="kbd-grid">
+            <span><kbd>Ctrl/⌘</kbd> <kbd>S</kbd></span><span>{t("tour.step6.saveApply")}</span>
+            <span><kbd>Ctrl/⌘</kbd> <kbd>Z</kbd></span><span>{t("tour.step6.undo")}</span>
+            <span><kbd>Ctrl/⌘</kbd> <kbd>Shift</kbd> <kbd>Z</kbd></span><span>{t("tour.step6.redo")}</span>
+            <span><kbd>Delete</kbd></span><span>{t("tour.step6.deleteSelected")}</span>
+            <span><kbd>Shift</kbd> + {t("tour.step6.axisLock")}</span><span>{t("tour.step6.axisLock")}</span>
+            <span><kbd>Alt</kbd> + {t("tour.step6.duplicate")}</span><span>{t("tour.step6.duplicate")}</span>
+            <span><kbd>Ctrl/⌘</kbd> + {t("tour.step6.disableAngleSnap")}</span><span>{t("tour.step6.disableAngleSnap")}</span>
+          </div>
+          <div className="tour-links">
+            <a href="https://github.com/1475505/Miliastra-image-editor-webui" target="_blank" rel="noreferrer">{t("tour.step6.github")}</a>
+            <a href="https://ugc.070077.xyz" target="_blank" rel="noreferrer">{t("tour.step6.docs")}</a>
+            <a href="https://space.bilibili.com/233587917" target="_blank" rel="noreferrer">{t("tour.step6.bilibili")}</a>
+          </div>
+        </>
+      )
+    }
+  ];
+}
 
 function TourOverlay({
   stepIndex,
@@ -1918,8 +2088,10 @@ function TourOverlay({
   onNext: () => void;
   onSkip: () => void;
 }) {
-  const step = TOUR_STEPS[stepIndex] ?? TOUR_STEPS[0];
-  const total = TOUR_STEPS.length;
+  const { t } = useI18n();
+  const steps = useMemo(() => buildTourSteps(t), [t]);
+  const step = steps[stepIndex] ?? steps[0];
+  const total = steps.length;
   const isLast = stepIndex === total - 1;
   const rect = useTourRect(step.target, stepIndex);
 
@@ -1943,7 +2115,7 @@ function TourOverlay({
       <div className="tour-card" style={cardStyle} onClick={(event) => event.stopPropagation()}>
         <div className="tour-card-head">
           <span className="tour-badge">{stepIndex + 1} / {total}</span>
-          <button className="icon-btn" onClick={onSkip} title="关闭教程">
+          <button className="icon-btn" onClick={onSkip} title={t("tour.close")}>
             <Icon name="x" size={13} />
           </button>
         </div>
@@ -1951,21 +2123,21 @@ function TourOverlay({
         <div className="tour-body">{step.body}</div>
         <div className="tour-foot">
           <div className="tour-dots">
-            {TOUR_STEPS.map((_, index) => (
+            {steps.map((_, index) => (
               <i key={index} className={index === stepIndex ? "active" : ""} />
             ))}
           </div>
           <div className="tour-actions">
             {stepIndex > 0 ? (
-              <button className="btn btn-ghost" onClick={onPrev}>上一步</button>
+              <button className="btn btn-ghost" onClick={onPrev}>{t("tour.prev")}</button>
             ) : null}
             {isLast ? (
               <button className="btn btn-primary" onClick={onSkip}>
                 <Icon name="check" size={13} />
-                <span>开始使用</span>
+                <span>{t("tour.start")}</span>
               </button>
             ) : (
-              <button className="btn btn-primary" onClick={onNext}>下一步</button>
+              <button className="btn btn-primary" onClick={onNext}>{t("tour.next")}</button>
             )}
           </div>
         </div>
@@ -2059,6 +2231,7 @@ function NumField({
 }
 
 function ColorField({ value, onChange }: { value: string; onChange: (color: string) => void }) {
+  const { t } = useI18n();
   const [text, setText] = useState(() => formatColorCode(value));
 
   useEffect(() => {
@@ -2076,7 +2249,7 @@ function ColorField({ value, onChange }: { value: string; onChange: (color: stri
 
   return (
     <div className="color-field">
-      <label className="swatch" style={{ background: toColorInput(value) }} title="点击选择颜色">
+      <label className="swatch" style={{ background: toColorInput(value) }} title={t("color.pick")}>
         <input type="color" value={toColorInput(value)} onChange={(event) => onChange(event.target.value)} />
       </label>
       <div className="hex-wrap">
@@ -2098,7 +2271,7 @@ function ColorField({ value, onChange }: { value: string; onChange: (color: stri
   );
 }
 
-function buildSampleScene(): SceneDocument {
+function buildSampleScene(shapeLabels: Record<ShapeType, string>, sourceName: string): SceneDocument {
   const base = EMPTY_SCENE();
   const make = (
     type: ShapeType,
@@ -2136,7 +2309,7 @@ function buildSampleScene(): SceneDocument {
     ...base,
     canvas: { width: 300, height: 300, background: "#ffffff" },
     elements,
-    meta: { sourceType: "editor", sourceName: "示例场景", warnings: [] }
+    meta: { sourceType: "editor", sourceName, warnings: [] }
   };
 }
 
@@ -2145,7 +2318,7 @@ function ensureSceneLibrary(scene: SceneDocument): SceneDocument {
   return {
     ...scene,
     library: {
-      activeCategory: scene.library?.activeCategory || "基础形状",
+      activeCategory: scene.library?.activeCategory || "basic-shape",
       categories,
       baseShapePresets: normalizeBaseShapePresets(scene.library?.baseShapePresets),
       savedItems: scene.library?.savedItems || []
@@ -2164,6 +2337,19 @@ function ShapeGlyph({ type, color }: { type: ShapeType; color: string }) {
       {type === "ring" ? <div className="glyph-fill ring" style={{ background: ringGradient(color) }} /> : null}
     </div>
   );
+}
+
+async function readApiError(response: Response) {
+  const text = await response.text();
+  try {
+    const parsed = JSON.parse(text) as { detail?: string };
+    if (typeof parsed.detail === "string") {
+      return parsed.detail;
+    }
+  } catch {
+    /* 非 JSON 响应体，直接返回原文 */
+  }
+  return text;
 }
 
 async function fetchTextExport(endpoint: string, scene: SceneDocument) {
@@ -2333,12 +2519,12 @@ function getSceneSourceName(scene: SceneDocument) {
   return scene.meta.sourceName || `scene.${scene.meta.sourceType}`;
 }
 
-function getElementBaseName(element: SceneElement) {
+function getElementBaseName(element: SceneElement, shapeLabels: Record<ShapeType, string>) {
   return element.name || shapeLabels[element.type] || element.id;
 }
 
-function getElementDisplayName(element: SceneElement, scene: SceneDocument) {
-  return `L${element.zIndex + 1}-${getSceneSourceName(scene)}-${getElementBaseName(element)}`;
+function getElementDisplayName(element: SceneElement, scene: SceneDocument, shapeLabels: Record<ShapeType, string>) {
+  return `L${element.zIndex + 1}-${getSceneSourceName(scene)}-${getElementBaseName(element, shapeLabels)}`;
 }
 
 function isBasicShape(type: ShapeType) {

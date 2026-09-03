@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebMCP Test Harness</title>
+    <script>
+      // 规范兼容的 document.modelContext mock（W3C WebMCP CG Draft 子集）：
+      // registerTool(tool, {signal}) / getTools() / executeTool(name, args)
+      // 必须在应用 bundle（module，deferred）执行前安装。
+      (function () {
+        const toolMap = new Map();
+        const NAME_RE = /^[a-zA-Z0-9_.-]{1,128}$/;
+
+        const modelContext = {
+          registerTool(tool, options) {
+            return new Promise((resolve, reject) => {
+              try {
+                if (!tool || typeof tool !== "object") throw new TypeError("tool is required");
+                const name = tool.name;
+                if (typeof name !== "string" || !NAME_RE.test(name)) {
+                  throw new TypeError(`Invalid tool name: ${String(name)}`);
+                }
+                if (typeof tool.execute !== "function") {
+                  throw new TypeError("execute must be a function");
+                }
+                if (toolMap.has(name)) {
+                  throw new DOMException(`Tool "${name}" is already registered`, "InvalidStateError");
+                }
+                if (options && options.signal && options.signal.aborted) {
+                  resolve(undefined); // 已中止的注册直接跳过
+                  return;
+                }
+                toolMap.set(name, {
+                  name,
+                  title: tool.title ?? null,
+                  description: tool.description ?? "",
+                  inputSchema: tool.inputSchema ?? { type: "object", properties: {} },
+                  annotations: tool.annotations ?? null,
+                  execute: tool.execute
+                });
+                if (options && options.signal) {
+                  options.signal.addEventListener(
+                    "abort",
+                    () => toolMap.delete(name),
+                    { once: true }
+                  );
+                }
+                window.__webmcpRegistry = Array.from(toolMap.keys());
+                resolve(undefined);
+              } catch (error) {
+                reject(error);
+              }
+            });
+          },
+          getTools() {
+            return Promise.resolve(
+              Array.from(toolMap.values()).map((t) => ({
+                name: t.name,
+                title: t.title,
+                description: t.description,
+                inputSchema: t.inputSchema,
+                annotations: t.annotations
+              }))
+            );
+          },
+          executeTool(name, args, options) {
+            return new Promise((resolve, reject) => {
+              const tool = toolMap.get(name);
+              if (!tool) {
+                reject(new DOMException(`Tool "${name}" not found`, "NotFoundError"));
+                return;
+              }
+              Promise.resolve()
+                .then(() => tool.execute(args ?? {}, { signal: options && options.signal }))
+                .then(resolve, reject);
+            });
+          }
+        };
+
+        Object.defineProperty(document, "modelContext", {
+          value: modelContext,
+          configurable: true
+        });
+        window.__webmcpRegistry = [];
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module">
+      // 从生产 index.html 动态提取资源引用，避免硬编码 hash 文件名
+      const html = await fetch("/?_nocache=" + Date.now()).then((r) => r.text());
+      for (const m of html.matchAll(/<link[^>]+href="(\/assets\/[^"]+\.css)"[^>]*>/g)) {
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = m[1];
+        document.head.appendChild(link);
+      }
+      const scripts = [...html.matchAll(/src="(\/assets\/[^"]+\.js)"/g)].map((m) => m[1]);
+      for (const src of scripts) {
+        await import(src);
+      }
+      window.__webmcpHarnessReady = true;
+    </script>
+  </body>
+</html>
