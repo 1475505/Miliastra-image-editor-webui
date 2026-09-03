@@ -456,7 +456,7 @@ def parse_json_scene(content: str) -> SceneDocumentModel:
     try:
         payload = json.loads(content)
     except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail=f"JSON 解析失败: {exc.msg}") from exc
+        raise HTTPException(status_code=400, detail=f"JSON parse failed: {exc.msg}") from exc
 
     warnings: list[str] = []
     if isinstance(payload, dict) and "scene" in payload:
@@ -484,7 +484,7 @@ def parse_json_scene(content: str) -> SceneDocumentModel:
             fit_scene_canvas_to_elements(
                 scene,
                 expand_only=False,
-                warning_message="JSON 未提供画布尺寸，已根据图元范围自动拟合画布。",
+                warning_message="JSON did not provide a canvas size; the canvas was auto-fitted to the element bounds.",
             )
         )
 
@@ -499,16 +499,16 @@ def parse_json_scene(content: str) -> SceneDocumentModel:
             fit_scene_canvas_to_elements(
                 scene,
                 expand_only=False,
-                warning_message="JSON 未提供画布尺寸，已根据图元范围自动拟合画布。",
+                warning_message="JSON did not provide a canvas size; the canvas was auto-fitted to the element bounds.",
             )
         )
 
-    raise HTTPException(status_code=400, detail="不支持的 JSON 结构，期望为 SceneDocument 或 elements 数组")
+    raise HTTPException(status_code=400, detail="Unsupported JSON structure; expected a SceneDocument or an elements array")
 
 
 def convert_basic_json_element(item: dict, index: int) -> SceneElementModel:
     if not isinstance(item, dict):
-        raise HTTPException(status_code=400, detail="JSON elements 中存在非对象元素")
+        raise HTTPException(status_code=400, detail="JSON elements contains a non-object item")
 
     shape_type = item.get("type", "rectangle")
     if shape_type not in SHAPE_TYPES:
@@ -541,7 +541,7 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
         width = parse_px(find_css_value(body, "width"), DEFAULT_CANVAS_WIDTH)
         height = parse_px(find_css_value(body, "height"), DEFAULT_CANVAS_HEIGHT)
         if find_css_value(body, "background") is not None or find_css_value(body, "background-color") is not None:
-            warnings.append("已忽略 .shaper-container 的背景颜色；如需背景，请使用铺满画布的矩形图元表示。")
+            warnings.append("Ignored the .shaper-container background color; use a canvas-filling rectangle element for backgrounds.")
     pattern = re.compile(r"(?P<selector>[^{}]+)\{(?P<body>.*?)\}", re.S)
     elements: list[SceneElementModel] = []
     for match in pattern.finditer(content):
@@ -621,7 +621,7 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
         )
 
     if not elements:
-        raise HTTPException(status_code=400, detail="没有从 CSS 中解析出任何可定位图元")
+        raise HTTPException(status_code=400, detail="No positionable elements could be parsed from the CSS")
 
     scene = SceneDocumentModel(
         canvas=CanvasModel(width=width, height=height, background=background),
@@ -630,7 +630,7 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
     )
 
     if not canvas_match:
-        scene.meta.warnings.append("未找到 .shaper-container，已根据图元范围自动拟合画布尺寸。")
+        scene.meta.warnings.append(".shaper-container not found; the canvas size was auto-fitted to the element bounds.")
         return normalize_scene(fit_scene_canvas_to_elements(scene, expand_only=False))
 
     has_overflow = False
@@ -644,7 +644,7 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
         scene = fit_scene_canvas_to_elements(
             scene,
             expand_only=True,
-            warning_message="检测到部分图元超出 CSS 容器范围，已自动扩展画布以容纳全部图元。",
+            warning_message="Some elements exceeded the CSS container bounds; the canvas was auto-expanded to fit all elements.",
         )
 
     return normalize_scene(scene)
@@ -655,7 +655,7 @@ def parse_svg_scene(content: str) -> SceneDocumentModel:
     try:
         root = ET.fromstring(content)
     except ET.ParseError as exc:
-        raise HTTPException(status_code=400, detail=f"SVG 解析失败: {exc}") from exc
+        raise HTTPException(status_code=400, detail=f"SVG parse failed: {exc}") from exc
 
     width = parse_svg_number(root.attrib.get("width"), DEFAULT_CANVAS_WIDTH)
     height = parse_svg_number(root.attrib.get("height"), DEFAULT_CANVAS_HEIGHT)
@@ -763,9 +763,9 @@ def parse_svg_scene(content: str) -> SceneDocumentModel:
             unsupported_tags.append(tag)
 
     if unsupported_tags:
-        warnings.append(f"部分 SVG 节点未导入: {', '.join(sorted(set(unsupported_tags)))}")
+        warnings.append(f"Some SVG nodes were not imported: {', '.join(sorted(set(unsupported_tags)))}")
     if not elements:
-        raise HTTPException(status_code=400, detail="SVG 中没有可导入的基础图形")
+        raise HTTPException(status_code=400, detail="No importable basic shapes found in the SVG")
 
     scene = SceneDocumentModel(
         canvas=CanvasModel(width=width, height=height, background=DEFAULT_CANVAS_BACKGROUND),
@@ -925,7 +925,7 @@ def scene_to_gia_document(scene: SceneDocumentModel, group_name: str | None = No
         )
 
     if not elements:
-        raise HTTPException(status_code=400, detail="当前场景没有可导出的 GIA 基础图元")
+        raise HTTPException(status_code=400, detail="The current scene has no GIA-exportable basic elements")
 
     return {
         "group_name": normalize_gia_group_name(group_name),
@@ -935,11 +935,11 @@ def scene_to_gia_document(scene: SceneDocumentModel, group_name: str | None = No
 
 def convert_scene_to_gia_bytes(gia_json: dict) -> bytes:
     if not GIA_PY_PATH.exists() or not GIA_TEMPLATE_PATH.exists():
-        raise HTTPException(status_code=500, detail="未找到外部 GIA 导出脚本或模板文件")
+        raise HTTPException(status_code=500, detail="External GIA export script or template file not found")
 
     spec = importlib.util.spec_from_file_location("miliastra_gia_json_to_gia", GIA_PY_PATH)
     if spec is None or spec.loader is None:
-        raise HTTPException(status_code=500, detail="无法加载 GIA 导出模块")
+        raise HTTPException(status_code=500, detail="Failed to load the GIA export module")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.convert_json_to_gia_bytes(
