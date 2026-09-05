@@ -1,0 +1,68 @@
+name: Sync Skills to SkillHub
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "skills/miliastra-image-css-builder/**"
+      - "skills/miliastra-image-svg-builder/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish-skillhub:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - skill_dir: skills/miliastra-image-css-builder
+            namespace: user_3a6be892
+            visibility: public
+          - skill_dir: skills/miliastra-image-svg-builder
+            namespace: user_3a6be892
+            visibility: public
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check if this skill changed (push only)
+        id: changed
+        if: github.event_name == 'push'
+        run: |
+          if git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" -- "${{ matrix.skill_dir }}" | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to SkillHub
+        if: |
+          github.event_name == 'workflow_dispatch' ||
+          steps.changed.outputs.changed == 'true'
+        env:
+          SKILLHUB_REGISTRY: ${{ secrets.SKILLHUB_REGISTRY != '' && secrets.SKILLHUB_REGISTRY || 'https://skillhub.cn' }}
+          SKILLHUB_TOKEN: ${{ secrets.SKILLHUB_TOKEN }}
+        run: |
+          if [ -z "${SKILLHUB_TOKEN}" ]; then
+            echo "::error title=Missing Secret::Please set SKILLHUB_TOKEN in repository secrets."
+            exit 1
+          fi
+          npx --yes @astron-team/skillhub@latest \
+            publish "${{ matrix.skill_dir }}" \
+            --namespace "${{ matrix.namespace }}" \
+            --visibility "${{ matrix.visibility }}" \
+            --registry "${SKILLHUB_REGISTRY}" \
+            --token "${SKILLHUB_TOKEN}" \
+            --json
