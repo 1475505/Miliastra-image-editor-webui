@@ -21,21 +21,12 @@ jobs:
       matrix:
         include:
           - skill_dir: skills/miliastra-image-css-builder
-            namespace: user_3a6be892
-            visibility: public
           - skill_dir: skills/miliastra-image-svg-builder
-            namespace: user_3a6be892
-            visibility: public
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 2
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
 
       - name: Check if this skill changed (push only)
         id: changed
@@ -47,22 +38,35 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Publish to SkillHub
+      - name: Install SkillHub CLI
+        if: |
+          github.event_name == 'workflow_dispatch' ||
+          steps.changed.outputs.changed == 'true'
+        run: |
+          curl -fsSL https://skillhub.cn/install/install.sh | bash -s -- --cli-only
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Login to SkillHub
         if: |
           github.event_name == 'workflow_dispatch' ||
           steps.changed.outputs.changed == 'true'
         env:
-          SKILLHUB_REGISTRY: ${{ secrets.SKILLHUB_REGISTRY != '' && secrets.SKILLHUB_REGISTRY || 'https://skillhub.cn' }}
+          SKILLHUB_HOST: ${{ vars.SKILLHUB_REGISTRY != '' && vars.SKILLHUB_REGISTRY || secrets.SKILLHUB_REGISTRY != '' && secrets.SKILLHUB_REGISTRY || 'https://api.skillhub.cn' }}
           SKILLHUB_TOKEN: ${{ secrets.SKILLHUB_TOKEN }}
         run: |
           if [ -z "${SKILLHUB_TOKEN}" ]; then
             echo "::error title=Missing Secret::Please set SKILLHUB_TOKEN in repository secrets."
             exit 1
           fi
-          npx --yes @astron-team/skillhub@latest \
-            publish "${{ matrix.skill_dir }}" \
-            --namespace "${{ matrix.namespace }}" \
-            --visibility "${{ matrix.visibility }}" \
-            --registry "${SKILLHUB_REGISTRY}" \
-            --token "${SKILLHUB_TOKEN}" \
-            --json
+          skillhub login \
+            --key "${SKILLHUB_TOKEN}" \
+            --host "${SKILLHUB_HOST}"
+          skillhub auth whoami
+
+      - name: Publish to SkillHub
+        if: |
+          github.event_name == 'workflow_dispatch' ||
+          steps.changed.outputs.changed == 'true'
+        run: |
+          skillhub publish "${{ matrix.skill_dir }}" \
+            --changelog "Sync from GitHub commit ${GITHUB_SHA}"
