@@ -17,7 +17,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from PIL import Image, ImageColor, ImageDraw
+from PIL import Image, ImageColor, ImageDraw, ImageFont
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 STATIC_DIR = ROOT_DIR / "backend" / "app" / "static"
@@ -54,6 +54,7 @@ SHAPE_TYPES = {
     "four_point_star",
     "five_point_star",
     "ring",
+    "textbox",
     "other",
 }
 GIA_SHAPE_TYPES = {
@@ -63,7 +64,12 @@ GIA_SHAPE_TYPES = {
     "four_point_star",
     "five_point_star",
     "ring",
+    "textbox",
 }
+AlignH = Literal["left", "center", "right"]
+AlignV = Literal["top", "middle", "bottom"]
+AnchorType = Literal["center", "custom"]
+TEXTBOX_STYLE_ID = 260326
 LIBRARY_CATEGORY_DEFINITIONS = [
     {"key": "function-icon-mono", "label": "功能图标-单色", "supported": False},
     {"key": "function-icon-color", "label": "功能图标-彩色", "supported": False},
@@ -94,6 +100,7 @@ def default_base_shape_presets() -> list["LibraryBaseShapePresetModel"]:
         LibraryBaseShapePresetModel(type="four_point_star", color="#0f4c81", width=90, height=90),
         LibraryBaseShapePresetModel(type="five_point_star", color="#be123c", width=92, height=92),
         LibraryBaseShapePresetModel(type="ring", color="#f59e0b", width=92, height=92),
+        LibraryBaseShapePresetModel(type="textbox", color="#ffffff", width=180, height=40),
     ]
 
 
@@ -119,6 +126,32 @@ class LibraryCategoryModel(BaseModel):
     supported: bool = False
 
 
+class TextBoxModel(BaseModel):
+    text: str = ""
+    fontSize: int = 20
+    autoSize: bool = True
+    minFontSize: int = 12
+    textColor: str = "#ffffff"
+    textOpacity: float = 1.0
+    bgColor: str = "#ffffff"
+    bgOpacity: float = 0.0
+    outlineEnabled: bool = True
+    outlineColor: str = "#333333"
+    outlineOpacity: float = 0.2
+    alignH: AlignH = "left"
+    alignV: AlignV = "top"
+    anchorType: AnchorType = "center"
+    visible: bool = True
+    scaleX: float = 1.0
+    scaleY: float = 1.0
+    anchorMinX: float = 0.5
+    anchorMinY: float = 0.5
+    anchorMaxX: float = 0.5
+    anchorMaxY: float = 0.5
+    pivotX: float = 0.5
+    pivotY: float = 0.5
+
+
 class SceneElementModel(BaseModel):
     id: str
     name: str = ""
@@ -132,6 +165,7 @@ class SceneElementModel(BaseModel):
     opacity: float = 1.0
     zIndex: int = 0
     isBackground: bool = False
+    textBox: TextBoxModel | None = None
 
 
 class LibraryBaseShapePresetModel(BaseModel):
@@ -243,6 +277,82 @@ def export_gia(request: ExportRequest) -> Response:
     return Response(content=gia_bytes, media_type="application/octet-stream", headers=headers)
 
 
+def default_textbox() -> TextBoxModel:
+    return TextBoxModel()
+
+
+def clamp01(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def normalize_align_h(value: str | None) -> AlignH:
+    if value in ("left", "center", "right"):
+        return value
+    return "center"
+
+
+def normalize_align_v(value: str | None) -> AlignV:
+    if value in ("top", "middle", "bottom"):
+        return value
+    return "middle"
+
+
+def normalize_anchor_type(value: str | None) -> AnchorType:
+    if value == "custom":
+        return "custom"
+    return "center"
+
+
+def normalize_textbox(text_box: TextBoxModel | None, *, color: str, opacity: float) -> TextBoxModel | None:
+    if text_box is None:
+        return None
+    text_color = normalize_color(text_box.textColor or color)
+    text_opacity = clamp01(text_box.textOpacity if text_box.textOpacity is not None else opacity)
+    return TextBoxModel(
+        text=text_box.text if text_box.text is not None else "文本",
+        fontSize=max(1, int(text_box.fontSize or 20)),
+        autoSize=bool(text_box.autoSize),
+        minFontSize=max(1, int(text_box.minFontSize or 12)),
+        textColor=text_color,
+        textOpacity=text_opacity,
+        bgColor=normalize_color(text_box.bgColor or "#ffffff"),
+        bgOpacity=clamp01(text_box.bgOpacity),
+        outlineEnabled=bool(text_box.outlineEnabled),
+        outlineColor=normalize_color(text_box.outlineColor or "#111111"),
+        outlineOpacity=clamp01(text_box.outlineOpacity),
+        alignH=normalize_align_h(text_box.alignH),
+        alignV=normalize_align_v(text_box.alignV),
+        anchorType=normalize_anchor_type(getattr(text_box, "anchorType", None)),
+        visible=bool(text_box.visible),
+        scaleX=float(text_box.scaleX or 1.0),
+        scaleY=float(text_box.scaleY or 1.0),
+        anchorMinX=0.5 if normalize_anchor_type(getattr(text_box, "anchorType", None)) == "center" else float(text_box.anchorMinX),
+        anchorMinY=0.5 if normalize_anchor_type(getattr(text_box, "anchorType", None)) == "center" else float(text_box.anchorMinY),
+        anchorMaxX=0.5 if normalize_anchor_type(getattr(text_box, "anchorType", None)) == "center" else float(text_box.anchorMaxX),
+        anchorMaxY=0.5 if normalize_anchor_type(getattr(text_box, "anchorType", None)) == "center" else float(text_box.anchorMaxY),
+        pivotX=float(text_box.pivotX if text_box.pivotX is not None else 0.5),
+        pivotY=float(text_box.pivotY if text_box.pivotY is not None else 0.5),
+    )
+
+
+def ensure_textbox(element: SceneElementModel) -> TextBoxModel | None:
+    if element.type != "textbox":
+        return None
+    if element.textBox is not None:
+        return normalize_textbox(element.textBox, color=element.color, opacity=element.opacity)
+    return normalize_textbox(
+        TextBoxModel(textColor=element.color, textOpacity=element.opacity),
+        color=element.color,
+        opacity=element.opacity,
+    )
+
+
+def copy_element(element: SceneElementModel, **overrides) -> SceneElementModel:
+    payload = element.model_dump()
+    payload.update(overrides)
+    return SceneElementModel.model_validate(payload)
+
+
 def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
     canvas = CanvasModel(
         width=max(1, scene.canvas.width),
@@ -254,6 +364,28 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
 
     for index, element in enumerate(sorted_elements):
         shape_type = element.type if element.type in SHAPE_TYPES else "rectangle"
+        color = normalize_color(element.color)
+        opacity = clamp01(element.opacity)
+        text_box = ensure_textbox(
+            SceneElementModel(
+                id=element.id or new_id(),
+                name=element.name or "",
+                type=shape_type,
+                x=element.x,
+                y=element.y,
+                width=max(1.0, element.width),
+                height=max(1.0, element.height),
+                rotation=normalize_rotation(element.rotation),
+                color=color,
+                opacity=opacity,
+                zIndex=index,
+                isBackground=element.isBackground,
+                textBox=element.textBox,
+            )
+        )
+        if shape_type == "textbox" and text_box is not None:
+            color = text_box.textColor
+            opacity = text_box.textOpacity
         elements.append(
             SceneElementModel(
                 id=element.id or new_id(),
@@ -264,10 +396,11 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
                 width=max(1.0, element.width),
                 height=max(1.0, element.height),
                 rotation=normalize_rotation(element.rotation),
-                color=normalize_color(element.color),
-                opacity=max(0.0, min(1.0, element.opacity)),
+                color=color,
+                opacity=opacity,
                 zIndex=index,
                 isBackground=element.isBackground,
+                textBox=text_box,
             )
         )
 
@@ -342,20 +475,7 @@ def fit_scene_canvas_to_elements(
         return scene
 
     shifted_elements = [
-        SceneElementModel(
-            id=element.id,
-            name=element.name,
-            type=element.type,
-            x=element.x + shift_x,
-            y=element.y + shift_y,
-            width=element.width,
-            height=element.height,
-            rotation=element.rotation,
-            color=element.color,
-            opacity=element.opacity,
-            zIndex=element.zIndex,
-            isBackground=element.isBackground,
-        )
+        copy_element(element, x=element.x + shift_x, y=element.y + shift_y)
         for element in scene.elements
     ]
 
@@ -421,6 +541,7 @@ def normalize_library(library: SceneLibraryModel) -> SceneLibraryModel:
                     opacity=max(0.0, min(1.0, item.element.opacity)),
                     zIndex=max(0, item.element.zIndex),
                     isBackground=item.element.isBackground,
+                    textBox=ensure_textbox(item.element) if shape_type == "textbox" else None,
                 ),
             )
         )
@@ -514,6 +635,21 @@ def convert_basic_json_element(item: dict, index: int) -> SceneElementModel:
     if shape_type not in SHAPE_TYPES:
         shape_type = "rectangle"
 
+    color = normalize_color(str(item.get("color", "#4f46e5")))
+    opacity = float(item.get("opacity", 1))
+    text_box = None
+    if shape_type == "textbox":
+        raw_box = item.get("textBox") or item.get("textbox") or {}
+        if not isinstance(raw_box, dict):
+            raw_box = {}
+        text_box = TextBoxModel.model_validate(
+            {
+                "text": item.get("text", raw_box.get("text", "文本")),
+                **raw_box,
+            }
+        )
+        color = normalize_color(text_box.textColor or color)
+        opacity = text_box.textOpacity
     return SceneElementModel(
         id=str(item.get("id") or new_id()),
         name=str(item.get("name", "")),
@@ -523,10 +659,11 @@ def convert_basic_json_element(item: dict, index: int) -> SceneElementModel:
         width=float(item.get("width", item.get("w", DEFAULT_SHAPE_SIZE))),
         height=float(item.get("height", item.get("h", DEFAULT_SHAPE_SIZE))),
         rotation=float(item.get("rotation", 0)),
-        color=normalize_color(str(item.get("color", "#4f46e5"))),
-        opacity=float(item.get("opacity", 1)),
+        color=color,
+        opacity=opacity,
         zIndex=int(item.get("zIndex", index)),
         isBackground=bool(item.get("isBackground", False)),
+        textBox=text_box,
     )
 
 
@@ -567,6 +704,67 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
         rotation = parse_rotation(find_css_value(body, "transform") or "")
         border_radius = (find_css_value(body, "border-radius") or "").strip()
         clip_path = normalize_clip_path(find_css_value(body, "clip-path"))
+        declared_type = (find_css_value(body, "-miliastra-type") or "").strip().lower()
+        text_content = parse_css_quoted(find_css_value(body, "-miliastra-text") or find_css_value(body, "content"))
+        if declared_type == "textbox" or text_content is not None:
+            shape_type = "textbox"
+            shape_width = parse_px(find_css_value(body, "width"), DEFAULT_SHAPE_SIZE)
+            shape_height = parse_px(find_css_value(body, "height"), DEFAULT_SHAPE_SIZE)
+            shape_x = parse_px(find_css_value(body, "left"), width / 2)
+            shape_y = parse_px(find_css_value(body, "top"), height / 2)
+            text_color = normalize_color(find_css_value(body, "color") or color)
+            text_opacity = parse_float(find_css_value(body, "-miliastra-text-opacity"), opacity)
+            bg_color = normalize_color(resolve_css_fill_color(body, "#ffffff"))
+            bg_opacity = parse_float(find_css_value(body, "-miliastra-bg-opacity"), 1.0)
+            outline_color = normalize_color(find_css_value(body, "-miliastra-outline-color") or "#111111")
+            outline_opacity = parse_float(find_css_value(body, "-miliastra-outline-opacity"), 1.0)
+            outline_enabled = parse_css_bool(find_css_value(body, "-miliastra-outline"), True)
+            auto_size = parse_css_bool(find_css_value(body, "-miliastra-auto-size"), True)
+            align_h = css_text_align_h(find_css_value(body, "text-align"))
+            align_v = css_text_align_v(find_css_value(body, "-miliastra-align-v"))
+            text_box = TextBoxModel(
+                text=text_content or "文本",
+                fontSize=int(parse_px(find_css_value(body, "font-size"), 20)),
+                autoSize=auto_size,
+                minFontSize=int(parse_px(find_css_value(body, "-miliastra-min-font-size"), 12)),
+                textColor=text_color,
+                textOpacity=clamp01(text_opacity),
+                bgColor=bg_color,
+                bgOpacity=clamp01(bg_opacity),
+                outlineEnabled=outline_enabled,
+                outlineColor=outline_color,
+                outlineOpacity=clamp01(outline_opacity),
+                alignH=align_h,
+                alignV=align_v,
+                anchorType=normalize_anchor_type(find_css_value(body, "-miliastra-anchor-type")),
+                visible=parse_css_bool(find_css_value(body, "-miliastra-visible"), True),
+                scaleX=parse_float(find_css_value(body, "-miliastra-scale-x"), 1.0),
+                scaleY=parse_float(find_css_value(body, "-miliastra-scale-y"), 1.0),
+                anchorMinX=parse_float(find_css_value(body, "-miliastra-anchor-min-x"), 0.5),
+                anchorMinY=parse_float(find_css_value(body, "-miliastra-anchor-min-y"), 0.5),
+                anchorMaxX=parse_float(find_css_value(body, "-miliastra-anchor-max-x"), 0.5),
+                anchorMaxY=parse_float(find_css_value(body, "-miliastra-anchor-max-y"), 0.5),
+            )
+            color = text_box.textColor
+            opacity = text_box.textOpacity
+            elements.append(
+                SceneElementModel(
+                    id=f"css-{index}",
+                    name=selector_to_element_name(selector),
+                    type=shape_type,
+                    x=shape_x,
+                    y=shape_y,
+                    width=shape_width,
+                    height=shape_height,
+                    rotation=rotation,
+                    color=color,
+                    opacity=opacity,
+                    zIndex=int(parse_float(find_css_value(body, "z-index"), index)),
+                    isBackground=False,
+                    textBox=text_box,
+                )
+            )
+            continue
         if triangle_border is not None:
             shape_type = "triangle"
             shape_width = triangle_border["width"]
@@ -735,6 +933,35 @@ def parse_svg_scene(content: str) -> SceneDocumentModel:
                     isBackground=index == 0,
                 )
             )
+        elif tag == "text":
+            x = parse_svg_number(node.attrib.get("x"), width / 2)
+            y = parse_svg_number(node.attrib.get("y"), height / 2)
+            font_size = parse_svg_number(node.attrib.get("font-size"), 20)
+            content = "".join(node.itertext()).strip() or "文本"
+            text_color = normalize_color(fill)
+            text_box = TextBoxModel(
+                text=content,
+                fontSize=max(1, int(font_size)),
+                textColor=text_color,
+                textOpacity=opacity,
+            )
+            elements.append(
+                SceneElementModel(
+                    id=new_id(),
+                    name="textbox",
+                    type="textbox",
+                    x=x,
+                    y=y,
+                    width=max(font_size * max(1, len(content)) * 0.6, 40),
+                    height=max(font_size * 1.4, 24),
+                    rotation=0,
+                    color=text_color,
+                    opacity=opacity,
+                    zIndex=index,
+                    isBackground=False,
+                    textBox=text_box,
+                )
+            )
         elif tag == "polygon":
             points = parse_polygon_points(node.attrib.get("points", ""))
             if len(points) == 3:
@@ -801,7 +1028,35 @@ def scene_to_css(scene: SceneDocumentModel) -> str:
                 f"  height: {element.height:.2f}px;",
             ]
         )
-        if element.type == "ring":
+        if element.type == "textbox":
+            box = ensure_textbox(element) or default_textbox()
+            lines.extend(
+                [
+                    "  -miliastra-type: textbox;",
+                    f"  -miliastra-text: {css_quote(box.text)};",
+                    f"  font-size: {box.fontSize}px;",
+                    f"  color: {box.textColor};",
+                    f"  background: {box.bgColor};",
+                    f"  text-align: {box.alignH};",
+                    f"  -miliastra-align-v: {box.alignV};",
+                    f"  -miliastra-auto-size: {'true' if box.autoSize else 'false'};",
+                    f"  -miliastra-min-font-size: {box.minFontSize}px;",
+                    f"  -miliastra-text-opacity: {box.textOpacity:.4f};",
+                    f"  -miliastra-bg-opacity: {box.bgOpacity:.4f};",
+                    f"  -miliastra-outline: {'true' if box.outlineEnabled else 'false'};",
+                    f"  -miliastra-outline-color: {box.outlineColor};",
+                    f"  -miliastra-outline-opacity: {box.outlineOpacity:.4f};",
+                    f"  -miliastra-visible: {'true' if box.visible else 'false'};",
+                    f"  -miliastra-scale-x: {box.scaleX:.4f};",
+                    f"  -miliastra-scale-y: {box.scaleY:.4f};",
+                    f"  -miliastra-anchor-type: {box.anchorType};",
+                    f"  -miliastra-anchor-min-x: {box.anchorMinX:.4f};",
+                    f"  -miliastra-anchor-min-y: {box.anchorMinY:.4f};",
+                    f"  -miliastra-anchor-max-x: {box.anchorMaxX:.4f};",
+                    f"  -miliastra-anchor-max-y: {box.anchorMaxY:.4f};",
+                ]
+            )
+        elif element.type == "ring":
             lines.append(
                 f"  background: radial-gradient(closest-side, transparent 79.5%, {element.color} 80.5%, {element.color} 100%, transparent 100%);"
             )
@@ -840,6 +1095,34 @@ def scene_to_svg(scene: SceneDocumentModel) -> str:
             continue
         transform = f'rotate({-element.rotation:.2f} {element.x:.2f} {element.y:.2f})'
         opacity = f'{element.opacity:.4f}'
+        if element.type == "textbox":
+            box = ensure_textbox(element) or default_textbox()
+            anchor = {"left": "start", "center": "middle", "right": "end"}[box.alignH]
+            baseline = {"top": "hanging", "middle": "middle", "bottom": "text-after-edge"}[box.alignV]
+            tspans = []
+            for span in parse_rich_text(box.text or ""):
+                escaped = (
+                    span["text"].replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                )
+                attrs = []
+                if span.get("color"):
+                    attrs.append(f'fill="{span["color"]}"')
+                if span.get("italic"):
+                    attrs.append('font-style="italic"')
+                if span.get("size"):
+                    attrs.append(f'font-size="{span["size"]}"')
+                attr = (" " + " ".join(attrs)) if attrs else ""
+                tspans.append(f"<tspan{attr}>{escaped}</tspan>")
+            inner = "".join(tspans) if tspans else ""
+            parts.append(
+                f'<rect x="{element.x - element.width / 2:.2f}" y="{element.y - element.height / 2:.2f}" width="{element.width:.2f}" height="{element.height:.2f}" fill="{box.bgColor}" fill-opacity="{box.bgOpacity:.4f}" transform="{transform}" />'
+            )
+            parts.append(
+                f'<text x="{element.x:.2f}" y="{element.y:.2f}" fill="{box.textColor}" fill-opacity="{box.textOpacity:.4f}" font-size="{box.fontSize}" text-anchor="{anchor}" dominant-baseline="{baseline}" transform="{transform}">{inner}</text>'
+            )
+            continue
         if element.type == "ellipse":
             parts.append(
                 f'<ellipse cx="{element.x:.2f}" cy="{element.y:.2f}" rx="{element.width / 2:.2f}" ry="{element.height / 2:.2f}" fill="{element.color}" opacity="{opacity}" transform="{transform}" />'
@@ -884,6 +1167,8 @@ def scene_to_png_bytes(scene: SceneDocumentModel) -> bytes:
             draw_polygon(draw, star_points(element.x, element.y, element.width, element.height, 5, 0.42), rgba, element.rotation)
         elif element.type == "ring":
             draw_ring(image, element, rgba)
+        elif element.type == "textbox":
+            draw_textbox(image, draw, element)
         else:
             draw_rect(draw, element, rgba)
 
@@ -908,21 +1193,42 @@ def scene_to_gia_document(scene: SceneDocumentModel, group_name: str | None = No
         else:
             size = {"width": round(element.width, 4), "height": round(element.height, 4)}
 
-        elements.append(
-            {
-                "type": element.type,
-                "relative": {
-                    "x": round(element.x - canvas_center_x, 4),
-                    "y": round(canvas_center_y - element.y, 4),
-                },
-                "size": size,
-                "rotation": {"x": 0, "y": 0, "z": round(element.rotation, 4)},
-                "image_asset_ref": IMAGE_ASSET_REFS[element.type],
-                "packed_color": to_packed_argb(element.color, element.opacity),
-                "name": str(element.zIndex + 1),
-                "is_background": element.isBackground,
+        payload: dict = {
+            "type": element.type,
+            "relative": {
+                "x": round(element.x - canvas_center_x, 4),
+                "y": round(canvas_center_y - element.y, 4),
+            },
+            "size": size,
+            "rotation": {"x": 0, "y": 0, "z": round(element.rotation, 4)},
+            "name": (element.name if element.type == "textbox" else str(element.zIndex + 1)),
+            "is_background": element.isBackground,
+        }
+        if element.type == "textbox":
+            box = ensure_textbox(element) or default_textbox()
+            payload["scale"] = {"x": round(box.scaleX, 4), "y": round(box.scaleY, 4)}
+            payload["anchor_min"] = {"x": round(box.anchorMinX, 4), "y": round(box.anchorMinY, 4)}
+            payload["anchor_max"] = {"x": round(box.anchorMaxX, 4), "y": round(box.anchorMaxY, 4)}
+            payload["pivot"] = {"x": round(box.pivotX, 4), "y": round(box.pivotY, 4)}
+            payload["textbox"] = {
+                "text": box.text,
+                "font_size": box.fontSize,
+                "auto_size": box.autoSize,
+                "min_font_size": box.minFontSize,
+                "outline_enabled": box.outlineEnabled,
+                "visible": box.visible,
+                "packed_color": to_packed_argb(box.textColor, box.textOpacity, truncate=True),
+                "packed_bg_color": to_packed_argb(box.bgColor, box.bgOpacity, truncate=True),
+                "packed_outline_color": to_packed_argb(box.outlineColor, box.outlineOpacity, truncate=True),
+                "align_h": textbox_align_h_code(box.alignH),
+                "align_v": textbox_align_v_code(box.alignV),
+                "style_id": TEXTBOX_STYLE_ID,
             }
-        )
+            payload["packed_color"] = to_packed_argb(box.textColor, box.textOpacity, truncate=True)
+        else:
+            payload["image_asset_ref"] = IMAGE_ASSET_REFS[element.type]
+            payload["packed_color"] = to_packed_argb(element.color, element.opacity)
+        elements.append(payload)
 
     if not elements:
         raise HTTPException(status_code=400, detail="The current scene has no GIA-exportable basic elements")
@@ -1021,6 +1327,65 @@ def parse_triangle_border(body: str) -> dict[str, float | str] | None:
         "height": bottom_width,
         "color": border_bottom["color"],
     }
+
+
+def css_quote(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def parse_css_quoted(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = value.strip()
+    if not text or text.lower() in {"none", "normal"}:
+        return None
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+        return text[1:-1]
+    return text
+
+
+def parse_css_bool(value: str | None, default: bool) -> bool:
+    if value is None:
+        return default
+    lowered = value.strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def css_text_align_h(value: str | None) -> AlignH:
+    lowered = (value or "").strip().lower()
+    if lowered in {"left", "start"}:
+        return "left"
+    if lowered in {"right", "end"}:
+        return "right"
+    if lowered in {"center", "middle"}:
+        return "center"
+    return "left"
+
+
+def css_text_align_v(value: str | None) -> AlignV:
+    lowered = (value or "").strip().lower()
+    if lowered in {"top", "start", "flex-start"}:
+        return "top"
+    if lowered in {"bottom", "end", "flex-end"}:
+        return "bottom"
+    if lowered in {"middle", "center"}:
+        return "middle"
+    return "top"
+
+
+def textbox_align_h_code(align_h: AlignH) -> int:
+    # 7.0.51: omit/0 = left, 1 = center, 2 = right
+    return {"left": 0, "center": 1, "right": 2}[align_h]
+
+
+def textbox_align_v_code(align_v: AlignV) -> int:
+    # omit/0 = top, 1 = middle, 2 = bottom (same pattern as horizontal 508)
+    return {"top": 0, "middle": 1, "bottom": 2}[align_v]
 
 
 def parse_px(value: str | None, default: float) -> float:
@@ -1182,6 +1547,156 @@ def ellipse_points(
     ]
 
 
+RICH_COLOR_NAMES = {
+    "red": "#ff0000",
+    "green": "#00ff00",
+    "blue": "#0000ff",
+    "black": "#000000",
+    "white": "#ffffff",
+    "yellow": "#ffff00",
+    "cyan": "#00ffff",
+    "magenta": "#ff00ff",
+    "orange": "#ffa500",
+    "gray": "#808080",
+    "grey": "#808080",
+}
+RICH_TOKEN_RE = re.compile(r"</?(?:color|i|size)(?:\s*=\s*[^>]*)?>", re.I)
+
+
+def parse_rich_color_name(value: str) -> str | None:
+    raw = value.strip().lower()
+    if not raw:
+        return None
+    named = RICH_COLOR_NAMES.get(raw)
+    if named:
+        return named
+    if re.fullmatch(r"#?[0-9a-f]{6}", raw):
+        return raw if raw.startswith("#") else f"#{raw}"
+    if re.fullmatch(r"#?[0-9a-f]{3}", raw):
+        hex_value = raw.lstrip("#")
+        return f"#{hex_value[0] * 2}{hex_value[1] * 2}{hex_value[2] * 2}"
+    return None
+
+
+def parse_rich_text(source: str) -> list[dict]:
+    spans: list[dict] = []
+    color_stack: list[str] = []
+    size_stack: list[float] = []
+    italic = 0
+    last = 0
+
+    def push_text(text: str) -> None:
+        if not text:
+            return
+        spans.append(
+            {
+                "text": text,
+                "color": color_stack[-1] if color_stack else None,
+                "italic": italic > 0,
+                "size": size_stack[-1] if size_stack else None,
+            }
+        )
+
+    for match in RICH_TOKEN_RE.finditer(source or ""):
+        push_text(source[last:match.start()])
+        token = match.group(0)
+        closing = token.startswith("</")
+        inner = token[2:-1] if closing else token[1:-1]
+        name, _, raw_value = inner.partition("=")
+        name = name.strip().lower()
+        value = raw_value.strip()
+        if name == "color":
+            if closing:
+                if color_stack:
+                    color_stack.pop()
+            else:
+                color = parse_rich_color_name(value)
+                if color:
+                    color_stack.append(color)
+        elif name == "i":
+            italic = max(0, italic - 1) if closing else italic + 1
+        elif name == "size":
+            if closing:
+                if size_stack:
+                    size_stack.pop()
+            else:
+                try:
+                    size = float(value)
+                except ValueError:
+                    size = 0
+                if size > 0:
+                    size_stack.append(size)
+        last = match.end()
+    push_text((source or "")[last:])
+    return spans or [{"text": source or "", "color": None, "italic": False, "size": None}]
+
+
+def load_textbox_font(size: int):
+    candidates = [
+        Path(r"C:\Windows\Fonts\msyh.ttc"),
+        Path(r"C:\Windows\Fonts\msyh.ttf"),
+        Path(r"C:\Windows\Fonts\simhei.ttf"),
+        Path(r"C:\Windows\Fonts\simsun.ttc"),
+        Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
+        Path("/System/Library/Fonts/PingFang.ttc"),
+    ]
+    for path in candidates:
+        if path.exists():
+            try:
+                return ImageFont.truetype(str(path), size)
+            except OSError:
+                continue
+    return ImageFont.load_default()
+
+
+def draw_textbox(_image: Image.Image, draw: ImageDraw.ImageDraw, element: SceneElementModel) -> None:
+    box = ensure_textbox(element) or default_textbox()
+    if not box.visible:
+        return
+    bg = color_with_alpha(box.bgColor, box.bgOpacity)
+    draw_rect(draw, element, bg)
+    spans = parse_rich_text(box.text or "")
+    left = element.x - element.width / 2
+    top = element.y - element.height / 2
+    pieces: list[tuple[str, object, tuple[int, int, int, int], int]] = []
+    total_w = 0.0
+    max_h = 0.0
+    for span in spans:
+        size = max(1, int(span["size"] or box.fontSize))
+        font = load_textbox_font(size)
+        text = span["text"]
+        bbox = draw.textbbox((0, 0), text, font=font)
+        total_w += bbox[2] - bbox[0]
+        max_h = max(max_h, bbox[3] - bbox[1])
+        fill = color_with_alpha(span["color"] or box.textColor, box.textOpacity)
+        pieces.append((text, font, fill, 1 if box.outlineEnabled else 0))
+    if box.alignH == "left":
+        tx = left
+    elif box.alignH == "right":
+        tx = left + element.width - total_w
+    else:
+        tx = element.x - total_w / 2
+    if box.alignV == "top":
+        ty = top
+    elif box.alignV == "bottom":
+        ty = top + element.height - max_h
+    else:
+        ty = element.y - max_h / 2
+    stroke_fill = color_with_alpha(box.outlineColor, box.outlineOpacity)
+    cursor = tx
+    for text, font, fill, stroke_width in pieces:
+        draw.text(
+            (cursor, ty),
+            text,
+            font=font,
+            fill=fill,
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill if stroke_width else None,
+        )
+        bbox = draw.textbbox((0, 0), text, font=font)
+        cursor += bbox[2] - bbox[0]
+
+
 def draw_ring(image: Image.Image, element: SceneElementModel, fill: tuple[int, int, int, int]) -> None:
     layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
     layer_draw = ImageDraw.Draw(layer, "RGBA")
@@ -1200,9 +1715,11 @@ def color_with_alpha(color: str, opacity: float) -> tuple[int, int, int, int]:
     return r, g, b, max(0, min(255, round(opacity * 255)))
 
 
-def to_packed_argb(color: str, opacity: float) -> int:
+def to_packed_argb(color: str, opacity: float, *, truncate: bool = False) -> int:
     r, g, b = ImageColor.getrgb(normalize_color(color))
-    alpha = max(0, min(255, round(opacity * 255)))
+    raw = opacity * 255
+    alpha = int(raw) if truncate else round(raw)
+    alpha = max(0, min(255, alpha))
     return (alpha << 24) | (r << 16) | (g << 8) | b
 
 

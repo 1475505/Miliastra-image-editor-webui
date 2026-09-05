@@ -9,7 +9,38 @@ export type ShapeType =
   | "four_point_star"
   | "five_point_star"
   | "ring"
+  | "textbox"
   | "other";
+
+export type AlignH = "left" | "center" | "right";
+export type AlignV = "top" | "middle" | "bottom";
+export type AnchorType = "center" | "custom";
+
+export type TextBoxSettings = {
+  text: string;
+  fontSize: number;
+  autoSize: boolean;
+  minFontSize: number;
+  textColor: string;
+  textOpacity: number;
+  bgColor: string;
+  bgOpacity: number;
+  outlineEnabled: boolean;
+  outlineColor: string;
+  outlineOpacity: number;
+  alignH: AlignH;
+  alignV: AlignV;
+  anchorType: AnchorType;
+  visible: boolean;
+  scaleX: number;
+  scaleY: number;
+  anchorMinX: number;
+  anchorMinY: number;
+  anchorMaxX: number;
+  anchorMaxY: number;
+  pivotX: number;
+  pivotY: number;
+};
 
 export type SourceType = "json" | "css" | "svg";
 type LeftTab = "layers" | "library" | "import";
@@ -29,6 +60,7 @@ export type SceneElement = {
   opacity: number;
   zIndex: number;
   isBackground: boolean;
+  textBox?: TextBoxSettings;
 };
 
 type LibraryCategory = {
@@ -182,8 +214,35 @@ const defaultBaseShapePresets: LibraryBaseShapePreset[] = [
   { type: "triangle", color: "#7c3aed", width: 96, height: 86 },
   { type: "four_point_star", color: "#0f4c81", width: 90, height: 90 },
   { type: "five_point_star", color: "#be123c", width: 92, height: 92 },
-  { type: "ring", color: "#f59e0b", width: 92, height: 92 }
+  { type: "ring", color: "#f59e0b", width: 92, height: 92 },
+  { type: "textbox", color: "#ffffff", width: 180, height: 40 }
 ];
+
+export const DEFAULT_TEXTBOX: TextBoxSettings = {
+  text: "",
+  fontSize: 20,
+  autoSize: true,
+  minFontSize: 12,
+  textColor: "#ffffff",
+  textOpacity: 1,
+  bgColor: "#ffffff",
+  bgOpacity: 0,
+  outlineEnabled: true,
+  outlineColor: "#333333",
+  outlineOpacity: 0.2,
+  alignH: "left",
+  alignV: "top",
+  anchorType: "center",
+  visible: true,
+  scaleX: 1,
+  scaleY: 1,
+  anchorMinX: 0.5,
+  anchorMinY: 0.5,
+  anchorMaxX: 0.5,
+  anchorMaxY: 0.5,
+  pivotX: 0.5,
+  pivotY: 0.5
+};
 
 const EXPORT_FORMATS = [
   { endpoint: "/api/export/gia", ext: "gia", label: "GIA" },
@@ -202,6 +261,7 @@ function App() {
       four_point_star: t("shape.four_point_star"),
       five_point_star: t("shape.five_point_star"),
       ring: t("shape.ring"),
+      textbox: t("shape.textbox"),
       other: t("shape.other")
     }),
     [t]
@@ -687,7 +747,8 @@ function App() {
         height: input.height,
         rotation: input.rotation,
         color: input.color,
-        opacity: input.opacity
+        opacity: input.opacity,
+        textBox: input.textBox as SceneElement["textBox"]
       });
       if (!element) {
         return { ok: false, error: "The \"other\" shape type is not available" };
@@ -882,20 +943,30 @@ function App() {
 
   function createShape(type: ShapeType, override?: Partial<SceneElement>): SceneElement {
     const libraryItem = baseShapePresets.find((item) => item.type === type);
-    return {
+    const color = override?.color ?? libraryItem?.color ?? "#4f46e5";
+    const next: SceneElement = {
       id: crypto.randomUUID().slice(0, 8),
-      name: shapeLabels[type],
+      name: override?.name ?? (type === "textbox" ? "文本" : shapeLabels[type]),
       type,
       x: scene.canvas.width / 2,
       y: scene.canvas.height / 2,
       width: override?.width ?? libraryItem?.width ?? 90,
       height: override?.height ?? libraryItem?.height ?? 90,
       rotation: normalizeRotation(override?.rotation ?? 0),
-      color: override?.color ?? libraryItem?.color ?? "#4f46e5",
-      opacity: override?.opacity ?? 0.85,
+      color,
+      opacity: override?.opacity ?? (type === "textbox" ? DEFAULT_TEXTBOX.textOpacity : 0.85),
       zIndex: scene.elements.length,
       isBackground: override?.isBackground ?? false
     };
+    if (type === "textbox") {
+      next.textBox = {
+        ...DEFAULT_TEXTBOX,
+        ...override?.textBox,
+        textColor: override?.textBox?.textColor ?? color,
+        textOpacity: override?.textBox?.textOpacity ?? next.opacity
+      };
+    }
+    return next;
   }
 
   function addShapeToCanvas(
@@ -934,9 +1005,25 @@ function App() {
     const normalizedPatch = normalizeElementPatch(patch);
     commitScene((current) => {
       const target = current.elements.find((element) => element.id === id);
-      const elements = current.elements.map((element) =>
-        element.id === id ? { ...element, ...normalizedPatch } : element
-      );
+      const elements = current.elements.map((element) => {
+        if (element.id !== id) {
+          return element;
+        }
+        const merged: SceneElement = { ...element, ...normalizedPatch };
+        if (merged.type === "textbox") {
+          const nextBox = { ...textBoxOf(element), ...normalizedPatch.textBox };
+          if (typeof normalizedPatch.color === "string" && !normalizedPatch.textBox?.textColor) {
+            nextBox.textColor = normalizedPatch.color;
+          }
+          if (typeof normalizedPatch.opacity === "number" && normalizedPatch.textBox?.textOpacity === undefined) {
+            nextBox.textOpacity = normalizedPatch.opacity;
+          }
+          merged.textBox = nextBox;
+          merged.color = nextBox.textColor;
+          merged.opacity = nextBox.textOpacity;
+        }
+        return merged;
+      });
       const shouldSyncPresetColor =
         typeof normalizedPatch.color === "string" && !!target && isBasicShape(target.type);
       return {
@@ -1603,6 +1690,7 @@ function App() {
                     {element.type === "triangle" ? <div className="triangle-fill" style={{ background: element.color }} /> : null}
                     {element.type === "four_point_star" ? <div className="star star-four" style={{ background: element.color }} /> : null}
                     {element.type === "five_point_star" ? <div className="star star-five" style={{ background: element.color }} /> : null}
+                    {element.type === "textbox" ? <TextBoxPreview element={element} /> : null}
                     {selectedId === element.id ? (
                       <>
                         <div className="rotate-stem" />
@@ -1790,6 +1878,13 @@ function App() {
                     </div>
                   </div>
 
+                  {selectedElement.type === "textbox" ? (
+                    <TextBoxInspector
+                      element={selectedElement}
+                      onChange={(patch) => updateSelected(patch)}
+                    />
+                  ) : (
+                    <>
                   <div className="section-head"><span>{t("props.appearance")}</span></div>
                   <div className="field">
                     <span>{t("props.fillColor")}</span>
@@ -1816,6 +1911,8 @@ function App() {
                       />
                     </div>
                   </div>
+                    </>
+                  )}
 
                   <div className="section-head"><span>{t("props.layerSection")}</span></div>
                   <div className="layer-controls">
@@ -2200,6 +2297,311 @@ function computeTourCardStyle(rect: TourRect | null, placement?: string): React.
   };
 }
 
+type RichTextSpan = {
+  text: string;
+  color?: string;
+  italic?: boolean;
+  size?: number;
+};
+
+const NAMED_RICH_COLORS: Record<string, string> = {
+  red: "#ff0000",
+  green: "#00ff00",
+  blue: "#0000ff",
+  black: "#000000",
+  white: "#ffffff",
+  yellow: "#ffff00",
+  cyan: "#00ffff",
+  magenta: "#ff00ff",
+  orange: "#ffa500",
+  gray: "#808080",
+  grey: "#808080"
+};
+
+function parseRichColor(value: string): string | undefined {
+  const raw = value.trim().toLowerCase();
+  if (!raw) {
+    return undefined;
+  }
+  if (NAMED_RICH_COLORS[raw]) {
+    return NAMED_RICH_COLORS[raw];
+  }
+  if (/^#?[0-9a-f]{6}$/i.test(raw)) {
+    return raw.startsWith("#") ? raw : `#${raw}`;
+  }
+  if (/^#?[0-9a-f]{3}$/i.test(raw)) {
+    const hex = raw.replace("#", "");
+    return `#${hex[0]}${hex[0]}${hex[1]}${hex[1]}${hex[2]}${hex[2]}`;
+  }
+  return undefined;
+}
+
+function parseRichText(source: string): RichTextSpan[] {
+  const spans: RichTextSpan[] = [];
+  const colorStack: string[] = [];
+  const sizeStack: number[] = [];
+  let italic = 0;
+  const tokenRe = /<\/?(?:color|i|size)(?:\s*=\s*[^>]*)?>/gi;
+  let last = 0;
+  let match: RegExpExecArray | null;
+
+  const pushText = (text: string) => {
+    if (!text) {
+      return;
+    }
+    spans.push({
+      text,
+      color: colorStack[colorStack.length - 1],
+      italic: italic > 0,
+      size: sizeStack[sizeStack.length - 1]
+    });
+  };
+
+  while ((match = tokenRe.exec(source))) {
+    pushText(source.slice(last, match.index));
+    const token = match[0];
+    const closing = token.startsWith("</");
+    const name = token.replace(/^<\/?/, "").replace(/>$/, "").split("=")[0].trim().toLowerCase();
+    const value = token.includes("=") ? token.replace(/^<[^=]*=\s*/, "").replace(/>$/, "").trim() : "";
+    if (name === "color") {
+      if (closing) {
+        colorStack.pop();
+      } else {
+        const color = parseRichColor(value);
+        if (color) {
+          colorStack.push(color);
+        }
+      }
+    } else if (name === "i") {
+      italic += closing ? -1 : 1;
+      if (italic < 0) {
+        italic = 0;
+      }
+    } else if (name === "size") {
+      if (closing) {
+        sizeStack.pop();
+      } else {
+        const size = Number.parseFloat(value);
+        if (Number.isFinite(size) && size > 0) {
+          sizeStack.push(size);
+        }
+      }
+    }
+    last = match.index + token.length;
+  }
+  pushText(source.slice(last));
+  return spans.length ? spans : [{ text: source }];
+}
+
+function textBoxOf(element: SceneElement): TextBoxSettings {
+  const merged = {
+    ...DEFAULT_TEXTBOX,
+    textColor: element.color || DEFAULT_TEXTBOX.textColor,
+    textOpacity: element.opacity ?? DEFAULT_TEXTBOX.textOpacity,
+    ...element.textBox
+  };
+  const looksCustom =
+    merged.anchorMinX !== 0.5 ||
+    merged.anchorMinY !== 0.5 ||
+    merged.anchorMaxX !== 0.5 ||
+    merged.anchorMaxY !== 0.5;
+  return {
+    ...merged,
+    anchorType: element.textBox?.anchorType ?? (looksCustom ? "custom" : "center")
+  };
+}
+
+function TextBoxPreview({ element }: { element: SceneElement }) {
+  const box = textBoxOf(element);
+  const justify = box.alignH === "left" ? "flex-start" : box.alignH === "right" ? "flex-end" : "center";
+  const align = box.alignV === "top" ? "flex-start" : box.alignV === "bottom" ? "flex-end" : "center";
+  const spans = parseRichText(box.text || " ");
+  return (
+    <div
+      className="textbox-preview"
+      style={{
+        background: hexWithAlpha(box.bgColor, box.bgOpacity),
+        color: hexWithAlpha(box.textColor, box.textOpacity),
+        fontSize: box.fontSize,
+        justifyContent: justify,
+        alignItems: align,
+        textAlign: box.alignH,
+        WebkitTextStroke: box.outlineEnabled ? `1px ${hexWithAlpha(box.outlineColor, box.outlineOpacity)}` : "0",
+        transform: `scale(${box.scaleX}, ${box.scaleY})`
+      }}
+    >
+      <span>
+        {spans.map((span, index) => (
+          <span
+            key={index}
+            style={{
+              color: span.color,
+              fontStyle: span.italic ? "italic" : undefined,
+              fontSize: span.size
+            }}
+          >
+            {span.text}
+          </span>
+        ))}
+      </span>
+    </div>
+  );
+}
+
+function TextBoxInspector({
+  element,
+  onChange
+}: {
+  element: SceneElement;
+  onChange: (patch: Partial<SceneElement>) => void;
+}) {
+  const { t } = useI18n();
+  const box = textBoxOf(element);
+
+  function updateBox(patch: Partial<TextBoxSettings>) {
+    const next = { ...box, ...patch };
+    onChange({
+      textBox: next,
+      color: next.textColor,
+      opacity: next.textOpacity
+    });
+  }
+
+  return (
+    <>
+      <div className="section-head"><span>{t("props.visibility")}</span></div>
+      <label className="check-row">
+        <input type="checkbox" checked={box.visible} onChange={(event) => updateBox({ visible: event.target.checked })} />
+        <span>{t("props.initialVisible")}</span>
+      </label>
+
+      <div className="section-head"><span>{t("props.textbox")}</span></div>
+      <div className="grid-2">
+        <NumField label={t("props.fontSize")} value={box.fontSize} min={1} max={256} onChange={(value) => updateBox({ fontSize: Math.max(1, value) })} />
+        <NumField label={t("props.minFontSize")} value={box.minFontSize} min={1} max={256} onChange={(value) => updateBox({ minFontSize: Math.max(1, value) })} />
+      </div>
+      <label className="check-row">
+        <input type="checkbox" checked={box.autoSize} onChange={(event) => updateBox({ autoSize: event.target.checked })} />
+        <span>{t("props.autoSize")}</span>
+      </label>
+      <div className="field">
+        <span>{t("props.textColor")}</span>
+        <ColorOpacityField
+          color={box.textColor}
+          opacity={box.textOpacity}
+          onColorChange={(textColor) => updateBox({ textColor })}
+          onOpacityChange={(textOpacity) => updateBox({ textOpacity })}
+        />
+      </div>
+      <div className="field">
+        <span>{t("props.textboxBg")}</span>
+        <ColorOpacityField
+          color={box.bgColor}
+          opacity={box.bgOpacity}
+          onColorChange={(bgColor) => updateBox({ bgColor })}
+          onOpacityChange={(bgOpacity) => updateBox({ bgOpacity })}
+        />
+      </div>
+      <label className="check-row">
+        <input type="checkbox" checked={box.outlineEnabled} onChange={(event) => updateBox({ outlineEnabled: event.target.checked })} />
+        <span>{t("props.outlineEnabled")}</span>
+      </label>
+      <div className="field">
+        <span>{t("props.outlineColor")}</span>
+        <ColorOpacityField
+          color={box.outlineColor}
+          opacity={box.outlineOpacity}
+          onColorChange={(outlineColor) => updateBox({ outlineColor })}
+          onOpacityChange={(outlineOpacity) => updateBox({ outlineOpacity })}
+        />
+      </div>
+      <div className="field">
+        <span>{t("props.alignH")}</span>
+        <div className="seg seg-compact">
+          {(["left", "center", "right"] as AlignH[]).map((value) => (
+            <button key={value} className={box.alignH === value ? "active" : ""} onClick={() => updateBox({ alignH: value })}>
+              {t(`props.align.${value}`)}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="field">
+        <span>{t("props.alignV")}</span>
+        <div className="seg seg-compact">
+          {(["top", "middle", "bottom"] as AlignV[]).map((value) => (
+            <button key={value} className={box.alignV === value ? "active" : ""} onClick={() => updateBox({ alignV: value })}>
+              {t(`props.align.${value}`)}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="grid-2">
+        <NumField label={t("props.scaleX")} value={Number(box.scaleX.toFixed(2))} step={0.01} min={0.01} max={8} onChange={(value) => updateBox({ scaleX: Math.max(0.01, value) })} />
+        <NumField label={t("props.scaleY")} value={Number(box.scaleY.toFixed(2))} step={0.01} min={0.01} max={8} onChange={(value) => updateBox({ scaleY: Math.max(0.01, value) })} />
+      </div>
+      <div className="section-head"><span>{t("props.anchor")}</span></div>
+      <div className="field">
+        <span>Min</span>
+        <div className="grid-2">
+          <NumField label="X" value={Number(box.anchorMinX.toFixed(2))} step={0.01} min={0} max={1} onChange={(value) => updateBox({ anchorType: "custom", anchorMinX: clamp(value, 0, 1) })} />
+          <NumField label="Y" value={Number(box.anchorMinY.toFixed(2))} step={0.01} min={0} max={1} onChange={(value) => updateBox({ anchorType: "custom", anchorMinY: clamp(value, 0, 1) })} />
+        </div>
+      </div>
+      <div className="field">
+        <span>Max</span>
+        <div className="grid-2">
+          <NumField label="X" value={Number(box.anchorMaxX.toFixed(2))} step={0.01} min={0} max={1} onChange={(value) => updateBox({ anchorType: "custom", anchorMaxX: clamp(value, 0, 1) })} />
+          <NumField label="Y" value={Number(box.anchorMaxY.toFixed(2))} step={0.01} min={0} max={1} onChange={(value) => updateBox({ anchorType: "custom", anchorMaxY: clamp(value, 0, 1) })} />
+        </div>
+      </div>
+      <div className="field">
+        <span>{t("props.anchorPivot")}</span>
+        <div className="grid-2">
+          <NumField label="X" value={Number(box.pivotX.toFixed(2))} step={0.01} min={0} max={1} onChange={(value) => updateBox({ pivotX: clamp(value, 0, 1) })} />
+          <NumField label="Y" value={Number(box.pivotY.toFixed(2))} step={0.01} min={0} max={1} onChange={(value) => updateBox({ pivotY: clamp(value, 0, 1) })} />
+        </div>
+      </div>
+      <div className="field">
+        <span>{t("props.textContent")}</span>
+        <textarea
+          className="textbox-input"
+          rows={4}
+          value={box.text}
+          onChange={(event) => updateBox({ text: event.target.value })}
+        />
+        <em className="field-hint">{t("props.richHint")}</em>
+      </div>
+    </>
+  );
+}
+
+function ColorOpacityField({
+  color,
+  opacity,
+  onColorChange,
+  onOpacityChange
+}: {
+  color: string;
+  opacity: number;
+  onColorChange: (color: string) => void;
+  onOpacityChange: (opacity: number) => void;
+}) {
+  return (
+    <div className="color-opacity-field">
+      <ColorField value={color} onChange={onColorChange} />
+      <input
+        className="pct-input"
+        type="number"
+        min="0"
+        max="100"
+        value={Math.round(opacity * 100)}
+        onChange={(event) => onOpacityChange(clamp(Number(event.target.value) / 100, 0, 1))}
+      />
+      <span className="pct-suffix">%</span>
+    </div>
+  );
+}
+
 function NumField({
   label,
   value,
@@ -2335,6 +2737,7 @@ function ShapeGlyph({ type, color }: { type: ShapeType; color: string }) {
       {type === "ellipse" ? <div className="glyph-fill ellipse" style={{ background: color }} /> : null}
       {type === "rectangle" ? <div className="glyph-fill rectangle" style={{ background: color }} /> : null}
       {type === "ring" ? <div className="glyph-fill ring" style={{ background: ringGradient(color) }} /> : null}
+      {type === "textbox" ? <div className="glyph-fill textbox">T</div> : null}
     </div>
   );
 }
@@ -2534,7 +2937,8 @@ function isBasicShape(type: ShapeType) {
     type === "triangle" ||
     type === "four_point_star" ||
     type === "five_point_star" ||
-    type === "ring"
+    type === "ring" ||
+    type === "textbox"
   );
 }
 
@@ -2586,7 +2990,18 @@ function shapeStyle(element: SceneElement) {
   if (element.type === "ring") {
     return { ...common, background: ringGradient(element.color) };
   }
+  if (element.type === "textbox") {
+    return { ...common, background: "transparent" };
+  }
   return { ...common, background: element.color };
+}
+
+function hexWithAlpha(color: string, opacity: number) {
+  const hex = toColorInput(color).replace("#", "");
+  const alpha = Math.round(clamp(opacity, 0, 1) * 255)
+    .toString(16)
+    .padStart(2, "0");
+  return `#${hex}${alpha}`;
 }
 
 function toColorInput(value: string) {

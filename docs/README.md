@@ -35,6 +35,7 @@ Production deployment is intentionally simple: one FastAPI process serves both t
   - four-point star
   - five-point star
   - ring (圆环, fixed inner:outer radius ratio 0.8, GIA asset ref 100006)
+  - textbox (文本框: 默认字号 20、白字、透明白底、描边 `#333333` 20%、左/上对齐；支持 `<color>` / `<i>` / `<size>`)
 - Other categories are reserved in the UI and JSON interface
 - Drag shapes into canvas or double-click to add
 - Canvas supports:
@@ -50,6 +51,7 @@ Production deployment is intentionally simple: one FastAPI process serves both t
   - rotation
   - color
   - opacity
+  - textbox settings (font, colors, outline, alignment, Min/Max/pivot anchors, rich text)
   - background-element flag
   - layer ordering
   - delete current element

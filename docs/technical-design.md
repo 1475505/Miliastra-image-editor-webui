@@ -87,7 +87,7 @@ type SceneDocument = {
 ```ts
 type SceneElement = {
   id: string;
-  type: "ellipse" | "rectangle" | "triangle" | "four_point_star" | "five_point_star" | "ring" | "other";
+  type: "ellipse" | "rectangle" | "triangle" | "four_point_star" | "five_point_star" | "ring" | "textbox" | "other";
   x: number;
   y: number;
   width: number;
@@ -97,6 +97,31 @@ type SceneElement = {
   opacity: number;
   zIndex: number;
   isBackground: boolean;
+  textBox?: {
+    text: string;
+    fontSize: number;
+    autoSize: boolean;
+    minFontSize: number;
+    textColor: string;
+    textOpacity: number;
+    bgColor: string;
+    bgOpacity: number;
+    outlineEnabled: boolean;
+    outlineColor: string;
+    outlineOpacity: number;
+    alignH: "left" | "center" | "right";
+    alignV: "top" | "middle" | "bottom";
+    anchorType: "center" | "custom";
+    visible: boolean;
+    scaleX: number;
+    scaleY: number;
+    anchorMinX: number;
+    anchorMinY: number;
+    anchorMaxX: number;
+    anchorMaxY: number;
+    pivotX: number;
+    pivotY: number;
+  };
 };
 ```
 
@@ -137,6 +162,7 @@ type SceneLibrary = {
   - `z-index -> zIndex`
 - `border-radius: 50% -> ellipse`
 - `background: radial-gradient(closest-side, transparent 79.5%, <color> 80.5%, transparent 100%) -> ring`（内径:外径 = 0.8，颜色从第二段 stop 提取；尾部 transparent 使环外四角透明）
+- `-miliastra-type: textbox` 或 `-miliastra-text` / `content` -> `textbox`
 - 若存在 `.shaper-container`，先读取其原始宽高作为初始画布
 - 如果图元超出容器，则自动扩展画布；如果图元坐标为负，还会整体平移到可见区域
 - 同时写入 warning，提醒用户当前已为越界图元自动调整画布
@@ -176,8 +202,8 @@ type SceneLibrary = {
   - 图元名优先使用导入时解析出的规则选择器，其次回退到基础图形名称
 
 ### SVG
-- 当前只支持基础图元子集
-- 复杂路径、滤镜、文本、渐变不保证导入
+- 当前支持基础图元子集，以及轴对齐 `<text>`（导入为 `textbox`，只保留中心坐标、字号、颜色和纯文本）
+- 复杂路径、滤镜、渐变不保证导入
 - 不支持的内容通过 warning 提示
 
 ## 6. 编辑设计
@@ -191,6 +217,7 @@ type SceneLibrary = {
   - 四角星
   - 五角星
   - 圆环（内径:外径 = 0.8，GIA 素材 100006）
+  - 文本框（默认：字号 20、自适应、最小字号 12、白字 100%、白底 0%、描边 `#333333` 20%、水平左对齐、垂直上对齐；内容支持 `<color>` / `<i>` / `<size>`）
 - 其他分类预留但暂不支持
 
 ### 画布交互
@@ -260,14 +287,17 @@ type SceneLibrary = {
 
 ### CSS
 - 导出为与当前导入格式兼容的绝对定位样式
+- 文本框额外写出 `-miliastra-type` / `-miliastra-text` 以及字号、颜色、对齐、描边等自定义属性
 
 ### SVG
 - 从统一场景模型直接生成
 - 圆环（`ring`）在 SVG 导出时被**忽略**（SVG 导入器不支持 `<path>`，无法无损往返），并在 SVG 文件头部写入 `Miliastra-Warning` 警告注释；前端代码预览区会同步显示强提醒横幅。需要圆环请导出 CSS 或 JSON。
+- 文本框导出为 `<text>`，富文本拆成 `tspan`
 
 ### GIA
 - 后端将 `SceneDocument` 规范化为 GIA 所需结构
 - 然后调用外部 Python 工具输出 `image mode` GIA
+- 文本框导出为 class=15 UI 节点；水平对齐写 `508`（省略=左 / `1`=中 / `2`=右），垂直对齐写 `509`（省略=上 / `1`=中 / `2`=下）
 
 ## 11. API
 

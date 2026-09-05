@@ -1415,6 +1415,61 @@ input[type="range"]::-moz-range-thumb {
   border-radius: 2px;
 }
 
+.glyph-fill.textbox {
+  display: grid;
+  place-items: center;
+  border: 1px solid #9ca3af;
+  border-radius: 3px;
+  background: #111827;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.textbox-preview {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  overflow: hidden;
+  padding: 4px 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.2;
+  pointer-events: none;
+}
+
+.textbox-input {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 8px;
+  background: #fff;
+  color: var(--text);
+}
+
+.field-hint {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  font-style: normal;
+  color: var(--text-3);
+  line-height: 1.4;
+}
+
+.color-opacity-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pct-suffix {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
 /* ========== Inspector ========== */
 
 .inspector-head {
