@@ -1362,10 +1362,10 @@ function App() {
             <span>{t("topbar.tour")}</span>
           </button>
           <a className="icon-btn" href="https://github.com/1475505/Miliastra-image-editor-webui" target="_blank" rel="noreferrer" title={t("topbar.github")}>
-            <Icon name="gitBranch" size={15} />
+            <Icon name="github" size={15} />
           </a>
           <a className="icon-btn" href="https://ugc.070077.xyz" target="_blank" rel="noreferrer" title={t("topbar.docs")}>
-            <Icon name="globe" size={15} />
+            <Icon name="book" size={15} />
           </a>
           <span className="divider" />
           <button className="icon-btn lang-toggle" onClick={toggleLang} title={t("topbar.lang")} aria-label={t("topbar.lang")}>
