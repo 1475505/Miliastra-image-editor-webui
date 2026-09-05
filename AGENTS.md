@@ -25,6 +25,7 @@ Guidance for AI agents working in the **Miliastra Image Editor WebUI** repositor
 ├── frontend/               React + TypeScript + Vite SPA
 │   ├── src/
 │   │   ├── App.tsx         Single-file editor UI + scene state
+│   │   ├── webmcp.ts       WebMCP tool registration
 │   │   ├── main.tsx        React entry
 │   │   └── styles.css
 │   ├── vite.config.ts      Builds into ../backend/app/static
@@ -73,6 +74,7 @@ Type-check gate is `tsc -b` inside `npm run build` (no separate lint/typecheck s
 - **`backend/app/main.py`** — single module containing everything: Pydantic models, parsers (`parse_json_scene`, `parse_css_scene`, `parse_svg_scene`), serializers (`scene_to_css`, `scene_to_svg`, `scene_to_png_bytes`, `scene_to_gia_document`), `normalize_scene`, and all `/api/*` routes plus the SPA catch-all. No separate routers/services.
 - **`backend/vendor/gia/json_to_gia.py`** — `convert_json_to_gia_bytes(..., mode=MODE_IMAGE)` against `image_template.gia` produces binary `.gia`.
 - **`frontend/src/App.tsx`** — single-file editor UI mirroring the scene model.
+- **`frontend/src/webmcp.ts`** — WebMCP tools (`add_element`/`update_element` 支持 `type: "textbox"` 以及 `text`/`fontSize`).
 - **`skills/<name>/SKILL.md`** — YAML-front-mattered skills that produce importable assets; constrained to what each importer reliably reconstructs ("what you import is what you get").
 
-Scene model: `SceneDocument { canvas, elements[], meta, library }`; `SceneElement { id, name, type, x, y, width, height, rotation, color, opacity, zIndex, isBackground }`. Shape `type`: `ellipse | rectangle | triangle | four_point_star | five_point_star | ring | other` (ring = 圆环, fixed inner:outer radius ratio 0.8, GIA asset ref 100006). Position is element **center**; rotation is CCW-positive in scene space (CSS/SVG export negate it). Full details in `docs/technical-design.md`.
+Scene model: `SceneDocument { canvas, elements[], meta, library }`; `SceneElement { id, name, type, x, y, width, height, rotation, color, opacity, zIndex, isBackground, textBox? }`. Shape `type`: `ellipse | rectangle | triangle | four_point_star | five_point_star | ring | textbox | other` (ring = 圆环, fixed inner:outer radius ratio 0.8, GIA asset ref 100006; textbox 导出为 class=15 UI 节点). 文本框默认：字号 20、自适应、最小字号 12、白字 100%、白底 0%、描边 `#333333` 20%、水平左/垂直上对齐。GIA 水平对齐 `508`（省略=左/`1`=中/`2`=右），垂直对齐 `509`（省略=上/`1`=中/`2`=下）。文本可含 `<color>`/`<i>`/`<size>`。Position is element **center**; rotation is CCW-positive in scene space (CSS/SVG export negate it). Full details in `docs/technical-design.md`.

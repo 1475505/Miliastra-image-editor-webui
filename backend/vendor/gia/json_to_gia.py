@@ -464,44 +464,72 @@ def _build_rotation(z_angle):
     w.write_float(3, z_angle)
     return w
 
-def _build_rect_transform(offset_x, offset_y, size_x, size_y, pivot_x=0.5, pivot_y=0.5, rot_z=0.0):
+def _build_rect_transform(offset_x, offset_y, size_x, size_y, pivot_x=0.5, pivot_y=0.5, rot_z=0.0,
+                           scale_x=1.0, scale_y=1.0, anchor_min_x=0.5, anchor_min_y=0.5,
+                           anchor_max_x=0.5, anchor_max_y=0.5):
     """Build a single platform's rect_transform sub-message."""
     w = ProtoWriter()
-    w.write_message(501, _build_vector3(1.0, 1.0, 1.0))   # scale
-    w.write_message(502, _build_vector2(0.5, 0.5))         # anchor_min
-    w.write_message(503, _build_vector2(0.5, 0.5))         # anchor_max
+    w.write_message(501, _build_vector3(scale_x, scale_y, 1.0))   # scale
+    w.write_message(502, _build_vector2(anchor_min_x, anchor_min_y))  # anchor_min
+    w.write_message(503, _build_vector2(anchor_max_x, anchor_max_y))  # anchor_max
     w.write_message(504, _build_vector2(offset_x, offset_y)) # offset
     w.write_message(505, _build_vector2(size_x, size_y))    # size
     w.write_message(506, _build_vector2(pivot_x, pivot_y))  # pivot
     w.write_message(508, _build_rotation(rot_z))            # rotation
     return w
 
-def _build_platform(platform_type, offset_x, offset_y, size_x, size_y, pivot_x=0.5, pivot_y=0.5, rot_z=0.0):
+def _transform_kwargs(offset_x, offset_y, size_x, size_y, pivot_x, pivot_y, rot_z,
+                      scale_x, scale_y, anchor_min_x, anchor_min_y, anchor_max_x, anchor_max_y):
+    return dict(
+        offset_x=offset_x, offset_y=offset_y, size_x=size_x, size_y=size_y,
+        pivot_x=pivot_x, pivot_y=pivot_y, rot_z=rot_z,
+        scale_x=scale_x, scale_y=scale_y,
+        anchor_min_x=anchor_min_x, anchor_min_y=anchor_min_y,
+        anchor_max_x=anchor_max_x, anchor_max_y=anchor_max_y,
+    )
+
+def _build_platform(platform_type, offset_x, offset_y, size_x, size_y, pivot_x=0.5, pivot_y=0.5, rot_z=0.0,
+                    scale_x=1.0, scale_y=1.0, anchor_min_x=0.5, anchor_min_y=0.5,
+                    anchor_max_x=0.5, anchor_max_y=0.5):
     """Build a single platform entry: field 501=platform_type(varint), 502=transform(message)."""
     w = ProtoWriter()
     w.write_int32(501, platform_type)
-    w.write_message(502, _build_rect_transform(offset_x, offset_y, size_x, size_y, pivot_x, pivot_y, rot_z))
+    w.write_message(502, _build_rect_transform(
+        **_transform_kwargs(
+            offset_x, offset_y, size_x, size_y, pivot_x, pivot_y, rot_z,
+            scale_x, scale_y, anchor_min_x, anchor_min_y, anchor_max_x, anchor_max_y,
+        )
+    ))
     return w
 
-def _build_multi_platform(offset_x, offset_y, size_x, size_y, pivot_x=0.5, pivot_y=0.5, rot_z=0.0):
+def _build_multi_platform(offset_x, offset_y, size_x, size_y, pivot_x=0.5, pivot_y=0.5, rot_z=0.0,
+                          scale_x=1.0, scale_y=1.0, anchor_min_x=0.5, anchor_min_y=0.5,
+                          anchor_max_x=0.5, anchor_max_y=0.5, mp_field502=9):
     """Build the multi_platform message with 4 identical platform entries.
     Platform types: 0=KEYBOARD, 1=TOUCHSCREEN, 2=CONTROLLER_CONSOLE, 3=CONTROLLER_MOBILE
     All 4 platforms get identical transform values.
+    mp_field502: 9 for image nodes, 3 for text boxes (matches editor samples).
     """
+    kwargs = _transform_kwargs(
+        offset_x, offset_y, size_x, size_y, pivot_x, pivot_y, rot_z,
+        scale_x, scale_y, anchor_min_x, anchor_min_y, anchor_max_x, anchor_max_y,
+    )
     w = ProtoWriter()
     # Platform 0 (KEYBOARD) - no platform_type field (defaults to 0 or omitted)
-    w.write_message(501, _build_platform(0, offset_x, offset_y, size_x, size_y, pivot_x, pivot_y, rot_z))
+    w.write_message(501, _build_platform(0, **kwargs))
     # Platform 1 (TOUCHSCREEN)
-    w.write_message(501, _build_platform(1, offset_x, offset_y, size_x, size_y, pivot_x, pivot_y, rot_z))
+    w.write_message(501, _build_platform(1, **kwargs))
     # Platform 2 (CONTROLLER_CONSOLE)
-    w.write_message(501, _build_platform(2, offset_x, offset_y, size_x, size_y, pivot_x, pivot_y, rot_z))
+    w.write_message(501, _build_platform(2, **kwargs))
     # Platform 3 (CONTROLLER_MOBILE)
-    w.write_message(501, _build_platform(3, offset_x, offset_y, size_x, size_y, pivot_x, pivot_y, rot_z))
-    w.write_int32(502, 9)  # field502 = 9 (platform count or type flag)
+    w.write_message(501, _build_platform(3, **kwargs))
+    w.write_int32(502, int(mp_field502))
     w.write_int32(504, 1)  # field504 = 1
     return w
 
-def _build_transform_data(offset_x, offset_y, size_x, size_y, guid, pivot_x=0.5, pivot_y=0.5, rot_z=0.0):
+def _build_transform_data(offset_x, offset_y, size_x, size_y, guid, pivot_x=0.5, pivot_y=0.5, rot_z=0.0,
+                          scale_x=1.0, scale_y=1.0, anchor_min_x=0.5, anchor_min_y=0.5,
+                          anchor_max_x=0.5, anchor_max_y=0.5, mp_field502=9):
     """Build the outer transform data message (field 505 in ui.content).
     Structure:
       field 11 = builtin transform stub (multi_platform{} empty, type:2)
@@ -518,7 +546,11 @@ def _build_transform_data(offset_x, offset_y, size_x, size_y, guid, pivot_x=0.5,
 
     details = ProtoWriter()
     details_transform = ProtoWriter()
-    details_transform.write_message(12, _build_multi_platform(offset_x, offset_y, size_x, size_y, pivot_x, pivot_y, rot_z))
+    details_transform.write_message(12, _build_multi_platform(
+        offset_x, offset_y, size_x, size_y, pivot_x, pivot_y, rot_z,
+        scale_x, scale_y, anchor_min_x, anchor_min_y, anchor_max_x, anchor_max_y,
+        mp_field502,
+    ))
     details_transform.write_int32(501, 2)  # type: 2
     details.write_message(13, details_transform)
     details.write_int32(501, 4)   # field501: 4
@@ -606,6 +638,81 @@ def _build_image_settings_data(image_asset_ref, packed_color, guid):
     return w
 
 
+def _build_textbox_settings_data(textbox, guid):
+    """Build the 6.5.0/7.0 TextBox data message (Data.empty19 / details.textbox).
+
+    Matches template_with_text.gia:
+      empty19: ""
+      field501: 9
+      field502: 25
+      details {
+        textbox {
+          font_size: 20
+          field503: 1            # auto-size enabled
+          field504: 1            # outline enabled (sample)
+          text { value: "..." }
+          field506: 1            # initial visibility
+          field507: 12           # min font size
+          field508: 1            # horizontal align: omit=left, 1=center, 2=right
+          field509: 1            # vertical align: omit=top, 1=middle, 2=bottom
+          color: 0xAARRGGBB      # text color
+          color2: 0xAARRGGBB     # background color
+          field512: 260326       # style id
+          515: 0xAARRGGBB        # outline color
+        }
+        field501: 10
+        field502: 25
+        field503: 1
+        asset_info { ... }
+      }
+    """
+    font_size = int(textbox.get("font_size", 20))
+    auto_size = 1 if textbox.get("auto_size", True) else 0
+    outline_enabled = 1 if textbox.get("outline_enabled", True) else 0
+    visible = 1 if textbox.get("visible", True) else 0
+    min_font_size = int(textbox.get("min_font_size", 12))
+    text = textbox.get("text", "") or ""
+    packed_color = int(textbox.get("packed_color", 0xFFFFFFFF))
+    packed_bg = int(textbox.get("packed_bg_color", 0x00FFFFFF))
+    packed_outline = int(textbox.get("packed_outline_color", 0x33FFFFFF))
+    # 7.0.51: align(508) omit=left, 1=center, 2=right. 512 is a style id, not alignment.
+    align_h = int(textbox.get("align_h", 1))
+    align_v = int(textbox.get("align_v", 1))
+    style_id = int(textbox.get("style_id", textbox.get("alignment", 260326)))
+
+    w = ProtoWriter()
+    w.write_bytes(19, b"")  # empty19 placeholder
+    w.write_int32(501, 9)
+    w.write_int32(502, 25)
+
+    details = ProtoWriter()
+    box = ProtoWriter()
+    box.write_int32(502, font_size)
+    box.write_int32(503, auto_size)
+    box.write_int32(504, outline_enabled)
+    text_wrapper = ProtoWriter()
+    if text:
+        text_wrapper.write_string(501, str(text))
+    box.write_message(505, text_wrapper)
+    box.write_int32(506, visible)
+    box.write_int32(507, min_font_size)
+    if align_h:
+        box.write_int32(508, align_h)
+    if align_v:
+        box.write_int32(509, align_v)
+    box.write_int32(510, packed_color & 0xFFFFFFFF)
+    box.write_int32(511, packed_bg & 0xFFFFFFFF)
+    box.write_int32(512, style_id)
+    box.write_int32(515, packed_outline & 0xFFFFFFFF)
+    details.write_message(19, box)
+    details.write_int32(501, 10)
+    details.write_int32(502, 25)
+    details.write_int32(503, 1)
+    details.write_message(504, _build_asset_info(guid))
+    w.write_message(503, details)
+    return w
+
+
 def _build_mask_settings_data(position_x, position_y, size_x, size_y, shape_type, enabled, guid):
     """Build the parent mask_settings component using the image template layout."""
     w = ProtoWriter()
@@ -680,8 +787,12 @@ def _storage_order_elements_for_image_mode(elements):
 
 def create_ui_image_payload(guid, index, parent_guid, offset_x, offset_y, size_x, size_y,
                              image_asset_ref=100002, packed_color=0x80FFFFFF, rot_z=0.0,
-                             pivot_x=0.5, pivot_y=0.5, name=""):
-    """Create a UI image node payload (kind=8, resource_class=15).
+                             pivot_x=0.5, pivot_y=0.5, name="",
+                             scale_x=1.0, scale_y=1.0,
+                             anchor_min_x=0.5, anchor_min_y=0.5,
+                             anchor_max_x=0.5, anchor_max_y=0.5,
+                             mp_field502=9, textbox=None):
+    """Create a UI image/textbox node payload (kind=8, resource_class=15).
     
     This constructs the ui.content message for a dependency node in the image template format.
     
@@ -696,6 +807,7 @@ def create_ui_image_payload(guid, index, parent_guid, offset_x, offset_y, size_x
         rot_z: Rotation angle in degrees (default 0)
         pivot_x, pivot_y: Pivot point (default 0.5, 0.5)
         name: Node name (default empty)
+        textbox: Optional TextBox settings dict; when set, writes textbox data instead of image_settings
     """
     content = ProtoWriter()
     
@@ -730,10 +842,17 @@ def create_ui_image_payload(guid, index, parent_guid, offset_x, offset_y, size_x
     content.write_message(505, _build_field14_data(guid))
     
     # data[2]: transform (field 505)
-    content.write_message(505, _build_transform_data(offset_x, offset_y, size_x, size_y, guid, pivot_x, pivot_y, rot_z))
+    content.write_message(505, _build_transform_data(
+        offset_x, offset_y, size_x, size_y, guid, pivot_x, pivot_y, rot_z,
+        scale_x, scale_y, anchor_min_x, anchor_min_y, anchor_max_x, anchor_max_y,
+        mp_field502,
+    ))
     
-    # data[3]: image_settings (field 505)
-    content.write_message(505, _build_image_settings_data(image_asset_ref, packed_color, guid))
+    # data[3]: image_settings or textbox (field 505)
+    if textbox is not None:
+        content.write_message(505, _build_textbox_settings_data(textbox, guid))
+    else:
+        content.write_message(505, _build_image_settings_data(image_asset_ref, packed_color, guid))
     
     return content
 
@@ -941,6 +1060,12 @@ def _normalize_element_shape_type(shape_type):
         'donut': 'ring',
         'annulus': 'ring',
         '圆环': 'ring',
+        'textbox': 'textbox',
+        'text': 'textbox',
+        'text_box': 'textbox',
+        'text-box': 'textbox',
+        '文本框': 'textbox',
+        '文本': 'textbox',
     }
     return aliases.get(lowered, lowered)
 
@@ -1358,7 +1483,7 @@ def _convert_image_mode(json_data, header, content_len, root_fields, tail, verbo
             ry = float(size.get('ry', 1.0))
             size_x = rx * 2.0
             size_y = ry * 2.0
-        elif shape_type in ('rectangle', 'triangle', 'four_point_star', 'five_point_star', 'ring'):
+        elif shape_type in ('rectangle', 'triangle', 'four_point_star', 'five_point_star', 'ring', 'textbox'):
             size_x = float(size.get('width', 1.0))
             size_y = float(size.get('height', 1.0))
         else:
@@ -1369,6 +1494,24 @@ def _convert_image_mode(json_data, header, content_len, root_fields, tail, verbo
         packed_color = int(element.get('packed_color', default_packed_color))
         packed_color = _color_to_packed(element.get('color'), element.get('alpha'), packed_color)
         index = i + 2
+        scale = element.get('scale') or {}
+        scale_x = float(scale.get('x', 1.0)) if isinstance(scale, dict) else 1.0
+        scale_y = float(scale.get('y', 1.0)) if isinstance(scale, dict) else 1.0
+        anchor_min = element.get('anchor_min') or {}
+        anchor_max = element.get('anchor_max') or {}
+        pivot = element.get('pivot') or {}
+        pivot_x = float(pivot.get('x', 0.5)) if isinstance(pivot, dict) else 0.5
+        pivot_y = float(pivot.get('y', 0.5)) if isinstance(pivot, dict) else 0.5
+        is_textbox = shape_type == 'textbox' or isinstance(element.get('textbox'), dict)
+        textbox_payload = element.get('textbox') if is_textbox else None
+        if is_textbox and not isinstance(textbox_payload, dict):
+            textbox_payload = {
+                'text': element.get('text', ''),
+                'font_size': element.get('font_size', 20),
+                'packed_color': packed_color,
+            }
+        if is_textbox and packed_color == default_packed_color and 'packed_color' not in (textbox_payload or {}):
+            packed_color = int((textbox_payload or {}).get('packed_color', 0x4CFF0000))
 
         ui_content = create_ui_image_payload(
             guid=new_guid,
@@ -1381,9 +1524,17 @@ def _convert_image_mode(json_data, header, content_len, root_fields, tail, verbo
             image_asset_ref=image_asset_ref,
             packed_color=packed_color,
             rot_z=rot_z,
-            pivot_x=0.5,
-            pivot_y=0.5,
+            pivot_x=pivot_x,
+            pivot_y=pivot_y,
             name=name,
+            scale_x=scale_x,
+            scale_y=scale_y,
+            anchor_min_x=float(anchor_min.get('x', 0.5)) if isinstance(anchor_min, dict) else 0.5,
+            anchor_min_y=float(anchor_min.get('y', 0.5)) if isinstance(anchor_min, dict) else 0.5,
+            anchor_max_x=float(anchor_max.get('x', 0.5)) if isinstance(anchor_max, dict) else 0.5,
+            anchor_max_y=float(anchor_max.get('y', 0.5)) if isinstance(anchor_max, dict) else 0.5,
+            mp_field502=3 if is_textbox else 9,
+            textbox=textbox_payload,
         )
 
         indexed_items.append({

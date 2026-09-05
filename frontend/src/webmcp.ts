@@ -13,7 +13,7 @@
 // 将其视为数据而非指令（规范 §6.3.1.2 输出注入攻击的缓解措施）。
 // 不支持 WebMCP 的浏览器中静默跳过注册，不影响编辑器本身。
 
-import type { SceneDocument, SceneElement, ShapeType, SourceType } from "./App";
+import type { SceneDocument, SceneElement, ShapeType, SourceType, TextBoxSettings } from "./App";
 
 // ---------------------------------------------------------------------------
 // WebMCP 浏览器 API 的最小类型声明（规范 IDL 子集）
@@ -67,6 +67,7 @@ export type AddElementInput = {
   color?: string;
   opacity?: number;
   name?: string;
+  textBox?: Partial<TextBoxSettings>;
 };
 
 export type EditorBridge = {
@@ -108,7 +109,8 @@ const SHAPE_TYPES: ShapeType[] = [
   "triangle",
   "four_point_star",
   "five_point_star",
-  "ring"
+  "ring",
+  "textbox"
 ];
 
 const shapeEnum = { type: "string", enum: SHAPE_TYPES };
@@ -193,7 +195,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "list_elements",
       title: "List elements",
       description:
-        "List a summary of every element in the current scene, sorted by zIndex from bottom to top. Each entry includes id, name, shape type, center coordinates, width, height, rotation, color, opacity, and zIndex.",
+        "List a summary of every element in the current scene, sorted by zIndex from bottom to top. Each entry includes id, name, shape type, center coordinates, width, height, rotation, color, opacity, zIndex, and textBox when the element is a textbox.",
       annotations: { readOnlyHint: true, untrustedContentHint: true },
       inputSchema: { type: "object", properties: {} }
     },
@@ -216,7 +218,8 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
             color: element.color,
             opacity: element.opacity,
             zIndex: element.zIndex,
-            isBackground: element.isBackground
+            isBackground: element.isBackground,
+            ...(element.type === "textbox" ? { textBox: element.textBox } : {})
           }))
       };
     }
@@ -227,7 +230,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "add_element",
       title: "Add element",
       description:
-        "Add a basic shape element to the canvas (ellipse / rectangle / triangle / four_point_star / five_point_star / ring). x and y are the element center coordinates; if omitted the element is placed at the canvas center. Returns the full data of the new element.",
+        "Add a basic shape or textbox element to the canvas (ellipse / rectangle / triangle / four_point_star / five_point_star / ring / textbox). x and y are the element center coordinates; if omitted the element is placed at the canvas center. Returns the full data of the new element.",
       inputSchema: {
         type: "object",
         required: ["type"],
@@ -246,7 +249,12 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
           name: {
             type: "string",
             description: "Display name of the element; defaults to the shape's default name"
-          }
+          },
+          text: {
+            type: "string",
+            description: "Text content when type is textbox"
+          },
+          fontSize: numberProp("Font size in pixels when type is textbox (1-256)", 1, 256)
         }
       }
     },
@@ -255,6 +263,13 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       if (!type || !SHAPE_TYPES.includes(type)) {
         return err(`type must be one of ${SHAPE_TYPES.join(" / ")}`);
       }
+      const textBox =
+        type === "textbox"
+          ? {
+              ...(typeof args.text === "string" ? { text: args.text } : {}),
+              ...(typeof args.fontSize === "number" ? { fontSize: args.fontSize } : {})
+            }
+          : undefined;
       return bridge.addElement({
         type,
         x: typeof args.x === "number" ? args.x : undefined,
@@ -264,7 +279,8 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
         rotation: typeof args.rotation === "number" ? args.rotation : undefined,
         color: typeof args.color === "string" ? args.color : undefined,
         opacity: typeof args.opacity === "number" ? args.opacity : undefined,
-        name: typeof args.name === "string" ? args.name : undefined
+        name: typeof args.name === "string" ? args.name : undefined,
+        textBox: textBox && Object.keys(textBox).length ? textBox : undefined
       });
     }
   );
@@ -274,7 +290,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "update_element",
       title: "Update element",
       description:
-        "Update properties of the element with the given id (pass only the fields to change): name, center coordinates, width, height, rotation, color, opacity.",
+        "Update properties of the element with the given id (pass only the fields to change): name, center coordinates, width, height, rotation, color, opacity. For textboxes also text and fontSize.",
       inputSchema: {
         type: "object",
         required: ["id"],
@@ -287,7 +303,9 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
           height: numberProp("Height in pixels (4-2048)", 4, 2048),
           rotation: numberProp("Rotation in degrees (counter-clockwise positive, -360 to 360)", -360, 360),
           color: { type: "string", description: "Hex color, e.g. #be123c" },
-          opacity: numberProp("Opacity (0-1)", 0, 1)
+          opacity: numberProp("Opacity (0-1)", 0, 1),
+          text: { type: "string", description: "Text content when the target is a textbox" },
+          fontSize: numberProp("Font size in pixels when the target is a textbox (1-256)", 1, 256)
         }
       }
     },
@@ -321,6 +339,16 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
         ) {
           patch[key] = value;
         }
+      }
+      const textBoxPatch: Record<string, unknown> = {};
+      if (typeof args.text === "string") {
+        textBoxPatch.text = args.text;
+      }
+      if (typeof args.fontSize === "number" && Number.isFinite(args.fontSize)) {
+        textBoxPatch.fontSize = args.fontSize;
+      }
+      if (Object.keys(textBoxPatch).length) {
+        patch.textBox = textBoxPatch;
       }
       if (Object.keys(patch).length === 0) {
         return err("No updatable fields provided");
