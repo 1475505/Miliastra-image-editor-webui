@@ -1,9 +1,11 @@
 ---
 name: miliastra-image-svg-builder
 slug: miliastra-image-svg-builder
+displayName: 千星奇域图片编辑器-svg生成
+version: 1.0.2
+summary: 使用有限图元生成可导入千星图片编辑器的 SVG，适合轴对齐构图，也可通过 WebMCP 直接操作当前画布。
+license: Proprietary
 description: 为千星图片编辑器生成可导入的 SVG 图元场景，或在已打开编辑器且浏览器提供 WebMCP 工具时直接创建/修改画布。当用户提供图片/描述、图元构图天然轴对齐时使用。SVG 仅可靠还原轴对齐矩形、圆/椭圆和 3 点 polygon；旋转和复杂 SVG 特性会丢失。
-metadata:
-  version: "1.0.2"
 ---
 
 # 千星图片编辑器 SVG 生成

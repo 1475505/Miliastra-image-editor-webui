@@ -1,9 +1,11 @@
 ---
 name: miliastra-image-css-builder
 slug: miliastra-image-css-builder
+displayName: 千星奇域图片编辑器-css生成
+version: 1.0.4
+summary: 使用有限图元生成可导入千星图片编辑器的 CSS，支持旋转矩形、椭圆、三角形和圆环，也可通过 WebMCP 直接操作当前画布。
+license: Proprietary
 description: 为千星图片编辑器生成可导入的 CSS 图元场景，或在已打开编辑器且浏览器提供 WebMCP 工具时直接创建/修改画布。当用户提供图片/描述并希望用有限图元拟合时使用。CSS 保留图元旋转，支持矩形、椭圆、原生三角形和圆环；不适用于需要 SVG 路径或复杂渐变的输出。
-metadata:
-  version: "1.0.4"
 ---
 
 # 千星图片编辑器 CSS 生成
