@@ -4,11 +4,10 @@ module.exports = {
   apps: [
     {
       name: "qx-img",
-      // 直接跑 uvicorn：pm2 重启不再触发 npm install / npm run build / pip install，
-      // 避免每次重启 2-3 分钟不可用 + 前端 hash 抖动导致 404 白屏。手动部署用 ./start.sh。
-      script: isWin ? "start.bat" : "./backend/.venv/bin/python",
-      args: isWin ? "" : "-m uvicorn app.main:app --host 0.0.0.0 --port 8439",
-      cwd: isWin ? undefined : "./backend",
+      // 每次 PM2 重启先构建前端，再启动 Uvicorn，确保 index.html 与 hash 资源同步。
+      script: isWin ? "start.bat" : "./start.sh",
+      args: "",
+      cwd: isWin ? undefined : ".",
       exec_mode: "fork",
       instances: 1,
       autorestart: true,

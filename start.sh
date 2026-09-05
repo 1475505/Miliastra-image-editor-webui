@@ -11,7 +11,9 @@ REQ_FILE="$BACKEND_DIR/requirements.txt"
 if command -v npm >/dev/null 2>&1 && [ -f "$FRONTEND_DIR/package.json" ]; then
     echo "Building frontend..."
     cd "$FRONTEND_DIR"
-    npm install --no-audit --no-fund
+    if [ ! -d "node_modules" ]; then
+        npm ci --no-audit --no-fund
+    fi
     npm run build
 fi
 
@@ -23,10 +25,12 @@ if [ ! -d "$VENV_DIR" ]; then
     python3 -m venv "$VENV_DIR"
 fi
 
-# 安装/更新依赖
-echo "Installing dependencies..."
-"$VENV_DIR/bin/pip" install -r "$REQ_FILE"
+# 首次启动时安装后端依赖；日常 PM2 重启不重复安装。
+if [ ! -x "$VENV_DIR/bin/python" ]; then
+    echo "Installing dependencies..."
+    "$VENV_DIR/bin/pip" install -r "$REQ_FILE"
+fi
 
 # 启动服务
 echo "Starting uvicorn on 0.0.0.0:8439..."
-"$VENV_DIR/bin/python" -m uvicorn app.main:app --host 0.0.0.0 --port 8439
+exec "$VENV_DIR/bin/python" -m uvicorn app.main:app --host 0.0.0.0 --port 8439
