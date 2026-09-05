@@ -12,8 +12,10 @@
   --canvas-bg: #e8eaee;
   --danger: #dc2626;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Courier New", monospace;
+  --ui-font: "HYWenHei-85W", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --textbox-font: var(--ui-font);
 
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: var(--ui-font);
   font-size: 13px;
   color: var(--text);
   background: #f3f4f6;
@@ -1437,6 +1439,8 @@ input[type="range"]::-moz-range-thumb {
   word-break: break-word;
   line-height: 1.2;
   pointer-events: none;
+  font-family: var(--textbox-font);
+  font-weight: 400;
 }
 
 .textbox-input {
@@ -1448,6 +1452,8 @@ input[type="range"]::-moz-range-thumb {
   padding: 8px;
   background: #fff;
   color: var(--text);
+  font-family: var(--textbox-font);
+  font-weight: 400;
 }
 
 .field-hint {
