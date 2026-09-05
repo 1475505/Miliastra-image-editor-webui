@@ -1,5 +1,6 @@
 ---
 name: miliastra-image-css-builder
+slug: miliastra-image-css-builder
 description: 为千星图片编辑器生成可导入的 CSS 图元场景，或在已打开编辑器且浏览器提供 WebMCP 工具时直接创建/修改画布。当用户提供图片/描述并希望用有限图元拟合时使用。CSS 保留图元旋转，支持矩形、椭圆、原生三角形和圆环；不适用于需要 SVG 路径或复杂渐变的输出。
 metadata:
   version: "1.0.4"
