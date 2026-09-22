@@ -1123,17 +1123,26 @@ def _color_to_packed(color, alpha, fallback):
     return fallback
 
 
-def _patch_ui_content_children(ui_content_data, new_child_guids, parent_guid, mask_settings=None, group_name=None):
+def _patch_ui_content_children(ui_content_data, new_child_guids, parent_guid, mask_settings=None, group_name=None, canvas=None):
     """Patch the ui.content to replace children list with new GUIDs.
     
     Parses the ui.content message, replaces all field 503 (children) entries
-    with the new list, and preserves all other fields.
+    with the new list, and optionally sets the group's name, mask and canvas size.
     """
     fields = parse_message_fields(ui_content_data)
     new_fields = []
     children_written = False
     mask_written = False
     name_written = False
+    transform_written = False
+
+    # The image template omits the group transform, leaving its size at the
+    # consumer's default. Explicitly size the group to the editor canvas.
+    group_transform = None
+    if canvas is not None:
+        group_transform = _build_transform_data(
+            0.0, 0.0, float(canvas['width']), float(canvas['height']), parent_guid,
+        ).get_bytes()
     
     for f in fields:
         if f['tag'] == 503 and f['wire'] == WireType.VARINT:
@@ -1146,6 +1155,13 @@ def _patch_ui_content_children(ui_content_data, new_child_guids, parent_guid, ma
         elif f['tag'] == 505 and f['wire'] == WireType.LENGTH_DELIMITED:
             data_fields = parse_message_fields(f['data'])
             field502 = _find_varint(data_fields, 502)
+            if group_transform is not None and field502 == 12:
+                new_fields.append({
+                    'tag': 505, 'wire': WireType.LENGTH_DELIMITED,
+                    'data': group_transform,
+                })
+                transform_written = True
+                continue
             if mask_settings is not None and field502 == 56:
                 new_fields.append({
                     'tag': 505,
@@ -1195,6 +1211,12 @@ def _patch_ui_content_children(ui_content_data, new_child_guids, parent_guid, ma
             ).get_bytes(),
         })
 
+    if group_transform is not None and not transform_written:
+        new_fields.append({
+            'tag': 505, 'wire': WireType.LENGTH_DELIMITED,
+            'data': group_transform,
+        })
+
     if group_name and not name_written:
         new_fields.append({
             'tag': 505,
@@ -1205,13 +1227,14 @@ def _patch_ui_content_children(ui_content_data, new_child_guids, parent_guid, ma
     return build_message(new_fields)
 
 
-def _patch_primary_resource_image(pr_fields, removed_guids, new_refs, new_child_guids, parent_guid, mask_settings=None, group_name=None):
+def _patch_primary_resource_image(pr_fields, removed_guids, new_refs, new_child_guids, parent_guid, mask_settings=None, group_name=None, canvas=None):
     """Rebuild primary resource for image mode.
     
     In image mode we need to:
     1. Replace reference_list entries (tag 2) with new ones
     2. Patch the ui.content children list (field 503 inside field 19 -> field 1)
-    3. Preserve everything else (especially mask_settings, transform, etc.)
+    3. Apply optional group name, mask and canvas transform overrides
+    4. Preserve all other fields
     """
     pr_writer = ProtoWriter()
     inserted_new_refs = False
@@ -1244,6 +1267,7 @@ def _patch_primary_resource_image(pr_fields, removed_guids, new_refs, new_child_
                         parent_guid,
                         mask_settings,
                         group_name,
+                        canvas,
                     )
                     new_ui_fields.append({'tag': 1, 'wire': WireType.LENGTH_DELIMITED, 'data': patched_content})
                 else:
@@ -1565,6 +1589,7 @@ def _convert_image_mode(json_data, header, content_len, root_fields, tail, verbo
         parent_guid,
         mask_settings,
         group_name,
+        json_data.get('canvas'),
     )
     return _rebuild_gia(header, content_len, root_fields, tail, new_image_entries, pr_bytes, removed_class=15, mode=MODE_IMAGE)
 

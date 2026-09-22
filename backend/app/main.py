@@ -1235,6 +1235,7 @@ def scene_to_gia_document(scene: SceneDocumentModel, group_name: str | None = No
 
     return {
         "group_name": normalize_gia_group_name(group_name),
+        "canvas": {"width": scene.canvas.width, "height": scene.canvas.height},
         "elements": elements,
     }
 
