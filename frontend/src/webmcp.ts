@@ -89,7 +89,7 @@ export type EditorBridge = {
     content: string,
     name?: string
   ): Promise<{ ok: boolean; error?: string; warnings?: string[] }>;
-  exportScene(format: "css" | "svg" | "json"): Promise<string>;
+  exportScene(format: "css" | "svg" | "json" | "lua"): Promise<string>;
   getCanvasPreview(
     maxSize: number
   ): Promise<{ ok: boolean; dataUrl?: string; width?: number; height?: number; error?: string }>;
@@ -426,7 +426,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "import_source",
       title: "Import source",
       description:
-        "Parse and import CSS / JSON / SVG source content into the canvas (replaces the current scene, undoable). CSS must follow the Miliastra Primitive Shaper style conventions; SVG supports basic shapes only.",
+        "Parse and import CSS / JSON / SVG / Lua scene source content into the canvas (replaces the current scene, undoable). CSS must follow the Miliastra Primitive Shaper style conventions; SVG supports basic shapes only. Lua accepts the ROOT/ELEMENTS and PALETTE/ELEMENTS drawing formats exported by this editor and the primitive-shape fitting tool; it never executes uploaded code.",
       annotations: { untrustedContentHint: true },
       inputSchema: {
         type: "object",
@@ -434,7 +434,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
         properties: {
           sourceType: {
             type: "string",
-            enum: ["css", "json", "svg"],
+            enum: ["css", "json", "svg", "lua"],
             description: "Format of the source content"
           },
           content: { type: "string", description: "Full text content of the source file" },
@@ -444,8 +444,8 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
     },
     (bridge, args) => {
       const sourceType = args.sourceType as SourceType | undefined;
-      if (sourceType !== "css" && sourceType !== "json" && sourceType !== "svg") {
-        return err("sourceType must be one of css / json / svg");
+      if (sourceType !== "css" && sourceType !== "json" && sourceType !== "svg" && sourceType !== "lua") {
+        return err("sourceType must be one of css / json / svg / lua");
       }
       const content = typeof args.content === "string" ? args.content : "";
       if (!content.trim()) {
@@ -461,7 +461,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "export_scene",
       title: "Export scene",
       description:
-        "Export the current scene as text and return its content: css (web styles) / svg (vector; unsupported rings are dropped automatically) / json (scene source data). For the binary GIA format use the in-app export button.",
+        "Export the current scene as text and return its content: css (web styles) / svg (vector; unsupported rings are dropped automatically) / json (scene source data) / lua (client image drawing script using one image prefab; textboxes are preserved only for re-import). For the binary GIA format use the in-app export button.",
       annotations: { readOnlyHint: true, untrustedContentHint: true },
       inputSchema: {
         type: "object",
@@ -469,16 +469,16 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
         properties: {
           format: {
             type: "string",
-            enum: ["css", "svg", "json"],
+            enum: ["css", "svg", "json", "lua"],
             description: "Export format"
           }
         }
       }
     },
     async (bridge, args) => {
-      const format = args.format as "css" | "svg" | "json" | undefined;
-      if (format !== "css" && format !== "svg" && format !== "json") {
-        return err("format must be one of css / svg / json");
+      const format = args.format as "css" | "svg" | "json" | "lua" | undefined;
+      if (format !== "css" && format !== "svg" && format !== "json" && format !== "lua") {
+        return err("format must be one of css / svg / json / lua");
       }
       const content = await bridge.exportScene(format);
       return { ok: true, format, content };

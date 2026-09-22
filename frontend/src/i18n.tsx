@@ -56,10 +56,10 @@ export const translations: Record<Lang, TranslationDict> = {
     "topbar.save": "保存并应用",
     "topbar.saveShort": (m: string) => `保存并应用 (${m}S)`,
     "topbar.export": "导出",
-    "topbar.tour": "教程",
-    "topbar.tourTitle": "打开新手教程",
+    "topbar.tour": "上手",
+    "topbar.tourTitle": "快速上手",
     "topbar.github": "GitHub 仓库",
-    "topbar.docs": "知识库文档",
+    "topbar.docs": "千星知识库",
     "topbar.lang": "中/EN",
 
     // 左侧面板 tabs
@@ -69,7 +69,7 @@ export const translations: Record<Lang, TranslationDict> = {
 
     // 图层空状态
     "layers.empty.title": "还没有图元",
-    "layers.empty.desc": "从图形库拖入基础形状，或导入 SVG / CSS / JSON 模板",
+    "layers.empty.desc": "从图形库拖入基础形状，或导入 SVG / CSS / JSON / Lua 模板",
     "layers.empty.browse": "浏览图形库",
     "layers.empty.import": "导入模板",
 
@@ -82,7 +82,7 @@ export const translations: Record<Lang, TranslationDict> = {
     "library.savedEmpty": "「保存并应用」后，画布图元会出现在这里，可重复拖入复用。",
 
     // 导入面板
-    "import.tip": "支持粘贴或上传 svg / css / json 模板；内容留空时导入将得到 300 × 300 空画布。",
+    "import.tip": "上传文件或粘贴内容。支持 SVG、CSS、JSON 和 Lua 场景。",
     "import.format": "模板格式",
     "import.upload": "点击上传文件",
     "import.paste": "或粘贴内容",
@@ -104,12 +104,12 @@ export const translations: Record<Lang, TranslationDict> = {
 
     // 画布空状态
     "canvas.empty.title": "画布还是空的",
-    "canvas.empty.desc": "先确认画布尺寸，再从图形库拖入形状，或导入 SVG / CSS / JSON 模板",
+    "canvas.empty.desc": "拖入形状，或导入已有作品。",
     "canvas.empty.sizeTitle": "画布尺寸，也可稍后在右侧「属性 → 画布」中修改",
     "canvas.empty.size": "画布尺寸",
     "canvas.empty.widthAria": "画布宽度",
     "canvas.empty.heightAria": "画布高度",
-    "canvas.empty.watchTour": "观看教程",
+    "canvas.empty.watchTour": "快速上手",
     "canvas.empty.sample": "或先试试示例场景 →",
     "canvas.metaTitle": "画布尺寸，点击编辑画布属性",
 
@@ -178,7 +178,7 @@ export const translations: Record<Lang, TranslationDict> = {
     "props.stats": "统计",
     "props.elementCount": "图元数量",
     "props.canvasSize": "画布尺寸",
-    "props.canvasTip": "这里设置画布的尺寸与背景色；选中图元后切换到上方「图元」页可编辑其坐标、颜色与层级。吸附开关在画布顶部工具条上。",
+    "props.canvasTip": "选中图元后，可编辑位置、颜色与层级。",
 
     // 代码面板
     "code.refresh": "刷新",
@@ -191,7 +191,7 @@ export const translations: Record<Lang, TranslationDict> = {
     // 状态栏
     "statusbar.elements": "图元",
     "statusbar.qq": "QQ 群 1007538100",
-    "statusbar.welcome": "欢迎使用，点击顶部「教程」可快速上手",
+    "statusbar.welcome": "准备就绪，开始创作吧",
     "statusbar.undone": "已撤销上一步",
     "statusbar.redone": "已重做下一步",
     "statusbar.emptyLoaded": "已加载空画布",
@@ -246,6 +246,10 @@ export const translations: Record<Lang, TranslationDict> = {
     "export.css.desc": "Web 样式代码",
     "export.svg.desc": "矢量图形",
     "export.json.desc": "场景源数据",
+    "export.lua.desc": "客户端绘制脚本 · 可再次导入",
+    "export.lua.setup": "填写脚本中的 IMAGE_PREFAB_ID（图片控件模板索引），挂到专用空客户端容器节点。",
+    "export.lua.preservedOnly": "Lua 仅绘制图片图元。文本框与其他图元保留在回导数据中；要在游戏中显示文字，请使用 GIA。",
+    "import.luaHint": "支持图元拟合工具及本编辑器导出的 Lua。仅读取图元数据，不运行脚本。",
 
     // 快捷编辑
     "quick.edit": "快捷编辑",
@@ -255,32 +259,20 @@ export const translations: Record<Lang, TranslationDict> = {
     // 示例场景
     "sample.sceneName": "示例场景",
 
-    // 教程步骤
-    "tour.close": "关闭教程",
-    "tour.prev": "上一步",
-    "tour.next": "下一步",
-    "tour.start": "开始使用",
-    "tour.step1.title": "欢迎使用千星图片编辑器",
-    "tour.step1.body": "这是一款面向游戏图片素材的可视化编辑器：导入模板或拖入基础形状，在画布上直接编排，最后一键导出 GIA / CSS / SVG / JSON。编辑器支持 WebMCP 和 Skill，可以用 Codex 等 AI 代理直接操作拼图。接下来用 30 秒了解界面布局。",
-    "tour.step2.title": "左侧面板：素材从这里来",
-    "tour.step2.body": "图形库：把基础形状拖入画布（或双击添加）；导入：粘贴或上传 SVG / CSS / JSON 模板；图层：查看并点选画布上的全部图元。",
-    "tour.step3.title": "画布：所见即所得",
-    "tour.step3.body": "拖动图元即可移动；选中后用右下角手柄缩放、顶部手柄旋转；右键打开快捷编辑。顶部悬浮条从左到右依次是：缩放、适应窗口、吸附开关（自动对齐其他图元）、网格（坐标按像素取整）、角度（旋转步进）。拖动空白处平移视图。",
-    "tour.step4.title": "右侧：属性检查器与代码",
-    "tour.step4.body": "「属性」页顶部可在图元 / 画布之间切换：画布页设置尺寸与背景色（也可以直接点画布右下角的尺寸徽标）；选中图元后自动切到图元页，精确调整坐标、颜色、透明度与层级。代码页可查看并一键复制 JSON / CSS / SVG。",
-    "tour.step5.title": "保存与导出",
-    "tour.step5.body": "Ctrl/⌘ + S 随时保存并应用；点击导出可下载 GIA、CSS、SVG、JSON，文件名使用顶栏中央的素材组名称。撤销 / 重做按钮在顶栏左侧。仓库提供 CSS / SVG builder Skill，可生成可导入模板；打开本页且浏览器提供 WebMCP 时，Codex 等代理也能直接增删图元。",
-    "tour.step6.title": "常用快捷键",
-    "tour.step6.saveApply": "保存并应用",
-    "tour.step6.undo": "撤销",
-    "tour.step6.redo": "重做",
-    "tour.step6.deleteSelected": "删除选中图元",
-    "tour.step6.axisLock": "轴锁定移动",
-    "tour.step6.duplicate": "复制图元",
-    "tour.step6.disableAngleSnap": "临时关闭角度吸附",
-    "tour.step6.github": "GitHub 仓库",
-    "tour.step6.docs": "知识库文档",
-    "tour.step6.bilibili": "作者 B 站"
+    "tools.fitting": "图元拟合工具",
+    "tools.fittingHint": "将图片拟合为图元，再导入编辑",
+    "welcome.close": "关闭快速上手",
+    "welcome.title": "从一个图元开始",
+    "welcome.subtitle": "拼出你的画面，带进千星奇域。",
+    "welcome.create": "添加素材",
+    "welcome.createHint": "从左侧拖入形状，或导入已有作品。",
+    "welcome.edit": "调整画面",
+    "welcome.editHint": "拖动、缩放、旋转；右侧精调属性。",
+    "welcome.export": "导出作品",
+    "welcome.exportHint": "右上角选择格式，下载后即可使用。",
+    "welcome.docs": "编辑器使用说明 ↗",
+    "welcome.import": "导入作品",
+    "welcome.start": "开始创作"
   },
   en: {
     // Brand
@@ -296,10 +288,10 @@ export const translations: Record<Lang, TranslationDict> = {
     "topbar.save": "Save & Apply",
     "topbar.saveShort": (m: string) => `Save & Apply (${m}S)`,
     "topbar.export": "Export",
-    "topbar.tour": "Tour",
-    "topbar.tourTitle": "Open beginner tour",
+    "topbar.tour": "Help",
+    "topbar.tourTitle": "Quick start",
     "topbar.github": "GitHub Repository",
-    "topbar.docs": "Knowledge Base",
+    "topbar.docs": "Miliastra Knowledge Base",
     "topbar.lang": "中/EN",
 
     // Left panel tabs
@@ -309,7 +301,7 @@ export const translations: Record<Lang, TranslationDict> = {
 
     // Layers empty state
     "layers.empty.title": "No elements yet",
-    "layers.empty.desc": "Drag a basic shape from the library, or import an SVG / CSS / JSON template",
+    "layers.empty.desc": "Drag a basic shape from the library, or import an SVG / CSS / JSON / Lua template",
     "layers.empty.browse": "Browse Library",
     "layers.empty.import": "Import Template",
 
@@ -322,7 +314,7 @@ export const translations: Record<Lang, TranslationDict> = {
     "library.savedEmpty": "After \"Save & Apply\", canvas elements will appear here and can be dragged back in for reuse.",
 
     // Import panel
-    "import.tip": "Paste or upload an svg / css / json template. Leaving content empty will produce a 300 × 300 empty canvas.",
+    "import.tip": "Upload a file or paste SVG, CSS, JSON or Lua scene data.",
     "import.format": "Template format",
     "import.upload": "Click to upload a file",
     "import.paste": "Or paste content",
@@ -344,12 +336,12 @@ export const translations: Record<Lang, TranslationDict> = {
 
     // Canvas empty state
     "canvas.empty.title": "Canvas is empty",
-    "canvas.empty.desc": "Set the canvas size first, then drag a shape from the library, or import an SVG / CSS / JSON template",
+    "canvas.empty.desc": "Drag in a shape or import your artwork.",
     "canvas.empty.sizeTitle": "Canvas size. Can also be changed later in \"Properties → Canvas\" on the right.",
     "canvas.empty.size": "Canvas size",
     "canvas.empty.widthAria": "Canvas width",
     "canvas.empty.heightAria": "Canvas height",
-    "canvas.empty.watchTour": "Watch tour",
+    "canvas.empty.watchTour": "Quick start",
     "canvas.empty.sample": "Or try the sample scene →",
     "canvas.metaTitle": "Canvas size. Click to edit canvas properties.",
 
@@ -418,7 +410,7 @@ export const translations: Record<Lang, TranslationDict> = {
     "props.stats": "Stats",
     "props.elementCount": "Element count",
     "props.canvasSize": "Canvas size",
-    "props.canvasTip": "Set the canvas size and background color here. After selecting an element, switch to the \"Element\" tab above to edit its coordinates, color, and layer. The snap toggle lives in the toolbar above the canvas.",
+    "props.canvasTip": "Select an element to edit its position, color and layer.",
 
     // Code panel
     "code.refresh": "Refresh",
@@ -431,7 +423,7 @@ export const translations: Record<Lang, TranslationDict> = {
     // Status bar
     "statusbar.elements": "Elements",
     "statusbar.qq": "QQ Group 1007538100",
-    "statusbar.welcome": "Welcome! Click \"Tour\" in the top bar to get started.",
+    "statusbar.welcome": "Ready when you are.",
     "statusbar.undone": "Undone",
     "statusbar.redone": "Redone",
     "statusbar.emptyLoaded": "Empty canvas loaded",
@@ -486,6 +478,10 @@ export const translations: Record<Lang, TranslationDict> = {
     "export.css.desc": "Web style code",
     "export.svg.desc": "Vector graphics",
     "export.json.desc": "Scene source data",
+    "export.lua.desc": "Client drawing script · re-importable",
+    "export.lua.setup": "Set IMAGE_PREFAB_ID to your image control template index, then attach the script to a dedicated empty client container.",
+    "export.lua.preservedOnly": "Lua draws image shapes only. Textboxes and other elements are kept for re-import; use GIA to display text in-game.",
+    "import.luaHint": "Accepts Lua exported by the image fitting tool or this editor. Reads drawing data without running the script.",
 
     // Quick edit
     "quick.edit": "Quick Edit",
@@ -495,32 +491,20 @@ export const translations: Record<Lang, TranslationDict> = {
     // Sample scene
     "sample.sceneName": "Sample Scene",
 
-    // Tour steps
-    "tour.close": "Close tour",
-    "tour.prev": "Previous",
-    "tour.next": "Next",
-    "tour.start": "Get started",
-    "tour.step1.title": "Welcome to Miliastra Image Editor",
-    "tour.step1.body": "This is a visual editor for game image assets: import a template or drag in basic shapes, arrange them directly on the canvas, and export GIA / CSS / SVG / JSON in one click. It supports WebMCP and Skills, so Codex and similar agents can assemble the puzzle for you. Take 30 seconds to learn the layout.",
-    "tour.step2.title": "Left panel: where assets come from",
-    "tour.step2.body": "Library: drag basic shapes onto the canvas (or double-click to add). Import: paste or upload SVG / CSS / JSON templates. Layers: view and pick any element on the canvas.",
-    "tour.step3.title": "Canvas: what you see is what you get",
-    "tour.step3.body": "Drag an element to move it. When selected, use the bottom-right handle to scale and the top handle to rotate. Right-click for quick edit. The floating toolbar at the top, from left to right: zoom, fit to window, snap toggle (auto-align to other elements), grid (snap coordinates to pixels), angle (rotation step). Drag empty space to pan.",
-    "tour.step4.title": "Right side: property inspector and code",
-    "tour.step4.body": "The top of the \"Properties\" tab lets you switch between Element and Canvas. The Canvas tab sets size and background color (you can also click the size badge at the bottom-right of the canvas). After selecting an element, it auto-switches to the Element tab for precise control of coordinates, color, opacity, and layer. The Code tab lets you view and copy JSON / CSS / SVG.",
-    "tour.step5.title": "Save and export",
-    "tour.step5.body": "Ctrl/⌘ + S saves and applies at any time. Click Export to download GIA, CSS, SVG, or JSON. The filename uses the asset group name in the center of the top bar. Undo / redo buttons are on the left of the top bar. The repo ships CSS / SVG builder Skills for importable templates; with this page open and WebMCP available, Codex and similar agents can add or edit elements directly.",
-    "tour.step6.title": "Common shortcuts",
-    "tour.step6.saveApply": "Save & Apply",
-    "tour.step6.undo": "Undo",
-    "tour.step6.redo": "Redo",
-    "tour.step6.deleteSelected": "Delete selected element",
-    "tour.step6.axisLock": "Axis-locked move",
-    "tour.step6.duplicate": "Duplicate element",
-    "tour.step6.disableAngleSnap": "Temporarily disable angle snap",
-    "tour.step6.github": "GitHub Repository",
-    "tour.step6.docs": "Knowledge Base",
-    "tour.step6.bilibili": "Author on Bilibili"
+    "tools.fitting": "Image to Shapes",
+    "tools.fittingHint": "Fit an image to shapes, then import to edit",
+    "welcome.close": "Close quick start",
+    "welcome.title": "Start with a shape",
+    "welcome.subtitle": "Build your artwork. Bring it into Miliastra.",
+    "welcome.create": "Add something",
+    "welcome.createHint": "Drag a shape from the library or import your work.",
+    "welcome.edit": "Make it yours",
+    "welcome.editHint": "Move, resize and rotate. Fine-tune on the right.",
+    "welcome.export": "Take it with you",
+    "welcome.exportHint": "Choose a format in Export and download your work.",
+    "welcome.docs": "Editor guide ↗",
+    "welcome.import": "Import work",
+    "welcome.start": "Start creating"
   }
 };
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { registerEditorTools, type AddElementInput, type EditorBridge } from "./webmcp";
-import { useI18n, type TranslateFn } from "./i18n";
+import { useI18n } from "./i18n";
 
 export type ShapeType =
   | "ellipse"
@@ -42,10 +42,10 @@ export type TextBoxSettings = {
   pivotY: number;
 };
 
-export type SourceType = "json" | "css" | "svg";
+export type SourceType = "json" | "css" | "svg" | "lua";
 type LeftTab = "layers" | "library" | "import";
 type RightTab = "props" | "code";
-type PreviewTab = "json" | "css" | "svg";
+type PreviewTab = "json" | "css" | "svg" | "lua";
 
 export type SceneElement = {
   id: string;
@@ -98,7 +98,7 @@ export type SceneDocument = {
   };
   elements: SceneElement[];
   meta: {
-    sourceType: "json" | "css" | "svg" | "editor";
+    sourceType: "json" | "css" | "svg" | "lua" | "editor";
     sourceName: string;
     warnings: string[];
   };
@@ -205,7 +205,8 @@ const EMPTY_SCENE = (): SceneDocument => ({
 const previewLabels: Record<PreviewTab, string> = {
   json: "JSON",
   css: "CSS",
-  svg: "SVG"
+  svg: "SVG",
+  lua: "Lua"
 };
 
 const defaultBaseShapePresets: LibraryBaseShapePreset[] = [
@@ -246,6 +247,7 @@ export const DEFAULT_TEXTBOX: TextBoxSettings = {
 
 const EXPORT_FORMATS = [
   { endpoint: "/api/export/gia", ext: "gia", label: "GIA" },
+  { endpoint: "/api/export/lua", ext: "lua", label: "Lua" },
   { endpoint: "/api/export/css", ext: "css", label: "CSS" },
   { endpoint: "/api/export/svg", ext: "svg", label: "SVG" },
   { endpoint: "/api/export/json", ext: "json", label: "JSON" }
@@ -277,6 +279,7 @@ function App() {
   const [generatedJson, setGeneratedJson] = useState(JSON.stringify(EMPTY_SCENE(), null, 2));
   const [generatedCss, setGeneratedCss] = useState("");
   const [generatedSvg, setGeneratedSvg] = useState("");
+  const [generatedLua, setGeneratedLua] = useState("");
   const [svgExportWarning, setSvgExportWarning] = useState<string | null>(null);
   const [giaGroupName, setGiaGroupName] = useState(() => formatGiaGroupName(new Date()));
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -289,11 +292,11 @@ function App() {
   const [exportOpen, setExportOpen] = useState(false);
   const [propsView, setPropsView] = useState<"element" | "canvas">("canvas");
   const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false });
-  const [tourStep, setTourStep] = useState<number | null>(() => {
+  const [welcomeOpen, setWelcomeOpen] = useState<boolean>(() => {
     try {
-      return localStorage.getItem(TOUR_SEEN_KEY) ? null : 0;
+      return !localStorage.getItem(TOUR_SEEN_KEY);
     } catch {
-      return 0;
+      return true;
     }
   });
 
@@ -462,6 +465,7 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (document.querySelector("dialog[open]")) return;
       const mod = event.ctrlKey || event.metaKey;
 
       if (mod && event.key.toLowerCase() === "s") {
@@ -675,7 +679,9 @@ function App() {
     });
 
     if (!response.ok) {
-      setStatus(t("statusbar.importFailed", { msg: await response.text() }));
+      const message = t("statusbar.importFailed", { msg: await readApiError(response) });
+      setWarnings([message]);
+      setStatus(message);
       return;
     }
 
@@ -696,12 +702,14 @@ function App() {
 
   async function refreshPreviews(nextScene: SceneDocument) {
     setGeneratedJson(JSON.stringify(nextScene, null, 2));
-    const [cssText, svgText] = await Promise.all([
+    const [cssText, svgText, luaText] = await Promise.all([
       fetchTextExport("/api/export/css", nextScene),
-      fetchTextExport("/api/export/svg", nextScene)
+      fetchTextExport("/api/export/svg", nextScene),
+      fetchTextExport("/api/export/lua", nextScene)
     ]);
     setGeneratedCss(cssText);
     setGeneratedSvg(svgText);
+    setGeneratedLua(luaText);
     setSvgExportWarning(extractSvgExportWarning(svgText));
   }
 
@@ -895,6 +903,8 @@ function App() {
     const lower = file.name.toLowerCase();
     if (lower.endsWith(".json")) {
       setSourceType("json");
+    } else if (lower.endsWith(".lua")) {
+      setSourceType("lua");
     } else if (lower.endsWith(".svg")) {
       setSourceType("svg");
     } else {
@@ -922,7 +932,7 @@ function App() {
 
   async function copyCurrentCode() {
     const label = previewLabels[previewTab];
-    const text = previewTab === "json" ? generatedJson : previewTab === "css" ? generatedCss : generatedSvg;
+    const text = previewTab === "json" ? generatedJson : previewTab === "css" ? generatedCss : previewTab === "lua" ? generatedLua : generatedSvg;
     try {
       await navigator.clipboard.writeText(text);
       setStatus(t("statusbar.copied", { label }));
@@ -1133,7 +1143,7 @@ function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         scene,
-        giaGroupName: endpoint === "/api/export/gia" ? giaGroupName : undefined
+        giaGroupName: endpoint === "/api/export/gia" || endpoint === "/api/export/lua" ? giaGroupName : undefined
       })
     });
     if (!response.ok) {
@@ -1156,6 +1166,12 @@ function App() {
     link.download = filename;
     link.click();
     URL.revokeObjectURL(url);
+    if (endpoint === "/api/export/lua" && scene.elements.some((element) => element.type === "textbox" || element.type === "other")) {
+      setStatus(t("export.lua.preservedOnly"));
+      setRightTab("code");
+      setPreviewTab("lua");
+      return;
+    }
     setStatus(warning ? t("statusbar.downloadedWithRingWarning", { name: filename }) : t("statusbar.downloaded", { name: filename }));
   }
 
@@ -1220,7 +1236,7 @@ function App() {
   }
 
   function closeTour() {
-    setTourStep(null);
+    setWelcomeOpen(false);
     try {
       localStorage.setItem(TOUR_SEEN_KEY, "1");
     } catch {
@@ -1229,7 +1245,7 @@ function App() {
   }
 
   function openTour() {
-    setTourStep(0);
+    setWelcomeOpen(true);
   }
 
   function handleStageMouseDown(event: React.MouseEvent<HTMLDivElement>) {
@@ -1320,7 +1336,7 @@ function App() {
           </label>
         </div>
 
-        <div className="topbar-group">
+        <div className="topbar-group topbar-actions">
           <button className="btn btn-primary" onClick={handleSaveAndApply} title={t("topbar.saveShort", { mod: isMac ? "⌘" : "Ctrl+" })}>
             <Icon name="save" size={13} />
             <span>{t("topbar.save")}</span>
@@ -1357,6 +1373,9 @@ function App() {
             ) : null}
           </div>
           <span className="divider" />
+          <a className="btn btn-tonal fitting-link" href="https://qx-img.070077.xyz/" target="_blank" rel="noreferrer">
+            <Icon name="image" size={14} /><span>{t("tools.fitting")}</span>
+          </a>
           <button className="btn btn-ghost btn-text-icon" onClick={openTour} title={t("topbar.tourTitle")}>
             <Icon name="help" size={13} />
             <span>{t("topbar.tour")}</span>
@@ -1513,19 +1532,26 @@ function App() {
                 <div className="tip-box">
                   {t("import.tip")}
                 </div>
+                <a className="resource-link" href="https://qx-img.070077.xyz/" target="_blank" rel="noreferrer">
+                  <Icon name="image" size={18} />
+                  <span><strong>{t("tools.fitting")}</strong><small>{t("tools.fittingHint")}</small></span>
+                  <span aria-hidden="true">↗</span>
+                </a>
                 <label className="field">
                   <span>{t("import.format")}</span>
                   <select value={sourceType} onChange={(event) => setSourceType(event.target.value as SourceType)}>
                     <option value="svg">SVG</option>
                     <option value="css">CSS</option>
                     <option value="json">JSON</option>
+                    <option value="lua">Lua</option>
                   </select>
                 </label>
+                {sourceType === "lua" ? <div className="tip-box">{t("import.luaHint")}</div> : null}
                 <label className="upload-box">
-                  <input type="file" accept=".css,.json,.svg,text/css,application/json,image/svg+xml" onChange={handleTemplateUpload} />
+                  <input type="file" accept=".css,.json,.svg,.lua,text/css,application/json,image/svg+xml,text/plain" onChange={handleTemplateUpload} />
                   <Icon name="upload" size={16} />
                   <strong>{t("import.upload")}</strong>
-                  <span>.svg / .css / .json</span>
+                  <span>.svg / .css / .json / .lua</span>
                 </label>
                 <label className="field field-grow">
                   <span>{t("import.paste")}</span>
@@ -1992,7 +2018,7 @@ function App() {
             <>
               <div className="code-panel">
                 <div className="seg seg-compact">
-                  {(["json", "css", "svg"] as PreviewTab[]).map((tab) => (
+                  {(["json", "css", "svg", "lua"] as PreviewTab[]).map((tab) => (
                     <button
                       key={tab}
                       className={previewTab === tab ? "active" : ""}
@@ -2002,6 +2028,12 @@ function App() {
                     </button>
                   ))}
                 </div>
+                {previewTab === "lua" ? (
+                  <div className="tip-box">{t("export.lua.setup")}</div>
+                ) : null}
+                {previewTab === "lua" && scene.elements.some((element) => element.type === "textbox" || element.type === "other") ? (
+                  <div className="message-box warning">{t("export.lua.preservedOnly")}</div>
+                ) : null}
                 {previewTab === "svg" && svgExportWarning ? (
                   <div className="message-box warning" data-tour="svg-ring-warning">
                     <p>{svgExportWarning}</p>
@@ -2010,7 +2042,7 @@ function App() {
                 <textarea
                   readOnly
                   spellCheck={false}
-                  value={previewTab === "json" ? generatedJson : previewTab === "css" ? generatedCss : generatedSvg}
+                  value={previewTab === "json" ? generatedJson : previewTab === "css" ? generatedCss : previewTab === "lua" ? generatedLua : generatedSvg}
                 />
               </div>
               <div className="sidebar-footer sidebar-footer-row">
@@ -2077,224 +2109,65 @@ function App() {
         </div>
       ) : null}
 
-      {tourStep !== null ? (
-        <TourOverlay
-          stepIndex={tourStep}
-          onPrev={() => setTourStep((step) => (step === null ? null : Math.max(0, step - 1)))}
-          onNext={() => setTourStep((step) => (step === null ? null : Math.min(TOUR_STEPS_COUNT - 1, step + 1)))}
-          onSkip={closeTour}
+      {welcomeOpen ? (
+        <WelcomeDialog
+          onClose={closeTour}
+          onStart={(tab) => {
+            closeTour();
+            setLeftTab(tab);
+          }}
         />
       ) : null}
     </div>
   );
 }
 
-type TourStepConfig = {
-  title: string;
-  target?: string;
-  placement?: "center" | "right" | "left" | "bottom";
-  body: React.ReactNode;
-};
-
-const TOUR_STEPS_COUNT = 6;
-
-function buildTourSteps(t: TranslateFn): TourStepConfig[] {
-  return [
-    {
-      title: t("tour.step1.title"),
-      placement: "center",
-      body: (
-        <p>
-          {t("tour.step1.body")}
-        </p>
-      )
-    },
-    {
-      title: t("tour.step2.title"),
-      target: "left-panel",
-      placement: "right",
-      body: (
-        <p>
-          {t("tour.step2.body")}
-        </p>
-      )
-    },
-    {
-      title: t("tour.step3.title"),
-      target: "canvas",
-      placement: "center",
-      body: (
-        <p>
-          {t("tour.step3.body")}
-        </p>
-      )
-    },
-    {
-      title: t("tour.step4.title"),
-      target: "right-panel",
-      placement: "left",
-      body: (
-        <p>
-          {t("tour.step4.body")}
-        </p>
-      )
-    },
-    {
-      title: t("tour.step5.title"),
-      target: "export",
-      placement: "bottom",
-      body: (
-        <p>
-          {t("tour.step5.body")}
-        </p>
-      )
-    },
-    {
-      title: t("tour.step6.title"),
-      placement: "center",
-      body: (
-        <>
-          <div className="kbd-grid">
-            <span><kbd>Ctrl/⌘</kbd> <kbd>S</kbd></span><span>{t("tour.step6.saveApply")}</span>
-            <span><kbd>Ctrl/⌘</kbd> <kbd>Z</kbd></span><span>{t("tour.step6.undo")}</span>
-            <span><kbd>Ctrl/⌘</kbd> <kbd>Shift</kbd> <kbd>Z</kbd></span><span>{t("tour.step6.redo")}</span>
-            <span><kbd>Delete</kbd></span><span>{t("tour.step6.deleteSelected")}</span>
-            <span><kbd>Shift</kbd> + {t("tour.step6.axisLock")}</span><span>{t("tour.step6.axisLock")}</span>
-            <span><kbd>Alt</kbd> + {t("tour.step6.duplicate")}</span><span>{t("tour.step6.duplicate")}</span>
-            <span><kbd>Ctrl/⌘</kbd> + {t("tour.step6.disableAngleSnap")}</span><span>{t("tour.step6.disableAngleSnap")}</span>
-          </div>
-          <div className="tour-links">
-            <a href="https://github.com/1475505/Miliastra-image-editor-webui" target="_blank" rel="noreferrer">{t("tour.step6.github")}</a>
-            <a href="https://ugc.070077.xyz" target="_blank" rel="noreferrer">{t("tour.step6.docs")}</a>
-            <a href="https://space.bilibili.com/233587917" target="_blank" rel="noreferrer">{t("tour.step6.bilibili")}</a>
-          </div>
-        </>
-      )
-    }
-  ];
-}
-
-function TourOverlay({
-  stepIndex,
-  onPrev,
-  onNext,
-  onSkip
-}: {
-  stepIndex: number;
-  onPrev: () => void;
-  onNext: () => void;
-  onSkip: () => void;
+function WelcomeDialog({ onClose, onStart }: {
+  onClose: () => void;
+  onStart: (tab: "library" | "import") => void;
 }) {
   const { t } = useI18n();
-  const steps = useMemo(() => buildTourSteps(t), [t]);
-  const step = steps[stepIndex] ?? steps[0];
-  const total = steps.length;
-  const isLast = stepIndex === total - 1;
-  const rect = useTourRect(step.target, stepIndex);
-
-  const cardStyle = computeTourCardStyle(rect, step.placement);
-
-  return (
-    <div className="tour-root" onClick={onSkip}>
-      {rect ? (
-        <div
-          className="tour-spot"
-          style={{
-            left: rect.left - 6,
-            top: rect.top - 6,
-            width: rect.width + 12,
-            height: rect.height + 12
-          }}
-        />
-      ) : (
-        <div className="tour-dim" />
-      )}
-      <div className="tour-card" style={cardStyle} onClick={(event) => event.stopPropagation()}>
-        <div className="tour-card-head">
-          <span className="tour-badge">{stepIndex + 1} / {total}</span>
-          <button className="icon-btn" onClick={onSkip} title={t("tour.close")}>
-            <Icon name="x" size={13} />
-          </button>
-        </div>
-        <h3>{step.title}</h3>
-        <div className="tour-body">{step.body}</div>
-        <div className="tour-foot">
-          <div className="tour-dots">
-            {steps.map((_, index) => (
-              <i key={index} className={index === stepIndex ? "active" : ""} />
-            ))}
-          </div>
-          <div className="tour-actions">
-            {stepIndex > 0 ? (
-              <button className="btn btn-ghost" onClick={onPrev}>{t("tour.prev")}</button>
-            ) : null}
-            {isLast ? (
-              <button className="btn btn-primary" onClick={onSkip}>
-                <Icon name="check" size={13} />
-                <span>{t("tour.start")}</span>
-              </button>
-            ) : (
-              <button className="btn btn-primary" onClick={onNext}>{t("tour.next")}</button>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-type TourRect = { left: number; top: number; width: number; height: number };
-
-function useTourRect(target: string | undefined, stepIndex: number): TourRect | null {
-  const [rect, setRect] = useState<TourRect | null>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
-    if (!target) {
-      setRect(null);
-      return;
-    }
-    const update = () => {
-      const element = document.querySelector(`[data-tour="${target}"]`);
-      if (!element) {
-        setRect(null);
-        return;
-      }
-      const box = element.getBoundingClientRect();
-      setRect({ left: box.left, top: box.top, width: box.width, height: box.height });
-    };
-    const frame = requestAnimationFrame(update);
-    window.addEventListener("resize", update);
-    return () => {
-      cancelAnimationFrame(frame);
-      window.removeEventListener("resize", update);
-    };
-  }, [target, stepIndex]);
+    const dialog = dialogRef.current;
+    dialog?.showModal();
+    return () => dialog?.close();
+  }, []);
 
-  return rect;
-}
-
-function computeTourCardStyle(rect: TourRect | null, placement?: string): React.CSSProperties {
-  const cardWidth = 336;
-  const gap = 14;
-  if (!rect || placement === "center") {
-    return { left: "50%", top: "50%", transform: "translate(-50%, -50%)" };
-  }
-  if (placement === "right") {
-    return {
-      left: Math.min(rect.left + rect.width + gap, window.innerWidth - cardWidth - 16),
-      top: clamp(rect.top + 8, 72, window.innerHeight - 280)
-    };
-  }
-  if (placement === "left") {
-    return {
-      left: Math.max(16, rect.left - cardWidth - gap),
-      top: clamp(rect.top + 8, 72, window.innerHeight - 280)
-    };
-  }
-  return {
-    left: clamp(rect.left + rect.width / 2 - cardWidth / 2, 16, window.innerWidth - cardWidth - 16),
-    top: Math.min(rect.top + rect.height + gap, window.innerHeight - 260)
-  };
+  return (
+    <dialog
+      ref={dialogRef}
+      className="welcome-dialog"
+      aria-labelledby="welcome-title"
+      onCancel={(event) => { event.preventDefault(); onClose(); }}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) {
+          const rect = event.currentTarget.getBoundingClientRect();
+          if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onClose();
+        }
+      }}
+    >
+      <div className="welcome-head">
+        <span className="welcome-mark"><Icon name="sparkle" size={24} /></span>
+        <button className="icon-btn" onClick={onClose} aria-label={t("welcome.close")}><Icon name="x" size={18} /></button>
+      </div>
+      <h2 id="welcome-title">{t("welcome.title")}</h2>
+      <p className="welcome-subtitle">{t("welcome.subtitle")}</p>
+      <ol className="welcome-steps">
+        {["create", "edit", "export"].map((step, index) => (
+          <li key={step}><span>{index + 1}</span><div><strong>{t(`welcome.${step}`)}</strong><p>{t(`welcome.${step}Hint`)}</p></div></li>
+        ))}
+      </ol>
+      <div className="welcome-footer">
+        <a href="https://github.com/1475505/Miliastra-image-editor-webui/blob/main/docs/README.md" target="_blank" rel="noreferrer">{t("welcome.docs")}</a>
+        <div className="welcome-actions">
+          <button className="btn btn-ghost" onClick={() => onStart("import")}>{t("welcome.import")}</button>
+          <button className="btn btn-primary" onClick={() => onStart("library")} autoFocus>{t("welcome.start")}<Icon name="plus" size={15} /></button>
+        </div>
+      </div>
+    </dialog>
+  );
 }
 
 type RichTextSpan = {

@@ -6,17 +6,29 @@ Miliastra Image Editor WebUI is a single-page image element editor with an integ
 
 It is designed to:
 
-- import `CSS / JSON / SVG` into one unified scene model
+- import `CSS / JSON / SVG / Lua` into one unified scene model
 - continue editing that scene in the browser
-- export `GIA / CSS / SVG / JSON`
+- export `GIA / CSS / SVG / JSON / Lua`
 
 Production deployment is intentionally simple: one FastAPI process serves both the API and the built frontend.
+
+## Quick Start / 快速上手
+
+1. 从左侧图形库拖入形状（或双击添加），也可在「导入」中上传文件或粘贴数据。
+2. 直接拖动图元，使用手柄缩放、旋转；在右侧属性面板精调尺寸、颜色和文字。
+3. 点击右上角「导出」下载作品。GIA 用于游戏素材，JSON / Lua 可保留场景数据以便继续编辑。
+
+Add shapes from the library or import a file, edit on the canvas, then choose **Export**. Use **Save & Apply** to refresh code previews and reusable library items. This does not save a file to disk; export JSON or Lua to keep a copy.
+
+Lua exports reuse the primitive-shape tool’s client image drawing runtime. Set `IMAGE_PREFAB_ID` to an image control template index, then attach the script to a dedicated empty client container. Both that tool’s palette-based Lua and its GIA-to-Lua outputs can be imported here; uploaded code is never executed. Our exports also preserve names, textbox settings and library items in an editor-data comment. The runtime draws six basic image shapes; textboxes are preserved only for re-import (use GIA for in-game text).
+
+Need to turn a raster image into shapes? Open the [image fitting tool / 图元拟合工具](https://qx-img.070077.xyz/), then import the resulting supported data into the editor. The separate [Miliastra knowledge base / 千星知识库](https://ugc.070077.xyz/) documents the game editor, not this application.
 
 ## Current Capabilities
 
 ### Import
 
-- Paste or upload `css / json / svg`
+- Paste or upload `css / json / svg / lua` (Lua: editor / primitive-shape drawing formats)
 - Prefer `.shaper-container` width and height as the canvas when importing CSS
 - Ignore `.shaper-container` background color by design; use a full-canvas rectangle element if a visual background is needed
 - Auto-expand the canvas when positioned CSS elements overflow `.shaper-container`
@@ -58,16 +70,17 @@ Production deployment is intentionally simple: one FastAPI process serves both t
 - When nothing is selected, the right panel shows the current element list
 - Undo / redo shortcuts:
   - `Ctrl+Z`
-  - `Ctrl+R`
+  - `Ctrl+Shift+Z` or `Ctrl+Y` (use ⌘ on macOS)
 
 ### Save And Export
 
-- `保存并应用` refreshes JSON / CSS / SVG previews
+- `保存并应用` refreshes JSON / CSS / SVG / Lua previews
 - The current canvas can be exported as:
   - `GIA`
   - `CSS`
   - `SVG`
   - `JSON`
+  - `Lua` (re-importable scene data)
 - Canvas zoom only affects editor display and does not change export geometry
 
 ## JSON Structure

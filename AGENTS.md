@@ -4,7 +4,7 @@ Guidance for AI agents working in the **Miliastra Image Editor WebUI** repositor
 
 ## 1. Project Overview
 
-千星图片编辑器: single-page image element editor with integrated frontend/backend. One unified scene model round-trips between formats: import `CSS` / `JSON` / `SVG` → edit primitives on a canvas → export `GIA` / `CSS` / `SVG` / `JSON` / `PNG`. A single FastAPI process serves both `/api/*` and the built frontend static assets (port `8439`).
+千星图片编辑器: single-page image element editor with integrated frontend/backend. One unified scene model round-trips between formats: import `CSS` / `JSON` / `SVG` / `Lua` → edit primitives on a canvas → export `GIA` / `CSS` / `SVG` / `JSON` / `Lua` / `PNG`. A single FastAPI process serves both `/api/*` and the built frontend static assets (port `8439`).
 
 > 使用请遵守奇匠守则。不要生成不适宜或侵权内容。
 
@@ -67,7 +67,7 @@ npm run build                   # tsc -b && vite build → backend/app/static/
 start.bat         # Windows
 ```
 
-Type-check gate is `tsc -b` inside `npm run build` (no separate lint/typecheck script). Backend has no automated tests — verify via the API or UI; keep `demo/demo.css` importable as a smoke test.
+Type-check gate is `tsc -b` inside `npm run build` (no separate lint/typecheck script). Backend Lua tests: from `backend/`, run `python -m unittest discover -s tests -v`. Also verify via the API or UI; keep `demo/demo.css` importable as a smoke test.
 
 ## 4. Module Map
 
@@ -78,3 +78,5 @@ Type-check gate is `tsc -b` inside `npm run build` (no separate lint/typecheck s
 - **`skills/<name>/SKILL.md`** — YAML-front-mattered skills that produce importable assets; constrained to what each importer reliably reconstructs ("what you import is what you get").
 
 Scene model: `SceneDocument { canvas, elements[], meta, library }`; `SceneElement { id, name, type, x, y, width, height, rotation, color, opacity, zIndex, isBackground, textBox? }`. Shape `type`: `ellipse | rectangle | triangle | four_point_star | five_point_star | ring | textbox | other` (ring = 圆环, fixed inner:outer radius ratio 0.8, GIA asset ref 100006; textbox 导出为 class=15 UI 节点). 文本框默认：字号 20、自适应、最小字号 12、白字 100%、白底 0%、描边 `#333333` 20%、水平左/垂直上对齐。GIA 水平对齐 `508`（省略=左/`1`=中/`2`=右），垂直对齐 `509`（省略=上/`1`=中/`2`=下）。文本可含 `<color>`/`<i>`/`<size>`。Position is element **center**; rotation is CCW-positive in scene space (CSS/SVG export negate it). Full details in `docs/technical-design.md`.
+
+- **`backend/app/lua_scene.py`** — safe literal-data import for primitive-shape PALETTE/ELEMENTS and GIA ROOT/ELEMENTS Lua, plus editor metadata for round-trip. Runtime exporters are vendored unchanged in `backend/vendor/primitive_shape/` (see provenance). Lua draws six image shapes; textbox/other data is preserved only for re-import.

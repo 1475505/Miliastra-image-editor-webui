@@ -6,6 +6,8 @@
 
 使用请遵守奇匠守则。不要生成任何不适宜的内容，不要侵权。
 
+Import SVG / CSS / JSON / Lua scene data and export GIA / SVG / CSS / JSON / Lua. Lua reuses the primitive-shape client drawing runtime and preserves the editable scene for re-import. Set the image control template index before use. Textboxes are preserved as editor data only; use GIA for in-game text. See the [editor guide](docs/README.md) or use the [image fitting tool](https://qx-img.070077.xyz/) to convert an image to shapes.
+
 ## How To Get Started
 
 Runtime note: deploy with Python `3.13`. This repository currently assumes Python 3.13 compatibility for bundled Python build artifacts.

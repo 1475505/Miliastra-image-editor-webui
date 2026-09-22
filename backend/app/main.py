@@ -19,6 +19,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from PIL import Image, ImageColor, ImageDraw, ImageFont
 
+from . import lua_scene
+
 ROOT_DIR = Path(__file__).resolve().parents[2]
 STATIC_DIR = ROOT_DIR / "backend" / "app" / "static"
 INDEX_FILE = STATIC_DIR / "index.html"
@@ -46,7 +48,7 @@ IMAGE_ASSET_REFS = {
     "ring": 100006,
 }
 
-IMPORT_SOURCE_TYPES = {"json", "css", "svg"}
+IMPORT_SOURCE_TYPES = {"json", "css", "svg", "lua"}
 SHAPE_TYPES = {
     "ellipse",
     "rectangle",
@@ -115,7 +117,7 @@ class CanvasModel(BaseModel):
 
 
 class MetaModel(BaseModel):
-    sourceType: Literal["json", "css", "svg", "editor"] = "editor"
+    sourceType: Literal["json", "css", "svg", "lua", "editor"] = "editor"
     sourceName: str = ""
     warnings: list[str] = Field(default_factory=list)
 
@@ -197,7 +199,7 @@ class SceneDocumentModel(BaseModel):
 
 
 class ImportRequest(BaseModel):
-    sourceType: Literal["json", "css", "svg"]
+    sourceType: Literal["json", "css", "svg", "lua"]
     content: str
     sourceName: str = ""
 
@@ -232,6 +234,8 @@ def import_scene(request: ImportRequest) -> ImportResponse:
         scene = parse_json_scene(request.content)
     elif request.sourceType == "css":
         scene = parse_css_scene(request.content)
+    elif request.sourceType == "lua":
+        scene = parse_lua_scene(request.content)
     else:
         scene = parse_svg_scene(request.content)
 
@@ -252,6 +256,26 @@ def export_json(request: ExportRequest) -> Response:
 def export_css(request: ExportRequest) -> Response:
     scene = normalize_scene(request.scene)
     return download_text(scene_to_css(scene), "scene.css", "text/css; charset=utf-8")
+
+
+@app.post("/api/export/lua")
+def export_lua(request: ExportRequest) -> Response:
+    scene = normalize_scene(request.scene)
+    image_scene = scene.model_copy(update={
+        "elements": [element for element in scene.elements if element.type in IMAGE_ASSET_REFS]
+    })
+    try:
+        gia_bytes = None
+        if image_scene.elements:
+            gia_document = scene_to_gia_document(image_scene, request.giaGroupName)
+            # The editor canvas allows overflowing art; remove the base GIA
+            # template's mask before handing it to the shared Lua converter.
+            gia_document["mask"] = {"enabled": False}
+            gia_bytes = convert_scene_to_gia_bytes(gia_document)
+        content = lua_scene.dumps(scene.model_dump(), gia_bytes, request.giaGroupName)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return download_text(content, "scene.lua", "text/plain; charset=utf-8")
 
 
 @app.post("/api/export/svg")
@@ -571,6 +595,17 @@ def normalize_library(library: SceneLibraryModel) -> SceneLibraryModel:
         baseShapePresets=base_shape_presets,
         savedItems=saved_items,
     )
+
+
+def parse_lua_scene(content: str) -> SceneDocumentModel:
+    try:
+        scene = SceneDocumentModel.model_validate(lua_scene.loads(content))
+        # Lua has no NaN/Infinity literals; reject numeric strings that bypass the parser.
+        json.dumps(scene.model_dump(), allow_nan=False)
+    except (ValueError, OverflowError) as exc:
+        raise HTTPException(status_code=400, detail=f"Lua import failed: {exc}") from exc
+    scene.meta.sourceType = "lua"
+    return normalize_scene(scene)
 
 
 def parse_json_scene(content: str) -> SceneDocumentModel:

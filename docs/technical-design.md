@@ -4,6 +4,20 @@
 
 这是一个“在线图元编辑 + 多格式互转 + GIA 导出”的单页 Web 工具。
 
+### Lua 绘制与回导
+
+- `POST /api/export/lua` 生成千星客户端图片绘制脚本。链路：规范化场景 → 本项目 GIA 编码器 → 拟合工具的 `gia_lua.parse_material_gia` / `build_gia_lua`；使用同一份 ROOT/ELEMENTS 布局及运行时。空画布使用同项目 `lua_export.build_lua_export_text`。
+- 上游 `lua_export.py`、`gia_lua.py` 原样收录在 `backend/vendor/primitive_shape/`，无本机目录运行依赖。来源、MIT 许可、SHA-256 见该目录 `PROVENANCE.md`；复制时源文件尚未提交，故没有来源 commit。
+- `POST /api/import` 的 `sourceType: "lua"` 同时接受拟合工具的 PALETTE/ELEMENTS（8 字段）和 GIA 转 Lua 的 ROOT/ELEMENTS（18 字段）。只读取字面量数据，不执行脚本或运行时函数。支持旧版负 Y 坐标、三角形质心、图片锚点、轴心与镜像；不导入自定义图片资产或任意游戏逻辑。
+- 导入恢复原始绘图坐标；模板索引、BASE_SCALE、OFFSET、FIT_TO_CANVAS 等运行设置不应用于画布。组级缩放/旋转也不烘焙，导入时给出提示。
+- 脚本末尾的 `MILIASTRA_EDITOR_SCENE_V1` 注释保存 Base64 JSON 元数据及绘图数据摘要。数据区未改动时完整恢复规范化场景（图元 ID / 名称、文字、素材库等）；若数据区被修改则重新解析当前记录，并提示编辑快照未使用。填写模板索引不影响回导。
+- 游戏绘制支持六种基础图片图元。文本框和 other 仅保留在编辑快照中，界面及脚本明确提示；游戏内文字使用 GIA。Lua 中不继承 GIA 基础模板遮罩，与编辑器画布可溢出显示一致。
+- 使用：建立“仅存为模板”的客户端图片控件，将模板索引填入 IMAGE_PREFAB_ID，把脚本挂到专用空客户端容器节点，在 OnStart 绘制。OnDestroy 清理，重复启动先清理再创建。
+- 文件限制为 10 MiB，字面量表深度为 64。拒绝数据区函数调用、重复声明、无效调色板/图片引用、非有限数值、损坏的元数据；上传的运行时代码从不执行。
+- 测试：在 `backend/` 运行 `python -m unittest discover -s tests -v`；上游固定样本覆盖填充、轮廓、单模板与 GIA 布局。Lua VM 验收可运行 `node backend/tests/check_gia_lua.cjs <fengari模块路径> <导出.lua> <预期记录.json>`。VM 通过不代表真机容量或显示已验证。
+
+界面采用 M3 风格的柔和青绿色表面与圆角控件；开局引导为可关闭的单页快速上手，继续沿用已有的“不再自动展示”记录。顶栏和导入面板提供[图元拟合工具](https://qx-img.070077.xyz/)入口。
+
 用户可以：
 - 在左侧 `基础模板` 中粘贴或上传 `CSS / JSON / SVG`
 - 在左侧 `图片库` 中选择分类并把基础图形拖入画布
