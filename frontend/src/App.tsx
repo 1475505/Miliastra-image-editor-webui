@@ -286,6 +286,7 @@ function App() {
   const [status, setStatus] = useState(() => t("statusbar.welcome"));
   const [zoom, setZoom] = useState(1);
   const [lockAspectRatio, setLockAspectRatio] = useState(true);
+  const [sceneScaleInput, setSceneScaleInput] = useState("0.5");
   const [quickEdit, setQuickEdit] = useState<QuickEditState>(null);
   const [snapConfig, setSnapConfig] = useState<SnapConfig>(DEFAULT_SNAP_CONFIG);
   const [guideLines, setGuideLines] = useState<GuideLine[]>([]);
@@ -1217,6 +1218,45 @@ function App() {
     }));
   }
 
+  function scaleScene(factor: number) {
+    const value = Number(factor);
+    if (!Number.isFinite(value) || value <= 0 || value === 1) {
+      return;
+    }
+    commitScene((current) => ({
+      ...current,
+      canvas: {
+        ...current.canvas,
+        width: clamp(Math.round(current.canvas.width * value), 1, 2048),
+        height: clamp(Math.round(current.canvas.height * value), 1, 2048)
+      },
+      elements: current.elements.map((element) => {
+        const scaled: SceneElement = {
+          ...element,
+          x: Math.round(element.x * value * 100) / 100,
+          y: Math.round(element.y * value * 100) / 100,
+          width: Math.max(1, Math.round(element.width * value * 100) / 100),
+          height: Math.max(1, Math.round(element.height * value * 100) / 100)
+        };
+        if (element.textBox) {
+          scaled.textBox = {
+            ...element.textBox,
+            text: scaleRichTextSizes(element.textBox.text, value),
+            fontSize: Math.max(1, Math.round(element.textBox.fontSize * value * 100) / 100),
+            minFontSize: Math.max(1, Math.round(element.textBox.minFontSize * value * 100) / 100)
+          };
+        }
+        return scaled;
+      })
+    }));
+    setStatus(t("statusbar.sceneScaled", { factor: value }));
+  }
+
+  function applySceneScalePreset(factor: number) {
+    setSceneScaleInput(String(factor));
+    scaleScene(factor);
+  }
+
   function handleZoomChange(value: number) {
     setZoom(clamp(value, 0.25, 4));
   }
@@ -1994,6 +2034,28 @@ function App() {
                     <input type="checkbox" checked={lockAspectRatio} onChange={(event) => setLockAspectRatio(event.target.checked)} />
                     <span>{t("props.lockAspect")}</span>
                   </label>
+                  <div className="field" title={t("props.sceneScaleTitle")}>
+                    <span>{t("props.sceneScale")}</span>
+                    <div className="row">
+                      <input
+                        type="number"
+                        min="0.1"
+                        max="4"
+                        step="0.1"
+                        value={sceneScaleInput}
+                        onChange={(event) => setSceneScaleInput(event.target.value)}
+                        aria-label={t("props.sceneScale")}
+                      />
+                      <button className="btn btn-ghost" onClick={() => scaleScene(Number(sceneScaleInput))}>
+                        {t("props.sceneScaleApply")}
+                      </button>
+                    </div>
+                    <div className="scale-preset-row">
+                      <button className="btn btn-ghost" onClick={() => applySceneScalePreset(0.5)}>0.5×</button>
+                      <button className="btn btn-ghost" onClick={() => applySceneScalePreset(1.5)}>1.5×</button>
+                      <button className="btn btn-ghost" onClick={() => applySceneScalePreset(2)}>2×</button>
+                    </div>
+                  </div>
                   <div className="field">
                     <span>{t("props.bgColor")}</span>
                     <ColorField value={scene.canvas.background} onChange={updateCanvasBackground} />
@@ -2264,6 +2326,16 @@ function parseRichText(source: string): RichTextSpan[] {
   }
   pushText(source.slice(last));
   return spans.length ? spans : [{ text: source }];
+}
+
+function scaleRichTextSizes(text: string, factor: number): string {
+  if (!text || !text.includes("<size")) {
+    return text;
+  }
+  return text.replace(/<size\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*>/gi, (_match, value: string) => {
+    const scaled = Number.parseFloat(value) * factor;
+    return `<size=${Math.max(1, Math.round(scaled * 100) / 100)}>`;
+  });
 }
 
 function textBoxOf(element: SceneElement): TextBoxSettings {

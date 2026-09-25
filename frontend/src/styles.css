@@ -606,6 +606,12 @@ a:focus-visible {
   gap: 6px;
 }
 
+.scale-preset-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
 .grid-2 {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
