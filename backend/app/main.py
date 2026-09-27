@@ -5,21 +5,24 @@ import io
 import json
 import math
 import re
+import urllib.error
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 from xml.etree import ElementTree as ET
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from PIL import Image, ImageColor, ImageDraw, ImageFont
+from PIL import Image, ImageColor, ImageDraw, ImageFont, PngImagePlugin
 
-from . import lua_scene
+from . import image_library, lua_scene
+from .image_library import fetch_sprite_bytes, sprite_url
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 STATIC_DIR = ROOT_DIR / "backend" / "app" / "static"
@@ -31,6 +34,8 @@ GIA_TEMPLATE_PATH = GIA_DIR / "image_template.gia"
 DEFAULT_CANVAS_WIDTH = 300
 DEFAULT_CANVAS_HEIGHT = 300
 DEFAULT_CANVAS_BACKGROUND = "#ffffff"
+# 画布透明哨兵值：前端画棋盘格、PNG 导出留 alpha、SVG 不画底、CSS 用 transparent
+TRANSPARENT_BACKGROUND = "transparent"
 DEFAULT_SHAPE_SIZE = 80.0
 HEX_COLOR_RE = re.compile(r"^[0-9a-f]+$")
 TRIANGLE_CLIP_PATH = "polygon(50% 0%, 0% 100%, 100% 100%)"
@@ -48,6 +53,12 @@ IMAGE_ASSET_REFS = {
     "ring": 100006,
 }
 
+# SVG 导入时从贴图直链里反解素材 id
+SPRITE_URL_RE = re.compile(r"/sprite/(\d{6})\.png")
+
+# PNG 导出并发预取素材贴图的工作线程数
+SPRITE_PREFETCH_WORKERS = 4
+
 IMPORT_SOURCE_TYPES = {"json", "css", "svg", "lua"}
 SHAPE_TYPES = {
     "ellipse",
@@ -57,6 +68,7 @@ SHAPE_TYPES = {
     "five_point_star",
     "ring",
     "textbox",
+    "image",
     "other",
 }
 GIA_SHAPE_TYPES = {
@@ -67,6 +79,7 @@ GIA_SHAPE_TYPES = {
     "five_point_star",
     "ring",
     "textbox",
+    "image",
 }
 AlignH = Literal["left", "center", "right"]
 AlignV = Literal["top", "middle", "bottom"]
@@ -92,6 +105,13 @@ LIBRARY_CATEGORY_DEFINITIONS = [
 
 def default_library_categories() -> list["LibraryCategoryModel"]:
     return [LibraryCategoryModel(**item) for item in LIBRARY_CATEGORY_DEFINITIONS]
+
+
+def element_asset_id(element: "SceneElementModel") -> int | None:
+    """图元对应的素材库 sprite id：基础形状查表，图片图元用自带 id。"""
+    if element.type == "image":
+        return element.imageAssetId
+    return IMAGE_ASSET_REFS.get(element.type)
 
 
 def default_base_shape_presets() -> list["LibraryBaseShapePresetModel"]:
@@ -168,6 +188,9 @@ class SceneElementModel(BaseModel):
     zIndex: int = 0
     isBackground: bool = False
     textBox: TextBoxModel | None = None
+    # type == "image" 时生效：素材库 sprite id，以及是否用 color 参与染色（单色素材）
+    imageAssetId: int | None = None
+    imageTint: bool = False
 
 
 class LibraryBaseShapePresetModel(BaseModel):
@@ -225,6 +248,66 @@ app.add_middleware(
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
 
+def library_proxy_response(
+    result: image_library.BundleResult,
+    media_type: str = "application/json; charset=utf-8",
+) -> Response:
+    """把上游条件请求的结果透传给浏览器，复用完全靠浏览器的 HTTP 缓存。"""
+    headers = {
+        "ETag": result.etag,
+        # 与 OSS 自身的 max-age 对齐，浏览器在该窗口内不必回访本服务
+        "Cache-Control": f"public, max-age={image_library.browser_max_age()}",
+    }
+    if result.not_modified or result.payload is None:
+        return Response(status_code=304, headers=headers)
+    return Response(content=result.payload, media_type=media_type, headers=headers)
+
+
+@app.get("/api/library/catalog")
+def library_catalog(request: Request, refresh: bool = False) -> Response:
+    """图片素材库索引（data.json + 中英分类名合并后的单一响应）。"""
+    try:
+        result = image_library.get_catalog_bundle(request.headers.get("if-none-match"), force=refresh)
+    except image_library.LibraryUpstreamError as error:
+        raise HTTPException(status_code=502, detail=f"图片素材库索引不可用：{error}") from error
+    return library_proxy_response(result)
+
+
+@app.get("/api/library/meta/{image_id}")
+def library_image_meta(image_id: str, request: Request, refresh: bool = False) -> Response:
+    """单个素材的 Sprite 元数据（尺寸 / 九宫格），按需请求。"""
+    try:
+        result = image_library.get_image_meta(
+            image_id,
+            request.headers.get("if-none-match"),
+            force=refresh,
+        )
+    except image_library.LibraryIdError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except image_library.LibraryNotFoundError:
+        raise HTTPException(status_code=404, detail=f"该素材没有元数据文件：border/{image_id}.json") from None
+    except image_library.LibraryUpstreamError as error:
+        raise HTTPException(status_code=502, detail=f"素材元数据不可用：{error}") from error
+    return library_proxy_response(result)
+
+
+@app.get("/api/library/sprite/{image_id}")
+def library_sprite(image_id: str, request: Request, refresh: bool = False) -> Response:
+    """素材贴图代理：单色素材的 CSS 遮罩要求同源，跨域遮罩会让元素整块消失。
+
+    只在需要染色时使用；彩色素材在前端仍然直连 OSS，不消耗后端带宽。
+    """
+    try:
+        result = image_library.get_sprite(image_id, request.headers.get("if-none-match"), force=refresh)
+    except image_library.LibraryIdError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except image_library.LibraryNotFoundError:
+        raise HTTPException(status_code=404, detail=f"素材不存在：sprite/{image_id}.png") from None
+    except image_library.LibraryUpstreamError as error:
+        raise HTTPException(status_code=502, detail=f"素材贴图不可用：{error}") from error
+    return library_proxy_response(result, media_type="image/png")
+
+
 @app.post("/api/import", response_model=ImportResponse)
 def import_scene(request: ImportRequest) -> ImportResponse:
     if request.sourceType not in IMPORT_SOURCE_TYPES:
@@ -262,7 +345,7 @@ def export_css(request: ExportRequest) -> Response:
 def export_lua(request: ExportRequest) -> Response:
     scene = normalize_scene(request.scene)
     image_scene = scene.model_copy(update={
-        "elements": [element for element in scene.elements if element.type in IMAGE_ASSET_REFS]
+        "elements": [element for element in scene.elements if element_asset_id(element) is not None]
     })
     try:
         gia_bytes = None
@@ -377,17 +460,37 @@ def copy_element(element: SceneElementModel, **overrides) -> SceneElementModel:
     return SceneElementModel.model_validate(payload)
 
 
+def normalize_canvas_background(value: str | None) -> str:
+    """画布背景允许透明；其余按颜色归一化，空值回落默认白。"""
+    lowered = (value or "").strip().lower()
+    if lowered in {"transparent", "none"}:
+        return TRANSPARENT_BACKGROUND
+    if not lowered:
+        return DEFAULT_CANVAS_BACKGROUND
+    return normalize_color(value or DEFAULT_CANVAS_BACKGROUND)
+
+
 def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
     canvas = CanvasModel(
         width=max(1, scene.canvas.width),
         height=max(1, scene.canvas.height),
-        background=normalize_color(scene.canvas.background or DEFAULT_CANVAS_BACKGROUND),
+        background=normalize_canvas_background(scene.canvas.background),
     )
     elements: list[SceneElementModel] = []
     sorted_elements = sorted(scene.elements, key=lambda item: item.zIndex)
 
     for index, element in enumerate(sorted_elements):
         shape_type = element.type if element.type in SHAPE_TYPES else "rectangle"
+        image_asset_id: int | None = None
+        image_tint = False
+        if shape_type == "image":
+            candidate = element.imageAssetId
+            if isinstance(candidate, int) and 0 < candidate < 10_000_000:
+                image_asset_id = candidate
+                image_tint = bool(element.imageTint)
+            else:
+                # 缺少素材 id 的图片图元无法导出，退化为基础形状
+                shape_type = "rectangle"
         color = normalize_color(element.color)
         opacity = clamp01(element.opacity)
         text_box = ensure_textbox(
@@ -405,6 +508,8 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
                 zIndex=index,
                 isBackground=element.isBackground,
                 textBox=element.textBox,
+                imageAssetId=image_asset_id,
+                imageTint=image_tint,
             )
         )
         if shape_type == "textbox" and text_box is not None:
@@ -425,6 +530,8 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
                 zIndex=index,
                 isBackground=element.isBackground,
                 textBox=text_box,
+                imageAssetId=image_asset_id,
+                imageTint=image_tint,
             )
         )
 
@@ -547,6 +654,10 @@ def normalize_library(library: SceneLibraryModel) -> SceneLibraryModel:
     saved_items: list[LibrarySavedItemModel] = []
     for index, item in enumerate(library.savedItems):
         shape_type = item.element.type if item.element.type in SHAPE_TYPES else "rectangle"
+        saved_asset_id = item.element.imageAssetId if shape_type == "image" else None
+        if shape_type == "image" and not (isinstance(saved_asset_id, int) and 0 < saved_asset_id < 10_000_000):
+            shape_type = "rectangle"
+            saved_asset_id = None
         saved_items.append(
             LibrarySavedItemModel(
                 id=item.id or f"saved-{index}",
@@ -566,6 +677,8 @@ def normalize_library(library: SceneLibraryModel) -> SceneLibraryModel:
                     zIndex=max(0, item.element.zIndex),
                     isBackground=item.element.isBackground,
                     textBox=ensure_textbox(item.element) if shape_type == "textbox" else None,
+                    imageAssetId=saved_asset_id,
+                    imageTint=bool(item.element.imageTint) if shape_type == "image" else False,
                 ),
             )
         )
@@ -672,6 +785,15 @@ def convert_basic_json_element(item: dict, index: int) -> SceneElementModel:
 
     color = normalize_color(str(item.get("color", "#4f46e5")))
     opacity = float(item.get("opacity", 1))
+    image_asset_id = None
+    image_tint = False
+    if shape_type == "image":
+        raw_asset = item.get("imageAssetId", item.get("image_asset_id", item.get("assetId")))
+        try:
+            image_asset_id = int(raw_asset)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            image_asset_id = None
+        image_tint = bool(item.get("imageTint", item.get("image_tint", False)))
     text_box = None
     if shape_type == "textbox":
         raw_box = item.get("textBox") or item.get("textbox") or {}
@@ -699,6 +821,8 @@ def convert_basic_json_element(item: dict, index: int) -> SceneElementModel:
         zIndex=int(item.get("zIndex", index)),
         isBackground=bool(item.get("isBackground", False)),
         textBox=text_box,
+        imageAssetId=image_asset_id,
+        imageTint=image_tint,
     )
 
 
@@ -712,8 +836,12 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
         body = canvas_match.group("body")
         width = parse_px(find_css_value(body, "width"), DEFAULT_CANVAS_WIDTH)
         height = parse_px(find_css_value(body, "height"), DEFAULT_CANVAS_HEIGHT)
-        if find_css_value(body, "background") is not None or find_css_value(body, "background-color") is not None:
-            warnings.append("Ignored the .shaper-container background color; use a canvas-filling rectangle element for backgrounds.")
+        container_background = find_css_value(body, "background") or find_css_value(body, "background-color")
+        if container_background is not None:
+            if container_background.strip().lower() in {"transparent", "none"}:
+                background = TRANSPARENT_BACKGROUND
+            else:
+                warnings.append("Ignored the .shaper-container background color; use a canvas-filling rectangle element for backgrounds.")
     pattern = re.compile(r"(?P<selector>[^{}]+)\{(?P<body>.*?)\}", re.S)
     elements: list[SceneElementModel] = []
     for match in pattern.finditer(content):
@@ -741,6 +869,41 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
         clip_path = normalize_clip_path(find_css_value(body, "clip-path"))
         declared_type = (find_css_value(body, "-miliastra-type") or "").strip().lower()
         text_content = parse_css_quoted(find_css_value(body, "-miliastra-text") or find_css_value(body, "content"))
+        image_asset_id = None
+        image_tint = False
+        raw_image_asset = find_css_value(body, "-miliastra-image")
+        if raw_image_asset is not None:
+            try:
+                image_asset_id = int(round(parse_px(raw_image_asset, 0)))
+            except (TypeError, ValueError):
+                image_asset_id = None
+        if image_asset_id:
+            shape_type = "image"
+            shape_width = parse_px(find_css_value(body, "width"), DEFAULT_SHAPE_SIZE)
+            shape_height = parse_px(find_css_value(body, "height"), DEFAULT_SHAPE_SIZE)
+            shape_x = parse_px(find_css_value(body, "left"), width / 2)
+            shape_y = parse_px(find_css_value(body, "top"), height / 2)
+            image_tint = parse_css_bool(find_css_value(body, "-miliastra-image-tint"), False)
+            color = normalize_color(find_css_value(body, "background-color") or "#ffffff")
+            elements.append(
+                SceneElementModel(
+                    id=f"css-{index}",
+                    name=selector_to_element_name(selector),
+                    type=shape_type,
+                    x=shape_x,
+                    y=shape_y,
+                    width=shape_width,
+                    height=shape_height,
+                    rotation=rotation,
+                    color=color,
+                    opacity=opacity,
+                    zIndex=int(parse_float(find_css_value(body, "z-index"), index)),
+                    isBackground=False,
+                    imageAssetId=image_asset_id,
+                    imageTint=image_tint,
+                )
+            )
+            continue
         if declared_type == "textbox" or text_content is not None:
             shape_type = "textbox"
             shape_width = parse_px(find_css_value(body, "width"), DEFAULT_SHAPE_SIZE)
@@ -850,6 +1013,8 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
                 opacity=opacity,
                 zIndex=int(parse_float(find_css_value(body, "z-index"), index)),
                 isBackground=is_background,
+                imageAssetId=image_asset_id,
+                imageTint=image_tint,
             )
         )
 
@@ -881,6 +1046,32 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
         )
 
     return normalize_scene(scene)
+
+
+SVG_ROTATE_RE = re.compile(r"rotate\(\s*(-?[\d.]+)(?:[\s,]+(-?[\d.]+)[\s,]+(-?[\d.]+))?\s*\)")
+
+
+def parse_svg_rotation(value: str | None, default_x: float, default_y: float) -> tuple[float, float, float]:
+    """解析 rotate(a cx cy)；场景旋转为逆时针正方向，SVG 为顺时针，故取负。"""
+    match = SVG_ROTATE_RE.search(value or "")
+    if not match:
+        return 0.0, default_x, default_y
+    angle = -parse_float(match.group(1), 0.0)
+    return angle, parse_float(match.group(2), default_x), parse_float(match.group(3), default_y)
+
+
+def svg_has_background_rect(root, width: float, height: float) -> bool:
+    """SVG 顶层若有一张铺满画布的 rect，就认为它带了底色；否则画布视为透明。"""
+    for node in root:
+        if strip_ns(node.tag) != "rect":
+            continue
+        if parse_svg_number(node.attrib.get("x"), 0.0) != 0 or parse_svg_number(node.attrib.get("y"), 0.0) != 0:
+            continue
+        rect_width = parse_svg_number(node.attrib.get("width"), 0.0)
+        rect_height = parse_svg_number(node.attrib.get("height"), 0.0)
+        if abs(rect_width - width) < 0.5 and abs(rect_height - height) < 0.5:
+            return True
+    return False
 
 
 def parse_svg_scene(content: str) -> SceneDocumentModel:
@@ -927,6 +1118,43 @@ def parse_svg_scene(content: str) -> SceneDocumentModel:
                     opacity=opacity,
                     zIndex=index,
                     isBackground=index == 0,
+                )
+            )
+        elif tag == "image":
+            raw_asset = (node.attrib.get("data-miliastra-image") or "").strip()
+            asset_id: int | None = None
+            if raw_asset.isdigit():
+                asset_id = int(raw_asset)
+            else:
+                href = node.attrib.get("href") or node.attrib.get("{http://www.w3.org/1999/xlink}href") or ""
+                match = SPRITE_URL_RE.search(href)
+                if match:
+                    asset_id = int(match.group(1))
+            if asset_id is None:
+                unsupported_tags.append("image (素材 ID 无法识别)")
+                continue
+            x = parse_svg_number(node.attrib.get("x"), 0.0)
+            y = parse_svg_number(node.attrib.get("y"), 0.0)
+            w = parse_svg_number(node.attrib.get("width"), DEFAULT_SHAPE_SIZE)
+            h = parse_svg_number(node.attrib.get("height"), DEFAULT_SHAPE_SIZE)
+            rotation, cx, cy = parse_svg_rotation(
+                node.attrib.get("transform"), x + w / 2, y + h / 2
+            )
+            elements.append(
+                SceneElementModel(
+                    id=new_id(),
+                    type="image",
+                    x=cx,
+                    y=cy,
+                    width=w,
+                    height=h,
+                    rotation=rotation,
+                    color="#ffffff",
+                    opacity=opacity,
+                    zIndex=index,
+                    isBackground=False,
+                    imageAssetId=asset_id,
+                    imageTint=False,
                 )
             )
         elif tag == "circle":
@@ -1030,7 +1258,15 @@ def parse_svg_scene(content: str) -> SceneDocumentModel:
         raise HTTPException(status_code=400, detail="No importable basic shapes found in the SVG")
 
     scene = SceneDocumentModel(
-        canvas=CanvasModel(width=width, height=height, background=DEFAULT_CANVAS_BACKGROUND),
+        canvas=CanvasModel(
+            width=width,
+            height=height,
+            background=(
+                DEFAULT_CANVAS_BACKGROUND
+                if svg_has_background_rect(root, width, height)
+                else TRANSPARENT_BACKGROUND
+            ),
+        ),
         elements=elements,
         meta=MetaModel(sourceType="svg", sourceName="", warnings=warnings),
     )
@@ -1044,7 +1280,7 @@ def scene_to_css(scene: SceneDocumentModel) -> str:
         "  position: relative;",
         f"  width: {scene.canvas.width:.0f}px;",
         f"  height: {scene.canvas.height:.0f}px;",
-        f"  background: {DEFAULT_CANVAS_BACKGROUND};",
+        f"  background: {scene.canvas.background};",
         "  overflow: hidden;",
         "}",
         ".shaper-element {",
@@ -1063,7 +1299,21 @@ def scene_to_css(scene: SceneDocumentModel) -> str:
                 f"  height: {element.height:.2f}px;",
             ]
         )
-        if element.type == "textbox":
+        if element.type == "image" and element.imageAssetId:
+            tint_color = element.color if element.imageTint else "#ffffff"
+            lines.extend(
+                [
+                    "  -miliastra-type: image;",
+                    f"  -miliastra-image: {element.imageAssetId};",
+                    f"  -miliastra-image-tint: {'true' if element.imageTint else 'false'};",
+                    f"  background-color: {tint_color};",
+                    f"  background-image: url({sprite_url(element.imageAssetId)});",
+                    "  background-size: contain;",
+                    "  background-repeat: no-repeat;",
+                    "  background-position: center;",
+                ]
+            )
+        elif element.type == "textbox":
             box = ensure_textbox(element) or default_textbox()
             lines.extend(
                 [
@@ -1116,13 +1366,21 @@ def scene_to_css(scene: SceneDocumentModel) -> str:
 def scene_to_svg(scene: SceneDocumentModel) -> str:
     sorted_elements = sorted(scene.elements, key=lambda item: item.zIndex)
     ring_count = sum(1 for element in sorted_elements if element.type == "ring")
+    tinted_count = sum(1 for element in sorted_elements if element.type == "image" and element.imageTint)
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{scene.canvas.width:.0f}" height="{scene.canvas.height:.0f}" viewBox="0 0 {scene.canvas.width:.0f} {scene.canvas.height:.0f}">',
-        f'<rect x="0" y="0" width="{scene.canvas.width:.0f}" height="{scene.canvas.height:.0f}" fill="{scene.canvas.background}" />',
     ]
+    if scene.canvas.background != TRANSPARENT_BACKGROUND:
+        parts.append(
+            f'<rect x="0" y="0" width="{scene.canvas.width:.0f}" height="{scene.canvas.height:.0f}" fill="{scene.canvas.background}" />'
+        )
     if ring_count:
         parts.append(
             f'<!-- Miliastra-Warning: SVG 导出已忽略 {ring_count} 个圆环图元；如需圆环，请改用 CSS 或 JSON 导出。 -->'
+        )
+    if tinted_count:
+        parts.append(
+            f'<!-- Miliastra-Warning: SVG 无法表现 {tinted_count} 个单色素材的染色，导出为原始贴图；染色请改用 CSS、PNG 或 Lua 导出。 -->'
         )
 
     for element in sorted_elements:
@@ -1158,6 +1416,15 @@ def scene_to_svg(scene: SceneDocumentModel) -> str:
                 f'<text x="{element.x:.2f}" y="{element.y:.2f}" fill="{box.textColor}" fill-opacity="{box.textOpacity:.4f}" font-size="{box.fontSize}" text-anchor="{anchor}" dominant-baseline="{baseline}" transform="{transform}">{inner}</text>'
             )
             continue
+        if element.type == "image" and element.imageAssetId:
+            asset_id = element.imageAssetId
+            parts.append(
+                f'<image data-miliastra-image="{asset_id}" href="{sprite_url(asset_id)}"'
+                f' x="{element.x - element.width / 2:.2f}" y="{element.y - element.height / 2:.2f}"'
+                f' width="{element.width:.2f}" height="{element.height:.2f}"'
+                f' preserveAspectRatio="xMidYMid meet" opacity="{opacity}" transform="{transform}" />'
+            )
+            continue
         if element.type == "ellipse":
             parts.append(
                 f'<ellipse cx="{element.x:.2f}" cy="{element.y:.2f}" rx="{element.width / 2:.2f}" ry="{element.height / 2:.2f}" fill="{element.color}" opacity="{opacity}" transform="{transform}" />'
@@ -1186,13 +1453,94 @@ def scene_to_svg(scene: SceneDocumentModel) -> str:
     return "\n".join(parts)
 
 
-def scene_to_png_bytes(scene: SceneDocumentModel) -> bytes:
-    image = Image.new("RGBA", (int(scene.canvas.width), int(scene.canvas.height)), ImageColor.getrgb(scene.canvas.background) + (255,))
-    draw = ImageDraw.Draw(image, "RGBA")
+def load_sprite_image(asset_id: int) -> Image.Image | None:
+    """下载并解码单个素材贴图；失败返回 None（由调用方计入 skipped）。"""
+    try:
+        return Image.open(io.BytesIO(fetch_sprite_bytes(asset_id))).convert("RGBA")
+    except (
+        image_library.LibraryUpstreamError,
+        urllib.error.URLError,
+        TimeoutError,
+        OSError,
+        ValueError,
+    ):
+        return None
 
-    for element in sorted(scene.elements, key=lambda item: item.zIndex):
+
+def load_sprite_images(elements: list[SceneElementModel]) -> dict[int, Image.Image]:
+    """并发预取场景里用到的素材贴图；同一素材只下载一次，失败的 id 不进结果。"""
+    asset_ids = sorted(
+        {
+            element.imageAssetId
+            for element in elements
+            if element.type == "image" and element.imageAssetId
+        }
+    )
+    sprites: dict[int, Image.Image] = {}
+    if not asset_ids:
+        return sprites
+    with ThreadPoolExecutor(max_workers=SPRITE_PREFETCH_WORKERS) as pool:
+        for asset_id, sprite in zip(asset_ids, pool.map(load_sprite_image, asset_ids)):
+            if sprite is not None:
+                sprites[asset_id] = sprite
+    return sprites
+
+
+def paste_sprite(image: Image.Image, element: SceneElementModel, sprite: Image.Image) -> None:
+    """把素材贴图按 contain 规则贴到图元框内。
+
+    sprite 是本请求内共享的解码缓存，先拷贝再改，避免染色/透明度污染原贴图。
+    """
+    sprite = sprite.copy()
+    opacity = clamp01(element.opacity)
+    if element.imageTint:
+        rgba = color_with_alpha(element.color, 1.0)
+        layer = Image.new("RGBA", sprite.size, rgba)
+        alpha = sprite.getchannel("A")
+        if opacity < 1:
+            alpha = alpha.point(lambda value: int(value * opacity))
+        layer.putalpha(alpha)
+        sprite = layer
+    elif opacity < 1:
+        sprite.putalpha(sprite.getchannel("A").point(lambda value: int(value * opacity)))
+
+    box_width = max(1, int(round(element.width)))
+    box_height = max(1, int(round(element.height)))
+    scale = min(box_width / sprite.width, box_height / sprite.height)
+    target = (max(1, int(round(sprite.width * scale))), max(1, int(round(sprite.height * scale))))
+    if target != sprite.size:
+        sprite = sprite.resize(target, Image.LANCZOS)
+    if abs(element.rotation) > 0.001:
+        # 场景旋转为逆时针正方向，与 Pillow rotate() 的方向一致
+        sprite = sprite.rotate(element.rotation, expand=True, resample=Image.BICUBIC)
+
+    left = int(round(element.x - sprite.width / 2))
+    top = int(round(element.y - sprite.height / 2))
+    image.paste(sprite, (left, top), sprite)
+
+
+def scene_to_png_bytes(scene: SceneDocumentModel) -> bytes:
+    canvas_fill = (
+        (0, 0, 0, 0)
+        if scene.canvas.background == TRANSPARENT_BACKGROUND
+        else ImageColor.getrgb(scene.canvas.background) + (255,)
+    )
+    image = Image.new("RGBA", (int(scene.canvas.width), int(scene.canvas.height)), canvas_fill)
+    draw = ImageDraw.Draw(image, "RGBA")
+    skipped_assets: list[int] = []
+
+    ordered_elements = sorted(scene.elements, key=lambda item: item.zIndex)
+    sprites = load_sprite_images(ordered_elements)
+
+    for element in ordered_elements:
         rgba = color_with_alpha(element.color, element.opacity)
-        if element.type == "ellipse":
+        if element.type == "image" and element.imageAssetId:
+            sprite = sprites.get(element.imageAssetId)
+            if sprite is None:
+                skipped_assets.append(element.imageAssetId)
+            else:
+                paste_sprite(image, element, sprite)
+        elif element.type == "ellipse":
             draw_ellipse(draw, element, rgba)
         elif element.type == "triangle":
             draw_polygon(draw, triangle_points(element.x, element.y, element.width, element.height), rgba, element.rotation)
@@ -1208,7 +1556,11 @@ def scene_to_png_bytes(scene: SceneDocumentModel) -> bytes:
             draw_rect(draw, element, rgba)
 
     buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
+    info = PngImagePlugin.PngInfo()
+    if skipped_assets:
+        unique = "、".join(str(asset) for asset in sorted(set(skipped_assets)))
+        info.add_text("Warning", f"以下素材贴图下载失败，未绘制：{unique}")
+    image.save(buffer, format="PNG", pnginfo=info)
     return buffer.getvalue()
 
 
@@ -1261,8 +1613,13 @@ def scene_to_gia_document(scene: SceneDocumentModel, group_name: str | None = No
             }
             payload["packed_color"] = to_packed_argb(box.textColor, box.textOpacity, truncate=True)
         else:
-            payload["image_asset_ref"] = IMAGE_ASSET_REFS[element.type]
-            payload["packed_color"] = to_packed_argb(element.color, element.opacity)
+            asset_id = element_asset_id(element)
+            if asset_id is None:
+                continue
+            payload["image_asset_ref"] = asset_id
+            # 彩色素材不能被染色，用白色作为中性色；单色素材才使用图元颜色
+            tint = element.color if (element.type != "image" or element.imageTint) else "#ffffff"
+            payload["packed_color"] = to_packed_argb(tint, element.opacity)
         elements.append(payload)
 
     if not elements:

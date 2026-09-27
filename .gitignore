@@ -47,3 +47,6 @@ backend/app/static/assets/
 
 # WorkBuddy agent workspace
 .workbuddy/
+
+# 重建 venv 时的旧环境备份（确认无误后可删除）
+backend/.venv-py39-backup/

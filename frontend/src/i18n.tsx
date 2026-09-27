@@ -80,6 +80,22 @@ export const translations: Record<Lang, TranslationDict> = {
     "library.saved": "已保存图元",
     "library.savedCount": (n: number) => `${n} 个`,
     "library.savedEmpty": "「保存并应用」后，画布图元会出现在这里，可重复拖入复用。",
+    "library.searchPlaceholder": "按 ID 搜索，如 106001",
+    "library.toneAll": "全部",
+    "library.toneMono": "单色",
+    "library.toneColor": "彩色",
+    "library.toneFlat": "该分类没有单色 / 彩色之分",
+    "library.toneMonoHint": "单色素材可跟随图层颜色染色",
+    "library.loading": "素材索引加载中…",
+    "library.loadFailed": "素材索引加载失败，请确认后端服务已启动。",
+    "library.retry": "重试",
+    "library.empty": "没有符合条件的素材",
+    "library.selectHint": "点击素材查看 ID 与元数据",
+    "library.metaLoading": "元数据加载中…",
+    "library.metaMissing": "该素材没有元数据文件",
+    "library.metaFailed": "元数据加载失败",
+    "library.metaStretchable": "可九宫格拉伸",
+    "library.metaFlat": "不可拉伸",
 
     // 导入面板
     "import.tip": "上传文件或粘贴内容。支持 SVG、CSS、JSON 和 Lua 场景。",
@@ -133,6 +149,10 @@ export const translations: Record<Lang, TranslationDict> = {
     "props.rotationReset": "复位角度",
     "props.appearance": "外观",
     "props.fillColor": "填充颜色",
+    "props.tintColor": "染色",
+    "props.assetId": "素材 ID",
+    "props.assetTintable": "单色素材，可染色",
+    "props.assetFixed": "彩色素材，颜色不参与渲染",
     "props.opacity": "不透明度",
     "props.visibility": "可见性",
     "props.initialVisible": "初始可见性",
@@ -178,6 +198,8 @@ export const translations: Record<Lang, TranslationDict> = {
     "props.sceneScaleTitle": "按倍率同时缩放画布尺寸与全部图元（含文本字号），可通过撤销恢复",
     "props.sceneScaleApply": "应用",
     "props.bgColor": "背景色",
+    "props.transparent": "透明画布",
+    "props.transparentHint": "勾选后画布不填色，导出的 PNG / SVG / CSS 也保持透明",
     "props.stats": "统计",
     "props.elementCount": "图元数量",
     "props.canvasSize": "画布尺寸",
@@ -218,6 +240,7 @@ export const translations: Record<Lang, TranslationDict> = {
     "statusbar.downloaded": (name: string) => `已下载 ${name}`,
     "statusbar.downloadedWithRingWarning": (name: string) => `已下载 ${name}（注意：圆环未包含在内）`,
     "statusbar.dropFailed": "拖入图形失败",
+    "statusbar.assetAdded": (name: string) => `已添加素材 ${name}`,
 
     // 形状标签
     "shape.ellipse": "圆形",
@@ -227,6 +250,7 @@ export const translations: Record<Lang, TranslationDict> = {
     "shape.five_point_star": "五角星",
     "shape.ring": "圆环",
     "shape.textbox": "文本框",
+    "shape.image": "素材图片",
     "shape.other": "其他图形",
 
     // 图形库分类
@@ -259,6 +283,7 @@ export const translations: Record<Lang, TranslationDict> = {
     "quick.edit": "快捷编辑",
     "quick.shrink": "缩小 10%",
     "quick.grow": "放大 10%",
+    "quick.delete": "删除",
 
     // 示例场景
     "sample.sceneName": "示例场景",
@@ -316,6 +341,22 @@ export const translations: Record<Lang, TranslationDict> = {
     "library.saved": "Saved Elements",
     "library.savedCount": (n: number) => `${n} item${n === 1 ? "" : "s"}`,
     "library.savedEmpty": "After \"Save & Apply\", canvas elements will appear here and can be dragged back in for reuse.",
+    "library.searchPlaceholder": "Search by ID, e.g. 106001",
+    "library.toneAll": "All",
+    "library.toneMono": "Mono",
+    "library.toneColor": "Color",
+    "library.toneFlat": "This category has no mono / color split",
+    "library.toneMonoHint": "Mono assets can be tinted by the layer color",
+    "library.loading": "Loading asset index…",
+    "library.loadFailed": "Failed to load the asset index. Make sure the backend service is running.",
+    "library.retry": "Retry",
+    "library.empty": "No assets match the current filters",
+    "library.selectHint": "Click an asset to inspect its ID and metadata",
+    "library.metaLoading": "Loading metadata…",
+    "library.metaMissing": "This asset has no metadata file",
+    "library.metaFailed": "Failed to load metadata",
+    "library.metaStretchable": "Nine-slice stretchable",
+    "library.metaFlat": "Not stretchable",
 
     // Import panel
     "import.tip": "Upload a file or paste SVG, CSS, JSON or Lua scene data.",
@@ -369,6 +410,10 @@ export const translations: Record<Lang, TranslationDict> = {
     "props.rotationReset": "Reset angle",
     "props.appearance": "Appearance",
     "props.fillColor": "Fill color",
+    "props.tintColor": "Tint",
+    "props.assetId": "Asset ID",
+    "props.assetTintable": "Mono asset, tintable",
+    "props.assetFixed": "Color asset, tint has no effect",
     "props.opacity": "Opacity",
     "props.visibility": "Visibility",
     "props.initialVisible": "Initially visible",
@@ -414,6 +459,8 @@ export const translations: Record<Lang, TranslationDict> = {
     "props.sceneScaleTitle": "Scale the canvas and all elements (including font sizes) by a factor. Undoable.",
     "props.sceneScaleApply": "Apply",
     "props.bgColor": "Background color",
+    "props.transparent": "Transparent canvas",
+    "props.transparentHint": "No canvas fill; exported PNG / SVG / CSS stay transparent too",
     "props.stats": "Stats",
     "props.elementCount": "Element count",
     "props.canvasSize": "Canvas size",
@@ -454,6 +501,7 @@ export const translations: Record<Lang, TranslationDict> = {
     "statusbar.downloaded": (name: string) => `Downloaded ${name}`,
     "statusbar.downloadedWithRingWarning": (name: string) => `Downloaded ${name} (note: rings are not included)`,
     "statusbar.dropFailed": "Failed to drop shape",
+    "statusbar.assetAdded": (name: string) => `Added asset ${name}`,
 
     // Shape labels
     "shape.ellipse": "Ellipse",
@@ -463,6 +511,7 @@ export const translations: Record<Lang, TranslationDict> = {
     "shape.five_point_star": "Five-point Star",
     "shape.ring": "Ring",
     "shape.textbox": "Text Box",
+    "shape.image": "Library Image",
     "shape.other": "Other Shape",
 
     // Library categories
@@ -495,6 +544,7 @@ export const translations: Record<Lang, TranslationDict> = {
     "quick.edit": "Quick Edit",
     "quick.shrink": "Shrink 10%",
     "quick.grow": "Grow 10%",
+    "quick.delete": "Delete",
 
     // Sample scene
     "sample.sceneName": "Sample Scene",

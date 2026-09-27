@@ -14,6 +14,9 @@
   --text-2: #54645b;
   --text-3: #65766b;
   --canvas-bg: #e7eee6;
+  /* 透明画布棋盘格：中性冷灰，别抢画面，也别和工作区的绿灰底撞色 */
+  --checker-light: #ffffff;
+  --checker-dark: #e3e8ea;
   --danger: #dc2626;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Courier New", monospace;
   --ui-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -1012,6 +1015,222 @@ input[type="range"]::-moz-range-thumb {
   color: var(--text-2);
 }
 
+/* ---- 素材库（OSS 图片） ---- */
+
+.asset-sprite {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+/* 单色素材：用贴图 alpha 做遮罩，背景色即染色 */
+.asset-sprite-mask {
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+}
+
+.asset-id-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.asset-id-row code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.asset-id-row em {
+  font-style: normal;
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.asset-tones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.asset-tone {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.asset-tone:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.asset-tone.is-active {
+  background: var(--accent-soft, rgba(59, 130, 246, 0.12));
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.asset-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  max-height: 320px;
+  min-height: 200px;
+  /* 面板是 flex 列，必须禁止收缩，否则网格会被压扁 */
+  flex: 0 0 auto;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.asset-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 2px 4px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--surface-low);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+/* 缩略图底衬：单色素材多为接近白色的贴图，放在浅色卡片上几乎看不见，
+   给一层明显更深的中间调底衬（线条色）才看得出轮廓。 */
+.asset-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 46px;
+  border-radius: 6px;
+  background: var(--line-strong);
+  overflow: hidden;
+}
+
+.asset-thumb img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.asset-card .asset-id {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+}
+
+.asset-card:hover {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+
+.asset-card.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft, rgba(59, 130, 246, 0.12));
+}
+
+/* 单色素材左上角小标记，提示可染色 */
+.asset-card.is-mono::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  /* 深色圆点 + 亮色描边，在浅绿卡片上才有足够对比 */
+  background: var(--accent-strong);
+  box-shadow: 0 0 0 1.5px var(--panel);
+}
+
+.asset-empty {
+  grid-column: 1 / -1;
+}
+
+.asset-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.asset-error button {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.asset-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-low);
+}
+
+.asset-detail-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.asset-detail-head strong {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.asset-detail-head span {
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.asset-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.asset-meta-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.asset-retry {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 10px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+
+
 .saved-list {
   display: flex;
   flex-direction: column;
@@ -1201,6 +1420,14 @@ input[type="range"]::-moz-range-thumb {
   justify-content: center;
   align-items: center;
   padding: 48px;
+}
+
+/* 透明画布：棋盘格底纹。格宽由 App 按 zoom 反算，缩放时屏幕上大小恒定 */
+.canvas.is-transparent {
+  background-color: var(--checker-light);
+  background-image:
+    linear-gradient(45deg, var(--checker-dark) 25%, transparent 25%, transparent 75%, var(--checker-dark) 75%),
+    linear-gradient(45deg, var(--checker-dark) 25%, transparent 25%, transparent 75%, var(--checker-dark) 75%);
 }
 
 .canvas {
@@ -1628,6 +1855,23 @@ input[type="range"]::-moz-range-thumb {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px;
+}
+
+/* 快捷编辑里的删除：独占一行靠右，比缩放按钮更小、更克制，悬停才显红。
+   面板宽度固定 240px，三个按钮挤一行会溢出（.btn 有 nowrap + 16px 内边距）。 */
+.quick-delete {
+  grid-column: 1 / -1;
+  justify-self: end;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.quick-delete:hover {
+  color: var(--danger);
+  border-color: var(--danger);
 }
 
 /* ========== Quick start & related tools ========== */

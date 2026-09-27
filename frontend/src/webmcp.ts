@@ -68,6 +68,10 @@ export type AddElementInput = {
   opacity?: number;
   name?: string;
   textBox?: Partial<TextBoxSettings>;
+  /** type === "image"：素材库 sprite id（6 位） */
+  imageAssetId?: number;
+  /** 单色素材染色开关 */
+  imageTint?: boolean;
 };
 
 export type EditorBridge = {
@@ -110,7 +114,8 @@ const SHAPE_TYPES: ShapeType[] = [
   "four_point_star",
   "five_point_star",
   "ring",
-  "textbox"
+  "textbox",
+  "image"
 ];
 
 const shapeEnum = { type: "string", enum: SHAPE_TYPES };
@@ -230,7 +235,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "add_element",
       title: "Add element",
       description:
-        "Add a basic shape or textbox element to the canvas (ellipse / rectangle / triangle / four_point_star / five_point_star / ring / textbox). x and y are the element center coordinates; if omitted the element is placed at the canvas center. Returns the full data of the new element.",
+        "Add a basic shape, textbox, or library sprite element to the canvas (ellipse / rectangle / triangle / four_point_star / five_point_star / ring / textbox / image). For type \"image\" you must pass imageAssetId (a 6-digit sprite id from the graphics library); set imageTint only for monochrome assets, which lets the color value tint the sprite. x and y are the element center coordinates; if omitted the element is placed at the canvas center. Returns the full data of the new element.",
       inputSchema: {
         type: "object",
         required: ["type"],
@@ -254,7 +259,12 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
             type: "string",
             description: "Text content when type is textbox"
           },
-          fontSize: numberProp("Font size in pixels when type is textbox (1-256)", 1, 256)
+          fontSize: numberProp("Font size in pixels when type is textbox (1-256)", 1, 256),
+          imageAssetId: numberProp("Sprite id from the graphics library when type is image (6-digit, e.g. 106001)", 100000, 999999),
+          imageTint: {
+            type: "boolean",
+            description: "When type is image: tint the sprite with the color value (monochrome assets only)"
+          }
         }
       }
     },
@@ -262,6 +272,9 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       const type = args.type as ShapeType | undefined;
       if (!type || !SHAPE_TYPES.includes(type)) {
         return err(`type must be one of ${SHAPE_TYPES.join(" / ")}`);
+      }
+      if (type === "image" && typeof args.imageAssetId !== "number") {
+        return err("imageAssetId is required when type is \"image\"");
       }
       const textBox =
         type === "textbox"
@@ -280,7 +293,9 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
         color: typeof args.color === "string" ? args.color : undefined,
         opacity: typeof args.opacity === "number" ? args.opacity : undefined,
         name: typeof args.name === "string" ? args.name : undefined,
-        textBox: textBox && Object.keys(textBox).length ? textBox : undefined
+        textBox: textBox && Object.keys(textBox).length ? textBox : undefined,
+        imageAssetId: typeof args.imageAssetId === "number" ? args.imageAssetId : undefined,
+        imageTint: typeof args.imageTint === "boolean" ? args.imageTint : undefined
       });
     }
   );

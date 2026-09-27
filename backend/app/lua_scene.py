@@ -199,6 +199,14 @@ def _digest(drawing):
     return hashlib.sha256(json.dumps(drawing, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
+def _is_image_element(item):
+    """基础形状与素材图片都会走 GIA 图片导出，其余图元只保留为编辑数据。"""
+    if item.get("type") == "image":
+        asset = item.get("imageAssetId")
+        return isinstance(asset, int) and asset > 0
+    return item.get("type") in ASSET_TYPES.values()
+
+
 def dumps(scene, gia_data=None, name=""):
     """Use the unmodified upstream emitter, plus an inert editor-data comment."""
     # Validate all metadata too (json.dumps rejects non-finite numeric fields).
@@ -210,7 +218,7 @@ def dumps(scene, gia_data=None, name=""):
         # primitive exporter for a valid empty drawing instead.
         script = shaper.build_lua_export_text({"image_size": scene["canvas"], "elements": [], "mode": "editor"}, name)
     drawing = read_drawing(script)
-    expected_images = sum(item["type"] in ASSET_TYPES.values() for item in scene["elements"])
+    expected_images = sum(_is_image_element(item) for item in scene["elements"])
     if len(drawing["rows"]) != expected_images:
         raise ValueError("Shared Lua conversion did not preserve every image element")
     # image_template.gia contains orphan references to deleted template nodes.
@@ -219,7 +227,7 @@ def dumps(scene, gia_data=None, name=""):
     script = re.sub(r"(?m)^-- 注意：原 GIA 有 \d+ 个没有图片实体的悬空引用[^\n]*\n", "", script)
     metadata = {"version": 1, "drawingHash": _digest(drawing), "scene": scene}
     payload = base64.b64encode(json.dumps(metadata, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()).decode()
-    preserved_only = sum(item["type"] not in ASSET_TYPES.values() for item in scene["elements"])
+    preserved_only = sum(not _is_image_element(item) for item in scene["elements"])
     note = (f"-- 注意：{preserved_only} 个文本框/非图片图元仅保留为编辑数据，不在游戏中绘制。\n" if preserved_only else "")
     result = note + script + "\n-- 编辑器回导数据：保留图元名称、文本框与素材库，请勿删除。\n" + METADATA_PREFIX + payload + "\n"
     if len(result.encode("utf-8")) > MAX_CONTENT_SIZE:
@@ -251,8 +259,6 @@ def drawing_to_scene(drawing):
                          .5, .5, .5, .5, 1, 1, angle, *color, alpha])
     for index, row in enumerate(rows):
         asset, x, y, w, h, px, py, aminx, aminy, amaxx, amaxy, sx, sy, angle, r, g, b, alpha = row
-        if asset not in ASSET_TYPES:
-            raise ValueError(f"Static image asset {asset} is not an editable basic shape")
         if min(w, h) <= 0 or sx == 0 or sy == 0 or not all(0 <= value <= 255 for value in (r, g, b, alpha)):
             raise ValueError("Invalid image size, scale, color or opacity")
         # Unity anchors and pivots -> the editor's center coordinate; preserve
@@ -265,12 +271,22 @@ def drawing_to_scene(drawing):
         radians = math.radians(angle)
         cx = width * (aminx + (amaxx - aminx) * px) + x + dx * math.cos(radians) - dy * math.sin(radians)
         cy = height * (aminy + (amaxy - aminy) * py) + y + dx * math.sin(radians) + dy * math.cos(radians)
+        color = f"#{round(r):02x}{round(g):02x}{round(b):02x}"
+        if asset not in ASSET_TYPES:
+            # 素材库 sprite：白色代表未染色，其余颜色视为单色素材的染色
+            elements.append({"id": f"lua-{index + 1}", "name": f"素材 {asset}", "type": "image",
+                             "x": cx, "y": height - cy, "width": abs(w * sx), "height": abs(h * sy),
+                             "rotation": angle, "color": color,
+                             "opacity": alpha / 255, "zIndex": index,
+                             "isBackground": drawing["format"] == "shaper" and index < drawing["backgrounds"],
+                             "imageAssetId": int(asset), "imageTint": color.lower() != "#ffffff"})
+            continue
         shape = ASSET_TYPES[asset]
         if sy < 0 and shape in ("triangle", "five_point_star"):
             angle += 180
         elements.append({"id": f"lua-{index + 1}", "name": gia.ASSET_NAMES[asset], "type": shape,
                          "x": cx, "y": height - cy, "width": abs(w * sx), "height": abs(h * sy),
-                         "rotation": angle, "color": f"#{round(r):02x}{round(g):02x}{round(b):02x}",
+                         "rotation": angle, "color": color,
                          "opacity": alpha / 255, "zIndex": index,
                          "isBackground": drawing["format"] == "shaper" and index < drawing["backgrounds"]})
     warnings.append("Imported drawing data only; runtime template IDs, auto-fit, scale and offsets are not applied to the canvas.")

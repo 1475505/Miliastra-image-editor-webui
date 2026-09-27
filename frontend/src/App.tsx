@@ -1,6 +1,38 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { registerEditorTools, type AddElementInput, type EditorBridge } from "./webmcp";
 import { useI18n } from "./i18n";
+import {
+  assetMaskUrl,
+  getCachedLibraryCatalog,
+  imageUrl,
+  loadLibraryCatalog,
+  loadSpriteMeta,
+  readMetaCache,
+  subscribeLibraryCatalog,
+  type LibraryCatalogState,
+  type LibraryGroup,
+  type LibraryTone,
+  type LibraryToneBucket,
+  type SpriteMeta
+} from "./imageLibrary";
+
+/** 网格每批渲染数量，滚动到底部再追加一批。 */
+const ASSET_PAGE_SIZE = 24;
+/** 画布透明哨兵值，与后端 TRANSPARENT_BACKGROUND 对应 */
+const TRANSPARENT_BACKGROUND = "transparent";
+/** 素材拖入画布时的目标尺寸上限（占画布比例） */
+const ASSET_MAX_CANVAS_RATIO = 0.6;
+/** 透明画布棋盘格的屏幕像素边长（一个明暗循环 = 2 格；画布按 zoom 缩放，反算回元素坐标保证视觉恒定） */
+const CHECKER_CELL_PX = 16;
+
+function checkerBackground(zoom: number) {
+  const cell = CHECKER_CELL_PX / (zoom || 1);
+  const half = cell / 2;
+  return {
+    backgroundSize: `${cell}px ${cell}px`,
+    backgroundPosition: `0 0, ${half}px ${half}px`
+  };
+}
 
 export type ShapeType =
   | "ellipse"
@@ -10,6 +42,7 @@ export type ShapeType =
   | "five_point_star"
   | "ring"
   | "textbox"
+  | "image"
   | "other";
 
 export type AlignH = "left" | "center" | "right";
@@ -61,6 +94,10 @@ export type SceneElement = {
   zIndex: number;
   isBackground: boolean;
   textBox?: TextBoxSettings;
+  /** type === "image" 时生效：素材库 sprite id */
+  imageAssetId?: number;
+  /** 单色素材可染色，彩色素材忽略 color */
+  imageTint?: boolean;
 };
 
 type LibraryCategory = {
@@ -264,6 +301,7 @@ function App() {
       five_point_star: t("shape.five_point_star"),
       ring: t("shape.ring"),
       textbox: t("shape.textbox"),
+      image: t("shape.image"),
       other: t("shape.other")
     }),
     [t]
@@ -271,6 +309,21 @@ function App() {
   const [scene, setScene] = useState<SceneDocument>(EMPTY_SCENE);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [leftTab, setLeftTab] = useState<LeftTab>("library");
+  const [assetCatalog, setAssetCatalog] = useState<LibraryCatalogState | null>(() => getCachedLibraryCatalog());
+  // 图形分类与单色/彩色筛选属于「浏览位置」，不做持久化：每次打开都从基础形状开始
+  const [assetGroupKey, setAssetGroupKey] = useState<string>("basic-shape");
+  const [assetTone, setAssetTone] = useState<string>("all");
+  const isCanvasTransparent = scene.canvas.background === TRANSPARENT_BACKGROUND;
+  const [assetQuery, setAssetQuery] = useState("");
+  const [assetLimit, setAssetLimit] = useState(ASSET_PAGE_SIZE);
+  const [assetLoading, setAssetLoading] = useState(false);
+  const [assetError, setAssetError] = useState("");
+  const [selectedAssetId, setSelectedAssetId] = useState<number | null>(null);
+  const [assetMeta, setAssetMeta] = useState<{
+    id: number;
+    status: "loading" | "ready" | "missing" | "error";
+    meta?: SpriteMeta | null;
+  } | null>(null);
   const [rightTab, setRightTab] = useState<RightTab>("props");
   const [sourceType, setSourceType] = useState<SourceType>("css");
   const [sourceContent, setSourceContent] = useState("");
@@ -327,11 +380,184 @@ function App() {
     [orderedElements, quickEdit]
   );
 
-  const activeCategory = scene.library.activeCategory || "basic-shape";
-  const categoryInfo =
-    scene.library.categories.find((item) => item.key === activeCategory || item.label === activeCategory) ??
-    scene.library.categories[0];
   const baseShapePresets = scene.library.baseShapePresets ?? defaultBaseShapePresets;
+
+  const assetGroups = assetCatalog?.groups ?? [];
+  const activeAssetGroup = useMemo<LibraryGroup | null>(
+    () => assetGroups.find((group) => group.key === assetGroupKey) ?? assetGroups[0] ?? null,
+    [assetGroups, assetGroupKey]
+  );
+  // 基础形状沿用原有的预设卡片链路，只有素材分组才渲染素材网格
+  const isSpriteGroup = Boolean(activeAssetGroup && activeAssetGroup.key !== "basic-shape");
+  const toneBuckets = activeAssetGroup?.tones ?? [];
+  const hasToneSplit = toneBuckets.length > 1;
+
+  const scopedAssetIds = useMemo(() => {
+    if (!activeAssetGroup) {
+      return [];
+    }
+    if (!hasToneSplit || assetTone === "all") {
+      return activeAssetGroup.ids;
+    }
+    const bucket = toneBuckets.find((item) => (item.tone ?? "flat") === assetTone);
+    return bucket ? bucket.ids : activeAssetGroup.ids;
+  }, [activeAssetGroup, assetTone, hasToneSplit, toneBuckets]);
+
+  const filteredAssetIds = useMemo(() => {
+    const query = assetQuery.trim();
+    if (!query) {
+      return scopedAssetIds;
+    }
+    return scopedAssetIds.filter((id) => String(id).includes(query));
+  }, [scopedAssetIds, assetQuery]);
+
+  const visibleAssetIds = useMemo(
+    () => filteredAssetIds.slice(0, assetLimit),
+    [filteredAssetIds, assetLimit]
+  );
+
+  function toneLabel(tone: LibraryTone | null): string {
+    if (tone === "mono") {
+      return t("library.toneMono");
+    }
+    if (tone === "color") {
+      return t("library.toneColor");
+    }
+    return t("library.toneAll");
+  }
+
+  function toneBucketCount(bucket: LibraryToneBucket): number {
+    return bucket.ids.length;
+  }
+
+  const assetToneById = useMemo(() => {
+    const map = new Map<number, LibraryTone | null>();
+    activeAssetGroup?.tones.forEach((bucket) => bucket.ids.forEach((id) => map.set(id, bucket.tone)));
+    return map;
+  }, [activeAssetGroup]);
+
+  /** 素材拖入画布时的默认尺寸：小图标放大到看得清，大底板缩到画布的 60% 以内。 */
+  function defaultAssetSize(assetId: number): { width: number; height: number } {
+    const meta = readMetaCache(assetId);
+    const rawWidth = meta && meta.width > 0 ? meta.width : 96;
+    const rawHeight = meta && meta.height > 0 ? meta.height : 96;
+    const longest = Math.max(rawWidth, rawHeight);
+    const canvasLimit = Math.min(scene.canvas.width, scene.canvas.height) * ASSET_MAX_CANVAS_RATIO;
+    let scale = 1;
+    if (longest < 48) {
+      scale = 96 / longest;
+    } else if (longest > canvasLimit) {
+      scale = canvasLimit / longest;
+    }
+    return {
+      width: Math.max(4, Math.round(rawWidth * scale)),
+      height: Math.max(4, Math.round(rawHeight * scale))
+    };
+  }
+
+  function assetOverrides(assetId: number, tint: boolean, label?: string): Partial<SceneElement> {
+    const size = defaultAssetSize(assetId);
+    return {
+      name: `${label ? `${label} ` : ""}${assetId}`,
+      width: size.width,
+      height: size.height,
+      imageAssetId: assetId,
+      imageTint: tint,
+      // 彩色素材用白色中性色；单色素材给一个在浅色画布上可见的默认染色
+      color: tint ? "#4f46e5" : "#ffffff",
+      opacity: 1
+    };
+  }
+
+  function addAssetToCanvas(assetId: number, tint: boolean, label?: string, x?: number, y?: number) {
+    const element = addShapeToCanvas("image", x, y, assetOverrides(assetId, tint, label));
+    if (element) {
+      setStatus(t("statusbar.assetAdded", { name: element.name }));
+    }
+    return element;
+  }
+
+  function selectAssetGroup(key: string) {
+    setAssetGroupKey(key);
+    setAssetTone("all");
+    setAssetLimit(ASSET_PAGE_SIZE);
+  }
+
+  function selectAssetTone(tone: string) {
+    setAssetTone(tone);
+    setAssetLimit(ASSET_PAGE_SIZE);
+  }
+
+  async function reloadAssetCatalog(refresh: boolean) {
+    setAssetLoading(true);
+    try {
+      const next = await loadLibraryCatalog({ refresh });
+      setAssetCatalog(next);
+      setAssetError("");
+    } catch (error) {
+      setAssetError(error instanceof Error ? error.message : t("library.loadFailed"));
+    } finally {
+      setAssetLoading(false);
+    }
+  }
+
+  function selectAsset(id: number) {
+    setSelectedAssetId(id);
+    setAssetMeta({ id, status: "loading" });
+    loadSpriteMeta(id)
+      .then((meta) => {
+        setAssetMeta((current) =>
+          current && current.id === id ? { id, status: meta ? "ready" : "missing", meta } : current
+        );
+      })
+      .catch(() => {
+        setAssetMeta((current) => (current && current.id === id ? { id, status: "error" } : current));
+      });
+  }
+
+  function handleAssetGridScroll(event: React.UIEvent<HTMLDivElement>) {
+    const grid = event.currentTarget;
+    if (grid.scrollTop + grid.clientHeight >= grid.scrollHeight - 48) {
+      setAssetLimit((current) => (current >= filteredAssetIds.length ? current : current + ASSET_PAGE_SIZE));
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    const unsubscribe = subscribeLibraryCatalog((state) => {
+      if (!cancelled) {
+        setAssetCatalog(state);
+      }
+    });
+    setAssetLoading(true);
+    loadLibraryCatalog()
+      .then((state) => {
+        if (!cancelled) {
+          setAssetCatalog(state);
+          setAssetError("");
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setAssetError(error instanceof Error ? error.message : t("library.loadFailed"));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAssetLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+    // 素材索引只加载一次，后续更新由订阅推送
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    setAssetLimit(ASSET_PAGE_SIZE);
+  }, [assetGroupKey, assetTone, assetQuery]);
 
   useEffect(() => {
     zoomRef.current = zoom;
@@ -757,7 +983,9 @@ function App() {
         rotation: input.rotation,
         color: input.color,
         opacity: input.opacity,
-        textBox: input.textBox as SceneElement["textBox"]
+        textBox: input.textBox as SceneElement["textBox"],
+        imageAssetId: input.imageAssetId,
+        imageTint: input.imageTint
       });
       if (!element) {
         return { ok: false, error: "The \"other\" shape type is not available" };
@@ -976,6 +1204,11 @@ function App() {
         textColor: override?.textBox?.textColor ?? color,
         textOpacity: override?.textBox?.textOpacity ?? next.opacity
       };
+    }
+    if (type === "image") {
+      next.imageAssetId = override?.imageAssetId;
+      next.imageTint = override?.imageTint ?? false;
+      next.opacity = override?.opacity ?? 1;
     }
     return next;
   }
@@ -1319,7 +1552,10 @@ function App() {
       const rect = canvasRef.current.getBoundingClientRect();
       const x = clamp((event.clientX - rect.left) / zoom, 0, scene.canvas.width);
       const y = clamp((event.clientY - rect.top) / zoom, 0, scene.canvas.height);
-      addShapeToCanvas(data.type, x, y, data.override);
+      const element = addShapeToCanvas(data.type, x, y, data.override);
+      if (element?.type === "image") {
+        setStatus(t("statusbar.assetAdded", { name: element.name }));
+      }
     } catch {
       setStatus(t("statusbar.dropFailed"));
     }
@@ -1327,16 +1563,6 @@ function App() {
 
   function startShapeDrag(event: React.DragEvent<HTMLButtonElement>, type: ShapeType, override?: Partial<SceneElement>) {
     event.dataTransfer.setData("application/miliastra-shape", JSON.stringify({ type, override }));
-  }
-
-  function updateLibraryCategory(categoryKey: string) {
-    commitScene((current) => ({
-      ...current,
-      library: {
-        ...current.library,
-        activeCategory: categoryKey
-      }
-    }));
   }
 
   const savedLibrary = scene.library.savedItems ?? [];
@@ -1474,7 +1700,7 @@ function App() {
                       className={`layer-row-item ${selectedId === element.id ? "selected" : ""}`}
                       onClick={() => setSelectedId(element.id)}
                     >
-                      <ShapeGlyph type={element.type} color={element.color} />
+                      <ShapeGlyph type={element.type} color={element.color} assetId={element.imageAssetId} tint={element.imageTint} />
                       <div className="layer-info">
                         <strong>{getElementBaseName(element, shapeLabels)}</strong>
                         <span>
@@ -1491,16 +1717,148 @@ function App() {
             <div className="panel-scroll stack">
               <label className="field">
                 <span>{t("library.category")}</span>
-                <select value={activeCategory} onChange={(event) => updateLibraryCategory(event.target.value)}>
-                  {scene.library.categories.map((category) => (
-                    <option key={category.key} value={category.key}>
-                      {t(`category.${category.key}`)}
-                    </option>
-                  ))}
+                <select
+                  value={activeAssetGroup?.key ?? ""}
+                  onChange={(event) => selectAssetGroup(event.target.value)}
+                  disabled={!assetGroups.length}
+                >
+                  {assetGroups.length ? (
+                    assetGroups.map((group) => (
+                      <option key={group.key} value={group.key}>
+                        {group.label} · {group.ids.length}
+                      </option>
+                    ))
+                  ) : (
+                    <option value="">{assetLoading ? t("library.loading") : t("library.loadFailed")}</option>
+                  )}
                 </select>
               </label>
 
-              {categoryInfo?.supported ? (
+              {assetError ? (
+                <div className="tip-box asset-error">
+                  <span>{assetError}</span>
+                  <button type="button" onClick={() => void reloadAssetCatalog(true)}>
+                    {t("library.retry")}
+                  </button>
+                </div>
+              ) : null}
+
+              {isSpriteGroup ? (
+                <>
+                  {hasToneSplit ? (
+                    <div className="asset-tones">
+                      <button
+                        type="button"
+                        className={`asset-tone ${assetTone === "all" ? "is-active" : ""}`}
+                        onClick={() => selectAssetTone("all")}
+                      >
+                        {t("library.toneAll")} {activeAssetGroup?.ids.length ?? 0}
+                      </button>
+                      {toneBuckets.map((bucket) => {
+                        const key = bucket.tone ?? "flat";
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            className={`asset-tone ${assetTone === key ? "is-active" : ""}`}
+                            onClick={() => selectAssetTone(key)}
+                          >
+                            {toneLabel(bucket.tone)} {toneBucketCount(bucket)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="field-hint">{t("library.toneFlat")}</div>
+                  )}
+
+                  {assetTone === "mono" ? (
+                    <div className="field-hint">{t("library.toneMonoHint")}</div>
+                  ) : null}
+
+                  <input
+                    value={assetQuery}
+                    onChange={(event) => setAssetQuery(event.target.value)}
+                    placeholder={t("library.searchPlaceholder")}
+                    inputMode="numeric"
+                  />
+
+                  <div className="asset-grid" onScroll={handleAssetGridScroll}>
+                    {visibleAssetIds.map((id) => {
+                      const isMono = assetToneById.get(id) === "mono";
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          className={`asset-card ${selectedAssetId === id ? "is-selected" : ""} ${isMono ? "is-mono" : ""}`}
+                          onClick={() => selectAsset(id)}
+                          draggable
+                          onDragStart={(event) =>
+                            startShapeDrag(
+                              event,
+                              "image",
+                              assetOverrides(id, isMono, activeAssetGroup?.label)
+                            )
+                          }
+                          onDoubleClick={() => addAssetToCanvas(id, isMono, activeAssetGroup?.label)}
+                          title={`${id} · ${t("library.dragHint")}`}
+                        >
+                          <span className="asset-thumb">
+                            <img src={imageUrl(id)} alt="" loading="lazy" decoding="async" draggable={false} />
+                          </span>
+                          <span className="asset-id">{id}</span>
+                        </button>
+                      );
+                    })}
+                    {!visibleAssetIds.length ? (
+                      <div className="tip-box asset-empty">{assetLoading ? t("library.loading") : t("library.empty")}</div>
+                    ) : null}
+                  </div>
+
+                  {selectedAssetId ? (
+                    <div className="asset-detail">
+                      <div className="asset-detail-head">
+                        <strong>{selectedAssetId}</strong>
+                        <span>{activeAssetGroup?.label}</span>
+                      </div>
+                      <div className="asset-detail-meta">
+                        {assetMeta?.status === "loading" ? <span>{t("library.metaLoading")}</span> : null}
+                        {assetMeta?.status === "missing" ? <span>{t("library.metaMissing")}</span> : null}
+                        {assetMeta?.status === "error" ? (
+                          <span className="asset-meta-error">
+                            {t("library.metaFailed")}
+                            <button
+                              type="button"
+                              className="asset-retry"
+                              onClick={() => {
+                                if (selectedAssetId) {
+                                  selectAsset(selectedAssetId);
+                                }
+                              }}
+                            >
+                              {t("library.retry")}
+                            </button>
+                          </span>
+                        ) : null}
+                        {assetMeta?.status === "ready" && assetMeta.meta ? (
+                          <>
+                            <span>
+                              {Math.round(assetMeta.meta.width)} × {Math.round(assetMeta.meta.height)}
+                            </span>
+                            <span>
+                              {assetMeta.meta.stretchable ? t("library.metaStretchable") : t("library.metaFlat")}
+                            </span>
+                          </>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="field-hint">{t("library.selectHint")}</div>
+                  )}
+                </>
+              ) : null}
+
+              {activeAssetGroup?.key === "basic-shape" ? (
                 <div className="library-grid">
                   {baseShapePresets.map((item) => (
                     <button
@@ -1516,9 +1874,7 @@ function App() {
                     </button>
                   ))}
                 </div>
-              ) : (
-                <div className="tip-box">{t("library.unsupported")}</div>
-              )}
+              ) : null}
 
               <div className="section-head">
                 <span>{t("library.saved")}</span>
@@ -1554,7 +1910,7 @@ function App() {
                         })
                       }
                     >
-                      <ShapeGlyph type={item.element.type} color={item.element.color} />
+                      <ShapeGlyph type={item.element.type} color={item.element.color} assetId={item.element.imageAssetId} tint={item.element.imageTint} />
                       <div className="layer-info">
                         <strong>{item.name}</strong>
                         <span>
@@ -1690,11 +2046,13 @@ function App() {
             >
               <div
                 ref={canvasRef}
-                className="canvas"
+                className={`canvas${isCanvasTransparent ? " is-transparent" : ""}`}
                 style={{
                   width: scene.canvas.width,
                   height: scene.canvas.height,
-                  background: scene.canvas.background,
+                  ...(isCanvasTransparent
+                    ? checkerBackground(zoom)
+                    : { background: scene.canvas.background }),
                   transform: `scale(${zoom})`,
                   transformOrigin: "center center"
                 }}
@@ -1757,6 +2115,9 @@ function App() {
                     {element.type === "four_point_star" ? <div className="star star-four" style={{ background: element.color }} /> : null}
                     {element.type === "five_point_star" ? <div className="star star-five" style={{ background: element.color }} /> : null}
                     {element.type === "textbox" ? <TextBoxPreview element={element} /> : null}
+                    {element.type === "image" && element.imageAssetId ? (
+                      <AssetSprite assetId={element.imageAssetId} tint={element.imageTint} color={element.color} />
+                    ) : null}
                     {selectedId === element.id ? (
                       <>
                         <div className="rotate-stem" />
@@ -1914,7 +2275,7 @@ function App() {
               {selectedElement && propsView === "element" ? (
                 <>
                   <div className="inspector-head">
-                    <ShapeGlyph type={selectedElement.type} color={selectedElement.color} />
+                    <ShapeGlyph type={selectedElement.type} color={selectedElement.color} assetId={selectedElement.imageAssetId} tint={selectedElement.imageTint} />
                     <div className="layer-info">
                       <strong>{getElementBaseName(selectedElement, shapeLabels)}</strong>
                       <span>{shapeLabels[selectedElement.type]} · {t("props.layer", { n: selectedElement.zIndex + 1 })}</span>
@@ -1952,10 +2313,21 @@ function App() {
                   ) : (
                     <>
                   <div className="section-head"><span>{t("props.appearance")}</span></div>
+                  {selectedElement.type === "image" ? (
+                    <div className="field">
+                      <span>{t("props.assetId")}</span>
+                      <div className="asset-id-row">
+                        <code>{selectedElement.imageAssetId ?? "—"}</code>
+                        <em>{selectedElement.imageTint ? t("props.assetTintable") : t("props.assetFixed")}</em>
+                      </div>
+                    </div>
+                  ) : null}
+                  {selectedElement.type !== "image" || selectedElement.imageTint ? (
                   <div className="field">
-                    <span>{t("props.fillColor")}</span>
+                    <span>{selectedElement.type === "image" ? t("props.tintColor") : t("props.fillColor")}</span>
                     <ColorField value={selectedElement.color} onChange={(color) => updateSelected({ color })} />
                   </div>
+                  ) : null}
                   <div className="field">
                     <span>{t("props.opacity")}</span>
                     <div className="row">
@@ -2058,8 +2430,26 @@ function App() {
                   </div>
                   <div className="field">
                     <span>{t("props.bgColor")}</span>
-                    <ColorField value={scene.canvas.background} onChange={updateCanvasBackground} />
+                    <div className="row">
+                      <ColorField
+                        value={scene.canvas.background === TRANSPARENT_BACKGROUND ? "#ffffff" : scene.canvas.background}
+                        onChange={updateCanvasBackground}
+                      />
+                    </div>
                   </div>
+                  <label className="check-row" title={t("props.transparentHint")}>
+                    <input
+                      type="checkbox"
+                      checked={scene.canvas.background === TRANSPARENT_BACKGROUND}
+                      onChange={(event) =>
+                        updateCanvasBackground(event.target.checked ? TRANSPARENT_BACKGROUND : "#ffffff")
+                      }
+                    />
+                    <span>
+                      {t("props.transparent")}
+                      <em>{t("props.transparentHint")}</em>
+                    </span>
+                  </label>
 
                   <div className="section-head"><span>{t("props.stats")}</span></div>
                   <div className="stat-row">
@@ -2167,6 +2557,14 @@ function App() {
           <div className="quick-scale-actions">
             <button className="btn btn-ghost" onClick={() => scaleQuickEdit(0.9)}>{t("quick.shrink")}</button>
             <button className="btn btn-ghost" onClick={() => scaleQuickEdit(1.1)}>{t("quick.grow")}</button>
+            <button
+              className="btn btn-ghost quick-delete"
+              onClick={() => removeElementById(quickEditElement.id)}
+              title={t("props.delete")}
+            >
+              <Icon name="trash" size={11} />
+              <span>{t("quick.delete")}</span>
+            </button>
           </div>
         </div>
       ) : null}
@@ -2673,7 +3071,10 @@ function ensureSceneLibrary(scene: SceneDocument): SceneDocument {
   };
 }
 
-function ShapeGlyph({ type, color }: { type: ShapeType; color: string }) {
+function ShapeGlyph({ type, color, assetId, tint }: { type: ShapeType; color: string; assetId?: number; tint?: boolean }) {
+  if (type === "image" && assetId) {
+    return <AssetSprite assetId={assetId} tint={tint} color={color} />;
+  }
   return (
     <div className={`glyph glyph-${type}`}>
       {type === "triangle" ? <div className="triangle-fill" style={{ background: color }} /> : null}
@@ -2685,6 +3086,29 @@ function ShapeGlyph({ type, color }: { type: ShapeType; color: string }) {
       {type === "textbox" ? <div className="glyph-fill textbox">T</div> : null}
     </div>
   );
+}
+
+/**
+ * 素材图元渲染：彩色素材直接用 <img>，单色素材用 CSS mask + 背景色实现染色，
+ * 与游戏里 packed_color 乘算单色贴图的效果一致。
+ */
+function AssetSprite({ assetId, tint, color }: { assetId: number; tint?: boolean; color: string }) {
+  if (tint) {
+    // CSS 遮罩要求资源 CORS-same-origin，跨域遮罩会让元素整块消失，
+    // 因此染色时改用同源代理地址；彩色素材仍直连 OSS。
+    const maskUrl = assetMaskUrl(assetId);
+    return (
+      <div
+        className="asset-sprite asset-sprite-mask"
+        style={{
+          background: color,
+          maskImage: `url(${maskUrl})`,
+          WebkitMaskImage: `url(${maskUrl})`
+        }}
+      />
+    );
+  }
+  return <img className="asset-sprite" src={imageUrl(assetId)} alt="" draggable={false} loading="lazy" decoding="async" />;
 }
 
 async function readApiError(response: Response) {
@@ -2936,6 +3360,9 @@ function shapeStyle(element: SceneElement) {
     return { ...common, background: ringGradient(element.color) };
   }
   if (element.type === "textbox") {
+    return { ...common, background: "transparent" };
+  }
+  if (element.type === "image") {
     return { ...common, background: "transparent" };
   }
   return { ...common, background: element.color };
