@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { registerEditorTools, type AddElementInput, type EditorBridge } from "./webmcp";
 import { useI18n } from "./i18n";
 import {
@@ -451,7 +451,7 @@ function App() {
       width: size.width,
       height: size.height,
       imageAssetId: assetId,
-      imageTint: tint,
+      imageTint: true,
       // 彩色素材用白色中性色；单色素材给一个在浅色画布上可见的默认染色
       color: tint ? "#4f46e5" : "#ffffff",
       opacity: 1
@@ -2325,16 +2325,14 @@ function App() {
                       <span>{t("props.assetId")}</span>
                       <div className="asset-id-row">
                         <code>{selectedElement.imageAssetId ?? "—"}</code>
-                        <em>{selectedElement.imageTint ? t("props.assetTintable") : t("props.assetFixed")}</em>
+                        <em>{t("props.assetTintable")}</em>
                       </div>
                     </div>
                   ) : null}
-                  {selectedElement.type !== "image" || selectedElement.imageTint ? (
                   <div className="field">
                     <span>{selectedElement.type === "image" ? t("props.tintColor") : t("props.fillColor")}</span>
-                    <ColorField value={selectedElement.color} onChange={(color) => updateSelected({ color })} />
+                    <ColorField value={selectedElement.type === "image" && !selectedElement.imageTint ? "#ffffff" : selectedElement.color} onChange={(color) => updateSelected({ color, ...(selectedElement.type === "image" ? { imageTint: true } : {}) })} />
                   </div>
-                  ) : null}
                   <div className="field">
                     <span>{t("props.opacity")}</span>
                     <div className="row">
@@ -3095,24 +3093,24 @@ function ShapeGlyph({ type, color, assetId, tint }: { type: ShapeType; color: st
   );
 }
 
-/**
- * 素材图元渲染：彩色素材直接用 <img>，单色素材用 CSS mask + 背景色实现染色，
- * 与游戏里 packed_color 乘算单色贴图的效果一致。
- */
+/** 素材染色按 RGB 通道乘算，保留原贴图细节和透明度。 */
 function AssetSprite({ assetId, tint, color }: { assetId: number; tint?: boolean; color: string }) {
-  if (tint) {
-    // CSS 遮罩要求资源 CORS-same-origin，跨域遮罩会让元素整块消失，
-    // 因此染色时改用同源代理地址；彩色素材仍直连 OSS。
-    const maskUrl = assetMaskUrl(assetId);
+  const filterId = `asset-tint-${useId().replace(/:/g, "")}`;
+  if (tint && color.toLowerCase() !== "#ffffff") {
+    const channels = [1, 3, 5].map((offset) => parseInt(color.slice(offset, offset + 2), 16) / 255);
     return (
-      <div
-        className="asset-sprite asset-sprite-mask"
-        style={{
-          background: color,
-          maskImage: `url(${maskUrl})`,
-          WebkitMaskImage: `url(${maskUrl})`
-        }}
-      />
+      <svg className="asset-sprite" width="100%" height="100%" aria-hidden="true">
+        <defs>
+          <filter id={filterId} x="0" y="0" width="100%" height="100%" colorInterpolationFilters="sRGB">
+            <feComponentTransfer>
+              <feFuncR type="linear" slope={channels[0]} />
+              <feFuncG type="linear" slope={channels[1]} />
+              <feFuncB type="linear" slope={channels[2]} />
+            </feComponentTransfer>
+          </filter>
+        </defs>
+        <image href={assetMaskUrl(assetId)} width="100%" height="100%" preserveAspectRatio="none" filter={`url(#${filterId})`} />
+      </svg>
     );
   }
   return <img className="asset-sprite" src={imageUrl(assetId)} alt="" draggable={false} loading="lazy" decoding="async" />;

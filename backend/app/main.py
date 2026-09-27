@@ -19,7 +19,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from PIL import Image, ImageColor, ImageDraw, ImageFont, PngImagePlugin
+from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFont, PngImagePlugin
 
 from . import image_library, lua_scene
 from .image_library import fetch_sprite_bytes, sprite_url
@@ -188,7 +188,7 @@ class SceneElementModel(BaseModel):
     zIndex: int = 0
     isBackground: bool = False
     textBox: TextBoxModel | None = None
-    # type == "image" 时生效：素材库 sprite id，以及是否用 color 参与染色（单色素材）
+    # type == "image" 时生效：素材库 sprite id，以及是否用 color 参与染色（所有素材均支持）
     imageAssetId: int | None = None
     imageTint: bool = False
 
@@ -1308,7 +1308,7 @@ def scene_to_css(scene: SceneDocumentModel) -> str:
                     f"  -miliastra-image-tint: {'true' if element.imageTint else 'false'};",
                     f"  background-color: {tint_color};",
                     f"  background-image: url({sprite_url(element.imageAssetId)});",
-                    "  background-size: contain;",
+                    "  background-size: 100% 100%;",
                     "  background-repeat: no-repeat;",
                     "  background-position: center;",
                 ]
@@ -1380,7 +1380,7 @@ def scene_to_svg(scene: SceneDocumentModel) -> str:
         )
     if tinted_count:
         parts.append(
-            f'<!-- Miliastra-Warning: SVG 无法表现 {tinted_count} 个单色素材的染色，导出为原始贴图；染色请改用 CSS、PNG 或 Lua 导出。 -->'
+            f'<!-- Miliastra-Warning: SVG 无法表现 {tinted_count} 个素材的染色，导出为原始贴图；染色请改用 CSS、PNG 或 Lua 导出。 -->'
         )
 
     for element in sorted_elements:
@@ -1422,7 +1422,7 @@ def scene_to_svg(scene: SceneDocumentModel) -> str:
                 f'<image data-miliastra-image="{asset_id}" href="{sprite_url(asset_id)}"'
                 f' x="{element.x - element.width / 2:.2f}" y="{element.y - element.height / 2:.2f}"'
                 f' width="{element.width:.2f}" height="{element.height:.2f}"'
-                f' preserveAspectRatio="xMidYMid meet" opacity="{opacity}" transform="{transform}" />'
+                f' preserveAspectRatio="none" opacity="{opacity}" transform="{transform}" />'
             )
             continue
         if element.type == "ellipse":
@@ -1487,7 +1487,7 @@ def load_sprite_images(elements: list[SceneElementModel]) -> dict[int, Image.Ima
 
 
 def paste_sprite(image: Image.Image, element: SceneElementModel, sprite: Image.Image) -> None:
-    """把素材贴图按 contain 规则贴到图元框内。
+    """把素材贴图按图元宽高直接拉伸，再应用旋转。
 
     sprite 是本请求内共享的解码缓存，先拷贝再改，避免染色/透明度污染原贴图。
     """
@@ -1495,7 +1495,7 @@ def paste_sprite(image: Image.Image, element: SceneElementModel, sprite: Image.I
     opacity = clamp01(element.opacity)
     if element.imageTint:
         rgba = color_with_alpha(element.color, 1.0)
-        layer = Image.new("RGBA", sprite.size, rgba)
+        layer = ImageChops.multiply(sprite.convert("RGB"), Image.new("RGB", sprite.size, rgba[:3])).convert("RGBA")
         alpha = sprite.getchannel("A")
         if opacity < 1:
             alpha = alpha.point(lambda value: int(value * opacity))
@@ -1506,8 +1506,7 @@ def paste_sprite(image: Image.Image, element: SceneElementModel, sprite: Image.I
 
     box_width = max(1, int(round(element.width)))
     box_height = max(1, int(round(element.height)))
-    scale = min(box_width / sprite.width, box_height / sprite.height)
-    target = (max(1, int(round(sprite.width * scale))), max(1, int(round(sprite.height * scale))))
+    target = (box_width, box_height)
     if target != sprite.size:
         sprite = sprite.resize(target, Image.LANCZOS)
     if abs(element.rotation) > 0.001:

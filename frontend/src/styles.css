@@ -1021,18 +1021,8 @@ input[type="range"]::-moz-range-thumb {
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  object-fit: fill;
   pointer-events: none;
-}
-
-/* 单色素材：用贴图 alpha 做遮罩，背景色即染色 */
-.asset-sprite-mask {
-  mask-size: contain;
-  mask-repeat: no-repeat;
-  mask-position: center;
-  -webkit-mask-size: contain;
-  -webkit-mask-repeat: no-repeat;
-  -webkit-mask-position: center;
 }
 
 .asset-id-row {

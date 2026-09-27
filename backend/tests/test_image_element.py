@@ -4,7 +4,7 @@ import unittest
 import urllib.error
 from unittest import mock
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 from app.main import (
     ExportRequest,
@@ -106,6 +106,7 @@ class CssRoundTripTests(unittest.TestCase):
         self.assertIn("-miliastra-type: image;", css)
         self.assertIn("background-image: url(https://oss.070077.xyz/images/sprite/106001.png);", css)
         self.assertIn("background-color: #ff8800;", css)
+        self.assertIn("background-size: 100% 100%;", css)
 
     def test_css_round_trip_preserves_asset(self):
         source = scene_with([image_element(imageTint=True, color="#ff8800", rotation=30)])
@@ -137,7 +138,7 @@ class SvgRoundTripTests(unittest.TestCase):
         svg = export_svg(ExportRequest(scene=scene_with([image_element()]))).body.decode()
         self.assertIn('data-miliastra-image="106001"', svg)
         self.assertIn('href="https://oss.070077.xyz/images/sprite/106001.png"', svg)
-        self.assertIn('preserveAspectRatio="xMidYMid meet"', svg)
+        self.assertIn('preserveAspectRatio="none"', svg)
 
     def test_svg_round_trip_preserves_asset_and_geometry(self):
         source = scene_with([image_element(rotation=25)])
@@ -215,14 +216,33 @@ class LuaRoundTripTests(unittest.TestCase):
 
 
 class PngTests(unittest.TestCase):
-    def test_tinted_sprite_is_painted_with_element_color(self):
+    def test_sprite_stretches_to_element_bounds_before_rotation(self):
+        for tint in (False, True):
+            for width, height in ((40, 20), (20, 40)):
+                for rotation in (0, 90):
+                    with self.subTest(tint=tint, width=width, height=height, rotation=rotation):
+                        source = scene_with([image_element(
+                            width=width, height=height, rotation=rotation,
+                            imageTint=tint, color="#80ff00",
+                        )])
+                        with mock.patch("app.main.fetch_sprite_bytes", return_value=make_sprite_bytes(color=(200, 100, 50, 255))):
+                            response = export_png(ExportRequest(scene=source))
+                        image = Image.open(io.BytesIO(response.body)).convert("RGB")
+                        bounds = ImageChops.difference(image, Image.new("RGB", image.size, "white")).getbbox()
+                        rendered_width, rendered_height = (height, width) if rotation else (width, height)
+                        self.assertEqual(bounds, (
+                            120 - rendered_width // 2, 90 - rendered_height // 2,
+                            120 + rendered_width // 2, 90 + rendered_height // 2,
+                        ))
+
+    def test_tinted_sprite_multiplies_original_color(self):
         source = scene_with([image_element(imageTint=True, color="#00ff00", width=40, height=40)])
         with mock.patch("app.main.fetch_sprite_bytes", return_value=make_sprite_bytes()):
             response = export_png(ExportRequest(scene=source))
 
         image = Image.open(io.BytesIO(response.body)).convert("RGBA")
-        # 图元中心 (120, 90)，40×40 的贴图应完整覆盖其周围
-        self.assertEqual(image.getpixel((120, 90)), (0, 255, 0, 255))
+        # 红色贴图乘以绿色得到黑色，不能用绿色直接覆盖原图。
+        self.assertEqual(image.getpixel((120, 90)), (0, 0, 0, 255))
 
     def test_color_sprite_keeps_original_pixels(self):
         source = scene_with([image_element(width=40, height=40)])

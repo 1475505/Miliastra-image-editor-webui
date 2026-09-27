@@ -235,7 +235,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "add_element",
       title: "Add element",
       description:
-        "Add a basic shape, textbox, or library sprite element to the canvas (ellipse / rectangle / triangle / four_point_star / five_point_star / ring / textbox / image). For type \"image\" you must pass imageAssetId (a 6-digit sprite id from the graphics library); set imageTint only for monochrome assets, which lets the color value tint the sprite. x and y are the element center coordinates; if omitted the element is placed at the canvas center. Returns the full data of the new element.",
+        "Add a basic shape, textbox, or library sprite element to the canvas (ellipse / rectangle / triangle / four_point_star / five_point_star / ring / textbox / image). For type \"image\" you must pass imageAssetId (a 6-digit sprite id from the graphics library); set imageTint to true to multiply the sprite RGB by the color value (supported for all assets). x and y are the element center coordinates; if omitted the element is placed at the canvas center. Returns the full data of the new element.",
       inputSchema: {
         type: "object",
         required: ["type"],
@@ -263,7 +263,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
           imageAssetId: numberProp("Sprite id from the graphics library when type is image (6-digit, e.g. 106001)", 100000, 999999),
           imageTint: {
             type: "boolean",
-            description: "When type is image: tint the sprite with the color value (monochrome assets only)"
+            description: "When type is image: multiply the sprite RGB by the color value (all assets support tinting)"
           }
         }
       }
