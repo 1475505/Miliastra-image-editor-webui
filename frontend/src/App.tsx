@@ -20,8 +20,8 @@ import {
 const ASSET_PAGE_SIZE = 24;
 /** 画布透明哨兵值，与后端 TRANSPARENT_BACKGROUND 对应 */
 const TRANSPARENT_BACKGROUND = "transparent";
-/** 素材拖入画布时的目标尺寸上限（占画布比例） */
-const ASSET_MAX_CANVAS_RATIO = 0.6;
+/** 素材拖入画布时的初始尺寸：元数据缺失时的兜底边长（96px） */
+const DEFAULT_ASSET_SIZE = 96;
 /** 透明画布棋盘格的屏幕像素边长（一个明暗循环 = 2 格；画布按 zoom 缩放，反算回元素坐标保证视觉恒定） */
 const CHECKER_CELL_PX = 16;
 
@@ -436,27 +436,16 @@ function App() {
     return map;
   }, [activeAssetGroup]);
 
-  /** 素材拖入画布时的默认尺寸：小图标放大到看得清，大底板缩到画布的 60% 以内。 */
-  function defaultAssetSize(assetId: number): { width: number; height: number } {
-    const meta = readMetaCache(assetId);
-    const rawWidth = meta && meta.width > 0 ? meta.width : 96;
-    const rawHeight = meta && meta.height > 0 ? meta.height : 96;
-    const longest = Math.max(rawWidth, rawHeight);
-    const canvasLimit = Math.min(scene.canvas.width, scene.canvas.height) * ASSET_MAX_CANVAS_RATIO;
-    let scale = 1;
-    if (longest < 48) {
-      scale = 96 / longest;
-    } else if (longest > canvasLimit) {
-      scale = canvasLimit / longest;
-    }
-    return {
-      width: Math.max(4, Math.round(rawWidth * scale)),
-      height: Math.max(4, Math.round(rawHeight * scale))
-    };
+  /** 素材拖入画布时的初始尺寸：直接采用素材元数据里的原始宽高，不放大、不裁剪，只在元数据缺失时兜底。 */
+  function defaultAssetSize(assetId: number, meta?: SpriteMeta | null): { width: number; height: number } {
+    const source = meta !== undefined ? meta : readMetaCache(assetId);
+    const width = source && source.width > 0 ? source.width : DEFAULT_ASSET_SIZE;
+    const height = source && source.height > 0 ? source.height : DEFAULT_ASSET_SIZE;
+    return { width: Math.round(width), height: Math.round(height) };
   }
 
-  function assetOverrides(assetId: number, tint: boolean, label?: string): Partial<SceneElement> {
-    const size = defaultAssetSize(assetId);
+  function assetOverrides(assetId: number, tint: boolean, label?: string, meta?: SpriteMeta | null): Partial<SceneElement> {
+    const size = defaultAssetSize(assetId, meta);
     return {
       name: `${label ? `${label} ` : ""}${assetId}`,
       width: size.width,
@@ -469,8 +458,14 @@ function App() {
     };
   }
 
-  function addAssetToCanvas(assetId: number, tint: boolean, label?: string, x?: number, y?: number) {
-    const element = addShapeToCanvas("image", x, y, assetOverrides(assetId, tint, label));
+  async function addAssetToCanvas(assetId: number, tint: boolean, label?: string, x?: number, y?: number) {
+    let meta: SpriteMeta | null | undefined;
+    try {
+      meta = await loadSpriteMeta(assetId);
+    } catch {
+      meta = readMetaCache(assetId);
+    }
+    const element = addShapeToCanvas("image", x, y, assetOverrides(assetId, tint, label, meta));
     if (element) {
       setStatus(t("statusbar.assetAdded", { name: element.name }));
     }
@@ -1540,7 +1535,7 @@ function App() {
     };
   }
 
-  function handleCanvasDrop(event: React.DragEvent<HTMLDivElement>) {
+  async function handleCanvasDrop(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
     const payload = event.dataTransfer.getData("application/miliastra-shape");
     if (!payload || !canvasRef.current) {
@@ -1549,6 +1544,18 @@ function App() {
 
     try {
       const data = JSON.parse(payload) as { type: ShapeType; override?: Partial<SceneElement> };
+      if (data.type === "image" && data.override?.imageAssetId) {
+        // 拖入时用素材元数据里的原始尺寸，确保初始宽高不被固定
+        let meta: SpriteMeta | null | undefined;
+        try {
+          meta = await loadSpriteMeta(data.override.imageAssetId);
+        } catch {
+          meta = readMetaCache(data.override.imageAssetId);
+        }
+        const size = defaultAssetSize(data.override.imageAssetId, meta);
+        data.override.width = size.width;
+        data.override.height = size.height;
+      }
       const rect = canvasRef.current.getBoundingClientRect();
       const x = clamp((event.clientX - rect.left) / zoom, 0, scene.canvas.width);
       const y = clamp((event.clientY - rect.top) / zoom, 0, scene.canvas.height);
