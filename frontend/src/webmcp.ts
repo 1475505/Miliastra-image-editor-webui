@@ -58,6 +58,7 @@ declare global {
 // ---------------------------------------------------------------------------
 
 export type AddElementInput = {
+  id?: string;
   type: ShapeType;
   x?: number;
   y?: number;
@@ -67,6 +68,8 @@ export type AddElementInput = {
   color?: string;
   opacity?: number;
   name?: string;
+  zIndex?: number;
+  isBackground?: boolean;
   textBox?: Partial<TextBoxSettings>;
   /** type === "image"：素材库 sprite id（6 位） */
   imageAssetId?: number;
@@ -74,14 +77,23 @@ export type AddElementInput = {
   imageTint?: boolean;
 };
 
+export type ElementPatch = Omit<Partial<SceneElement>, "textBox"> & { textBox?: Partial<TextBoxSettings> };
+export type ElementUpdate = { id: string; patch: ElementPatch };
+export type CanvasRegion = { x: number; y: number; width: number; height: number };
+export type PreviewOptions = {
+  maxSize: number;
+  format: "png" | "jpeg";
+  quality: number;
+  region?: CanvasRegion;
+};
+type EditResult = { ok: boolean; error?: string; count?: number };
+
 export type EditorBridge = {
   getScene(): SceneDocument;
-  addElement(input: AddElementInput): { ok: boolean; error?: string; element?: SceneElement };
-  updateElement(
-    id: string,
-    patch: Partial<SceneElement>
-  ): { ok: boolean; error?: string };
-  removeElement(id: string): { ok: boolean; error?: string };
+  addElements(inputs: AddElementInput[], replace: boolean, select: boolean): EditResult & { elements?: SceneElement[] };
+  updateElements(updates: ElementUpdate[]): EditResult;
+  removeElements(ids: string[]): EditResult;
+  setSelection(id: string | null): EditResult;
   setCanvas(patch: {
     width?: number;
     height?: number;
@@ -95,8 +107,8 @@ export type EditorBridge = {
   ): Promise<{ ok: boolean; error?: string; warnings?: string[] }>;
   exportScene(format: "css" | "svg" | "json" | "lua"): Promise<string>;
   getCanvasPreview(
-    maxSize: number
-  ): Promise<{ ok: boolean; dataUrl?: string; width?: number; height?: number; error?: string }>;
+    options: PreviewOptions
+  ): Promise<{ ok: boolean; dataUrl?: string; width?: number; height?: number; region?: CanvasRegion; error?: string }>;
   undo(): { ok: boolean; error?: string };
   redo(): { ok: boolean; error?: string };
 };
@@ -137,6 +149,146 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
+const GEOMETRY = "Coordinates use a top-left origin, x rightwards and y downwards. x/y denote the center of the width/height box; all shapes rotate about that center, counter-clockwise positive. Triangle vertices in box fractions are (0.5,0),(0,1),(1,1). Four-point star vertices in percent are (50,0),(62,38),(100,50),(62,62),(50,100),(38,62),(0,50),(38,38); five-point star: (50,0),(61,35),(98,35),(68,57),(79,92),(50,71),(21,92),(32,57),(2,35),(39,35). Ring inner/outer diameter ratio is fixed at 0.8. Width/height support 1-2048 px, including thin lines made with rectangles.";
+const DEFAULTS = "New elements default to the canvas center, rotation 0, opacity 0.85 for basic shapes and 1 for textbox/image; pass opacity:1 for solid shapes. Width/height/color use the current library preset (image fallback: 90x90, #4f46e5). Textboxes default to fontSize 20, white text, transparent background, top-left alignment. zIndex is a stacking sort key (larger = above, ties keep existing/input order); mutations normalize keys to consecutive indices. Omit zIndex to append on top. select defaults to false.";
+
+const elementProperties = {
+  name: { type: "string", description: "Display name; new elements default to the shape name" },
+  x: numberProp("Center X in canvas pixels"),
+  y: numberProp("Center Y in canvas pixels"),
+  width: numberProp("Box width in pixels (1-2048; default: current library preset)", 1, 2048),
+  height: numberProp("Box height in pixels (1-2048; default: current library preset)", 1, 2048),
+  rotation: numberProp("Degrees, counter-clockwise about the box center; default 0"),
+  color: { type: "string", pattern: "^#[0-9a-fA-F]{6}$", description: "RGB hex color, e.g. #0f766e; default: current library preset" },
+  opacity: numberProp("Opacity; default 0.85 for basic shapes, 1 for textbox/image", 0, 1),
+  zIndex: numberProp("Stacking sort key: larger is above; ties retain existing/input order. Reindexed after editing."),
+  isBackground: { type: "boolean", description: "Background element flag for GIA export; default false" },
+  text: { type: "string", description: "Textbox text (supports <color>, <i>, <size>)" },
+  fontSize: numberProp("Textbox font size (default 20)", 1, 256),
+  imageAssetId: { type: "integer", minimum: 100000, maximum: 999999, description: "Required for image: six-digit library sprite id" },
+  imageTint: { type: "boolean", description: "Multiply sprite RGB by color, default false" }
+};
+const addProperties = {
+  ...elementProperties,
+  id: { type: "string", minLength: 1, description: "Optional unique id; generated when omitted" },
+  type: shapeEnum
+};
+const selectProperty = { type: "boolean", default: false, description: "Select the last added element. Default false preserves selection; replacement clears it." };
+const regionSchema = {
+  type: "object",
+  required: ["x", "y", "width", "height"],
+  properties: {
+    x: numberProp("Left edge in canvas coordinates"),
+    y: numberProp("Top edge in canvas coordinates"),
+    width: numberProp("Region width in pixels", 1),
+    height: numberProp("Region height in pixels", 1)
+  }
+};
+const queryProperties = {
+  offset: { type: "integer", minimum: 0, description: "Skip this many matches (default 0)" },
+  limit: { type: "integer", minimum: 1, maximum: 1000, description: "Page size; list_elements defaults to 100, get_scene to all" },
+  name: { type: "string", description: "Case-insensitive substring of element name" },
+  type: { type: "string", enum: [...SHAPE_TYPES, "other"] },
+  ids: { type: "array", items: { type: "string" }, description: "Only these element ids" },
+  region: { ...regionSchema, description: "Match elements whose rotated bounding boxes intersect this region" }
+};
+
+function objectArg(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
+  return value as Record<string, unknown>;
+}
+
+function parseRegion(value: unknown): CanvasRegion | undefined {
+  if (value === undefined) return undefined;
+  const region = objectArg(value, "region");
+  for (const key of ["x", "y", "width", "height"] as const) {
+    if (typeof region[key] !== "number" || !Number.isFinite(region[key])) throw new Error(`region.${key} must be finite`);
+  }
+  if ((region.width as number) < 1 || (region.height as number) < 1) throw new Error("region width/height must be at least 1");
+  return region as CanvasRegion;
+}
+
+function parseElementFields(args: Record<string, unknown>): ElementPatch {
+  const patch: ElementPatch = {};
+  for (const key of ["x", "y", "width", "height", "rotation", "opacity", "zIndex", "imageAssetId"] as const) {
+    if (args[key] === undefined) continue;
+    const value = args[key];
+    if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${key} must be a finite number`);
+    if ((key === "width" || key === "height") && (value < 1 || value > 2048)) throw new Error(`${key} must be 1-2048`);
+    if (key === "opacity" && (value < 0 || value > 1)) throw new Error("opacity must be 0-1");
+    if (key === "imageAssetId" && (!Number.isInteger(value) || value < 100000 || value > 999999)) throw new Error("imageAssetId must be a six-digit integer");
+    patch[key] = value;
+  }
+  for (const key of ["name", "color"] as const) {
+    if (args[key] === undefined) continue;
+    if (typeof args[key] !== "string") throw new Error(`${key} must be a string`);
+    patch[key] = args[key];
+  }
+  if (patch.color !== undefined && !/^#[0-9a-f]{6}$/i.test(patch.color)) throw new Error("color must be #RRGGBB");
+  for (const key of ["imageTint", "isBackground"] as const) {
+    if (args[key] === undefined) continue;
+    if (typeof args[key] !== "boolean") throw new Error(`${key} must be boolean`);
+    patch[key] = args[key];
+  }
+  if (args.text !== undefined) {
+    if (typeof args.text !== "string") throw new Error("text must be a string");
+    patch.textBox = { text: args.text };
+  }
+  if (args.fontSize !== undefined) {
+    const value = args.fontSize;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 1 || value > 256) throw new Error("fontSize must be 1-256");
+    patch.textBox = { ...patch.textBox, fontSize: value };
+  }
+  return patch;
+}
+
+function parseAddInput(value: unknown): AddElementInput {
+  const args = objectArg(value, "element");
+  const type = args.type as ShapeType;
+  if (!SHAPE_TYPES.includes(type)) throw new Error(`type must be one of ${SHAPE_TYPES.join(" / ")}`);
+  const fields = parseElementFields(args);
+  if (type === "image" && fields.imageAssetId === undefined) throw new Error('imageAssetId is required for type "image"');
+  if (type !== "image" && (fields.imageAssetId !== undefined || fields.imageTint !== undefined)) throw new Error("imageAssetId/imageTint require type image");
+  if (type !== "textbox" && fields.textBox) throw new Error("text/fontSize require type textbox");
+  if (args.id !== undefined && (typeof args.id !== "string" || !args.id.trim())) throw new Error("id must be a non-empty string");
+  return { ...fields, type, ...(typeof args.id === "string" ? { id: args.id } : {}) };
+}
+
+function parseUpdate(value: unknown): ElementUpdate {
+  const args = objectArg(value, "update");
+  if (typeof args.id !== "string" || !args.id) throw new Error("Missing element id");
+  const patch = parseElementFields(args);
+  if (!Object.keys(patch).length) throw new Error("No updatable fields provided");
+  return { id: args.id, patch };
+}
+
+function arrayArg(value: unknown, label: string): unknown[] {
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  return value;
+}
+
+function queryElements(scene: SceneDocument, args: Record<string, unknown>, defaultLimit: number) {
+  const region = parseRegion(args.region);
+  const name = typeof args.name === "string" ? args.name.toLowerCase() : "";
+  const ids = args.ids === undefined ? null : new Set(arrayArg(args.ids, "ids"));
+  const matched = scene.elements.filter((element) => {
+    if (name && !element.name.toLowerCase().includes(name)) return false;
+    if (args.type !== undefined && element.type !== args.type) return false;
+    if (ids && !ids.has(element.id)) return false;
+    if (!region) return true;
+    const radians = element.rotation * Math.PI / 180;
+    const halfW = (Math.abs(Math.cos(radians)) * element.width + Math.abs(Math.sin(radians)) * element.height) / 2;
+    const halfH = (Math.abs(Math.sin(radians)) * element.width + Math.abs(Math.cos(radians)) * element.height) / 2;
+    return element.x + halfW >= region.x && element.x - halfW <= region.x + region.width &&
+      element.y + halfH >= region.y && element.y - halfH <= region.y + region.height;
+  }).sort((a, b) => a.zIndex - b.zIndex);
+  const offset = typeof args.offset === "number" && Number.isFinite(args.offset) ? Math.max(0, Math.floor(args.offset)) : 0;
+  const limit = typeof args.limit === "number" && Number.isFinite(args.limit) ? clamp(Math.floor(args.limit), 1, 1000) : defaultLimit;
+  const elements = matched.slice(offset, offset + limit);
+  return { total: scene.elements.length, matched: matched.length, offset, count: elements.length,
+    nextOffset: offset + elements.length < matched.length ? offset + elements.length : null, elements };
+}
+
 /**
  * 注册编辑器的 WebMCP 工具集。
  *
@@ -169,7 +321,8 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
                 return err("Editor is not ready yet, please retry later");
               }
               try {
-                return await run(bridge, args ?? {});
+                // 输出可被页面脚本持有；隔离引用，避免修改结果污染不可变场景/撤销历史。
+                return structuredClone(await run(bridge, args ?? {}));
               } catch (error) {
                 return err(error instanceof Error ? error.message : String(error));
               }
@@ -188,11 +341,23 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "get_scene",
       title: "Get scene",
       description:
-        "Get the full scene document (JSON) of the Miliastra image editor canvas, including canvas size, background color, and all elements. Element positions are center coordinates and rotation is counter-clockwise positive.",
+        "Get the scene document. With no arguments returns the full document for compatibility; prefer list_elements for bounded output. Set summary:true for canvas/meta/count only; includeLibrary:false omits saved library snapshots. Optional offset/limit/name/type/ids/region filter elements and add pagination metadata. " + GEOMETRY,
       annotations: { readOnlyHint: true, untrustedContentHint: true },
-      inputSchema: { type: "object", properties: {} }
+      inputSchema: { type: "object", properties: {
+        ...queryProperties,
+        summary: { type: "boolean", default: false, description: "Only canvas, meta and elementCount; omit elements and library" },
+        includeLibrary: { type: "boolean", default: true, description: "Include library presets and saved items" }
+      } }
     },
-    (bridge) => bridge.getScene()
+    (bridge, args) => {
+      const scene = bridge.getScene();
+      if (args.summary === true) return { canvas: scene.canvas, meta: scene.meta, elementCount: scene.elements.length };
+      const hasQuery = Object.keys(queryProperties).some((key) => args[key] !== undefined);
+      const page = hasQuery ? queryElements(scene, args, scene.elements.length) : null;
+      return { canvas: scene.canvas, meta: scene.meta, elements: page?.elements ?? scene.elements,
+        ...(args.includeLibrary !== false ? { library: scene.library } : {}),
+        ...(page ? { pagination: { ...page, elements: undefined } } : {}) };
+    }
   );
 
   register(
@@ -200,33 +365,16 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "list_elements",
       title: "List elements",
       description:
-        "List a summary of every element in the current scene, sorted by zIndex from bottom to top. Each entry includes id, name, shape type, center coordinates, width, height, rotation, color, opacity, zIndex, and textBox when the element is a textbox.",
+        "List elements bottom-to-top, paginated (default 100, max 1000). Filter by name substring, type, ids, or intersection with a region (rotated bounding boxes). Returns total/matched/count/nextOffset. By default entries contain id/name/type/zIndex; details:true includes full geometry, text and sprite settings.",
       annotations: { readOnlyHint: true, untrustedContentHint: true },
-      inputSchema: { type: "object", properties: {} }
+      inputSchema: { type: "object", properties: { ...queryProperties, details: { type: "boolean", default: false } } }
     },
-    (bridge) => {
+    (bridge, args) => {
       const scene = bridge.getScene();
-      return {
-        canvas: scene.canvas,
-        count: scene.elements.length,
-        elements: [...scene.elements]
-          .sort((a, b) => a.zIndex - b.zIndex)
-          .map((element) => ({
-            id: element.id,
-            name: element.name,
-            type: element.type,
-            x: element.x,
-            y: element.y,
-            width: element.width,
-            height: element.height,
-            rotation: element.rotation,
-            color: element.color,
-            opacity: element.opacity,
-            zIndex: element.zIndex,
-            isBackground: element.isBackground,
-            ...(element.type === "textbox" ? { textBox: element.textBox } : {})
-          }))
-      };
+      const page = queryElements(scene, args, 100);
+      return { canvas: scene.canvas, ...page, elements: args.details === true ? page.elements : page.elements.map(
+        ({ id, name, type, zIndex }) => ({ id, name, type, zIndex })
+      ) };
     }
   );
 
@@ -235,141 +383,74 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "add_element",
       title: "Add element",
       description:
-        "Add a basic shape, textbox, or library sprite element to the canvas (ellipse / rectangle / triangle / four_point_star / five_point_star / ring / textbox / image). For type \"image\" you must pass imageAssetId (a 6-digit sprite id from the graphics library); set imageTint to true to multiply the sprite RGB by the color value (supported for all assets). x and y are the element center coordinates; if omitted the element is placed at the canvas center. Returns the full data of the new element.",
+        "Add one shape, textbox or sprite (image requires imageAssetId). Prefer add_elements for multiple shapes: one atomic edit/undo step. Returns the new element. " + GEOMETRY + " " + DEFAULTS,
       inputSchema: {
         type: "object",
         required: ["type"],
-        properties: {
-          type: shapeEnum,
-          x: numberProp("Element center X coordinate (canvas coordinates, origin at top-left)"),
-          y: numberProp("Element center Y coordinate (canvas coordinates, origin at top-left)"),
-          width: numberProp("Width in pixels (4-2048)", 4, 2048),
-          height: numberProp("Height in pixels (4-2048)", 4, 2048),
-          rotation: numberProp("Rotation in degrees (counter-clockwise positive, -360 to 360)", -360, 360),
-          color: {
-            type: "string",
-            description: "Hex color, e.g. #0f766e"
-          },
-          opacity: numberProp("Opacity (0-1)", 0, 1),
-          name: {
-            type: "string",
-            description: "Display name of the element; defaults to the shape's default name"
-          },
-          text: {
-            type: "string",
-            description: "Text content when type is textbox"
-          },
-          fontSize: numberProp("Font size in pixels when type is textbox (1-256)", 1, 256),
-          imageAssetId: numberProp("Sprite id from the graphics library when type is image (6-digit, e.g. 106001)", 100000, 999999),
-          imageTint: {
-            type: "boolean",
-            description: "When type is image: multiply the sprite RGB by the color value (all assets support tinting)"
-          }
-        }
+        properties: { ...addProperties, select: selectProperty }
       }
     },
     (bridge, args) => {
-      const type = args.type as ShapeType | undefined;
-      if (!type || !SHAPE_TYPES.includes(type)) {
-        return err(`type must be one of ${SHAPE_TYPES.join(" / ")}`);
-      }
-      if (type === "image" && typeof args.imageAssetId !== "number") {
-        return err("imageAssetId is required when type is \"image\"");
-      }
-      const textBox =
-        type === "textbox"
-          ? {
-              ...(typeof args.text === "string" ? { text: args.text } : {}),
-              ...(typeof args.fontSize === "number" ? { fontSize: args.fontSize } : {})
-            }
-          : undefined;
-      return bridge.addElement({
-        type,
-        x: typeof args.x === "number" ? args.x : undefined,
-        y: typeof args.y === "number" ? args.y : undefined,
-        width: typeof args.width === "number" ? args.width : undefined,
-        height: typeof args.height === "number" ? args.height : undefined,
-        rotation: typeof args.rotation === "number" ? args.rotation : undefined,
-        color: typeof args.color === "string" ? args.color : undefined,
-        opacity: typeof args.opacity === "number" ? args.opacity : undefined,
-        name: typeof args.name === "string" ? args.name : undefined,
-        textBox: textBox && Object.keys(textBox).length ? textBox : undefined,
-        imageAssetId: typeof args.imageAssetId === "number" ? args.imageAssetId : undefined,
-        imageTint: typeof args.imageTint === "boolean" ? args.imageTint : undefined
-      });
+      const result = bridge.addElements([parseAddInput(args)], false, args.select === true);
+      return result.ok ? { ok: true, element: result.elements?.[0] } : result;
     }
   );
+
+  for (const replace of [false, true]) {
+    register(
+      {
+        name: replace ? "set_elements" : "add_elements",
+        title: replace ? "Replace all elements" : "Add elements",
+        description: (replace
+          ? "Replace ALL elements while preserving canvas, metadata and library. Empty array clears elements. "
+          : "Add many elements in one call. ") +
+          "Validates the entire array before applying; one undo step, no partial edits. Returns count and ids in input order (returnElements:true also returns full elements). " + GEOMETRY + " " + DEFAULTS,
+        inputSchema: { type: "object", required: ["elements"], properties: {
+          elements: { type: "array", items: { type: "object", required: ["type"], properties: addProperties } },
+          select: selectProperty,
+          returnElements: { type: "boolean", default: false }
+        } }
+      },
+      (bridge, args) => {
+        const inputs = arrayArg(args.elements, "elements").map(parseAddInput);
+        const result = bridge.addElements(inputs, replace, args.select === true);
+        if (!result.ok) return result;
+        return { ok: true, count: result.count, ids: result.elements?.map((element) => element.id),
+          ...(args.returnElements === true ? { elements: result.elements } : {}) };
+      }
+    );
+  }
 
   register(
     {
       name: "update_element",
       title: "Update element",
       description:
-        "Update properties of the element with the given id (pass only the fields to change): name, center coordinates, width, height, rotation, color, opacity. For textboxes also text and fontSize.",
+        "Update only supplied properties of one element, including zIndex (larger = above; ties retain order, then indices normalize). Does not change selection. Unchanged values create no undo step. " + GEOMETRY,
       inputSchema: {
         type: "object",
         required: ["id"],
         properties: {
           id: { type: "string", description: "Target element id (obtainable via list_elements)" },
-          name: { type: "string", description: "Display name of the element" },
-          x: numberProp("Element center X coordinate"),
-          y: numberProp("Element center Y coordinate"),
-          width: numberProp("Width in pixels (4-2048)", 4, 2048),
-          height: numberProp("Height in pixels (4-2048)", 4, 2048),
-          rotation: numberProp("Rotation in degrees (counter-clockwise positive, -360 to 360)", -360, 360),
-          color: { type: "string", description: "Hex color, e.g. #be123c" },
-          opacity: numberProp("Opacity (0-1)", 0, 1),
-          text: { type: "string", description: "Text content when the target is a textbox" },
-          fontSize: numberProp("Font size in pixels when the target is a textbox (1-256)", 1, 256)
+          ...elementProperties
         }
       }
     },
-    (bridge, args) => {
-      const id = typeof args.id === "string" ? args.id : "";
-      if (!id) {
-        return err("Missing element id");
-      }
-      const patch: Record<string, unknown> = {};
-      for (const key of [
-        "name",
-        "x",
-        "y",
-        "width",
-        "height",
-        "rotation",
-        "color",
-        "opacity"
-      ] as const) {
-        const value = args[key];
-        if (
-          (key === "name" || key === "color") &&
-          typeof value === "string"
-        ) {
-          patch[key] = value;
-        } else if (
-          key !== "name" &&
-          key !== "color" &&
-          typeof value === "number" &&
-          Number.isFinite(value)
-        ) {
-          patch[key] = value;
-        }
-      }
-      const textBoxPatch: Record<string, unknown> = {};
-      if (typeof args.text === "string") {
-        textBoxPatch.text = args.text;
-      }
-      if (typeof args.fontSize === "number" && Number.isFinite(args.fontSize)) {
-        textBoxPatch.fontSize = args.fontSize;
-      }
-      if (Object.keys(textBoxPatch).length) {
-        patch.textBox = textBoxPatch;
-      }
-      if (Object.keys(patch).length === 0) {
-        return err("No updatable fields provided");
-      }
-      return bridge.updateElement(id, patch as Partial<SceneElement>);
-    }
+    (bridge, args) => bridge.updateElements([parseUpdate(args)])
+  );
+
+  register(
+    {
+      name: "update_elements",
+      title: "Update elements",
+      description: "Atomically update multiple elements in one undo step. updates is an array of {id, ...fields}, e.g. [{id:'a',color:'#ff0000'},{id:'b',zIndex:-1}]. All ids must exist and be unique; any invalid entry rejects the whole batch. Only changed elements count; an all-no-op batch creates no undo step. zIndex sort keys are applied together, then normalized; fractional/negative values allow insertion between/below layers.",
+      inputSchema: { type: "object", required: ["updates"], properties: {
+        updates: { type: "array", items: { type: "object", required: ["id"], properties: {
+          id: { type: "string" }, ...elementProperties
+        } } }
+      } }
+    },
+    (bridge, args) => bridge.updateElements(arrayArg(args.updates, "updates").map(parseUpdate))
   );
 
   register(
@@ -390,7 +471,34 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       if (!id) {
         return err("Missing element id");
       }
-      return bridge.removeElement(id);
+      return bridge.removeElements([id]);
+    }
+  );
+
+  register(
+    {
+      name: "remove_elements",
+      title: "Remove elements",
+      description: "Remove multiple elements atomically in one undo step. Every id must exist; duplicates are removed once. Remaining layers retain their order.",
+      inputSchema: { type: "object", required: ["ids"], properties: { ids: { type: "array", items: { type: "string" } } } }
+    },
+    (bridge, args) => {
+      const ids = arrayArg(args.ids, "ids");
+      if (ids.some((id) => typeof id !== "string" || !id)) return err("ids must contain non-empty strings");
+      return bridge.removeElements(ids as string[]);
+    }
+  );
+
+  register(
+    {
+      name: "set_selection",
+      title: "Set selection",
+      description: "Select one element by id, or pass null/omit id to clear the selection outline. Does not change scene/history.",
+      inputSchema: { type: "object", properties: { id: { type: ["string", "null"] } } }
+    },
+    (bridge, args) => {
+      if (args.id !== undefined && args.id !== null && typeof args.id !== "string") return err("id must be a string or null");
+      return bridge.setSelection(typeof args.id === "string" ? args.id : null);
     }
   );
 
@@ -398,13 +506,13 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
     {
       name: "set_canvas",
       title: "Set canvas",
-      description: "Update the canvas size (pixels, 1-2048) and background color (hex).",
+      description: "Update the canvas size (pixels, 1-2048) and background (#RRGGBB or transparent).",
       inputSchema: {
         type: "object",
         properties: {
           width: numberProp("Canvas width in pixels (1-2048)", 1, 2048),
           height: numberProp("Canvas height in pixels (1-2048)", 1, 2048),
-          background: { type: "string", description: "Background color, e.g. #ffffff" }
+          background: { type: "string", description: "Background color, e.g. #ffffff, or transparent for no background" }
         }
       }
     },
@@ -417,6 +525,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
         patch.height = args.height;
       }
       if (typeof args.background === "string") {
+        if (args.background !== "transparent" && !/^#[0-9a-f]{6}$/i.test(args.background)) return err("background must be #RRGGBB or transparent");
         patch.background = args.background;
       }
       if (Object.keys(patch).length === 0) {
@@ -441,7 +550,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "import_source",
       title: "Import source",
       description:
-        "Parse and import CSS / JSON / SVG / Lua scene source content into the canvas (replaces the current scene, undoable). CSS must follow the Miliastra Primitive Shaper style conventions; SVG supports basic shapes only. Lua accepts the ROOT/ELEMENTS and PALETTE/ELEMENTS drawing formats exported by this editor and the primitive-shape fitting tool; it never executes uploaded code.",
+        'Parse CSS / JSON / SVG / Lua source and replace the scene in one undo step. For many elements prefer add_elements/set_elements. JSON content is a serialized object, e.g. {"canvas":{"width":300,"height":300,"background":"transparent"},"elements":[{"id":"a","type":"triangle","x":150,"y":150,"width":100,"height":100,"rotation":180,"color":"#ff0000","opacity":1,"zIndex":0}]}. With canvas, each element requires id/type/x/y/width/height; name/rotation/color/opacity/zIndex/isBackground are optional (JSON opacity defaults to 1). Textbox settings go in textBox:{text,fontSize,...}. A bare element array or {elements:[...]} also works and auto-fits the canvas. CSS uses Primitive Shaper conventions; SVG supports basic shapes only. Lua accepts ROOT/ELEMENTS and PALETTE/ELEMENTS literal data without executing code.',
       annotations: { untrustedContentHint: true },
       inputSchema: {
         type: "object",
@@ -505,19 +614,31 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "get_canvas_preview",
       title: "Get canvas preview",
       description:
-        "Get a PNG snapshot of the current canvas (base64 data URL) to visually inspect the layout. Useful after add/update/remove operations to verify the visual result. maxSize limits the longest edge in pixels to control payload size (default 512, min 128, max 2048).",
+        'Render a canvas snapshot without selection outlines. Optional region:{x,y,width,height} crops in canvas coordinates (top-left origin), clipped to the canvas; cropped previews are enlarged to maxSize for detail inspection. Full-canvas previews only shrink. format png preserves transparency; jpeg uses a white matte and quality (default 0.8). maxSize defaults to 512 (128-2048). output:"image" returns an MCP image content block for image-capable clients; output:"dataUrl" (default, compatible with existing callers) returns a base64 URL. Clients must interpret image blocks to avoid treating base64 as text.',
       annotations: { readOnlyHint: true, untrustedContentHint: true },
       inputSchema: {
         type: "object",
         properties: {
-          maxSize: numberProp("Max longest edge of the snapshot in pixels (128-2048, default 512)", 128, 2048)
+          maxSize: numberProp("Max longest edge in pixels (default 512)", 128, 2048),
+          region: regionSchema,
+          format: { type: "string", enum: ["png", "jpeg"], default: "png" },
+          quality: numberProp("JPEG quality, default 0.8", 0.1, 1),
+          output: { type: "string", enum: ["dataUrl", "image"], default: "dataUrl" }
         }
       }
     },
     async (bridge, args) => {
       const raw = typeof args.maxSize === "number" ? args.maxSize : 512;
       const maxSize = clamp(Math.round(raw) || 512, 128, 2048);
-      return bridge.getCanvasPreview(maxSize);
+      if (args.format !== undefined && args.format !== "png" && args.format !== "jpeg") return err("format must be png or jpeg");
+      if (args.output !== undefined && args.output !== "dataUrl" && args.output !== "image") return err("output must be dataUrl or image");
+      const result = await bridge.getCanvasPreview({ maxSize, region: parseRegion(args.region),
+        format: args.format === "jpeg" ? "jpeg" : "png",
+        quality: typeof args.quality === "number" && Number.isFinite(args.quality) ? clamp(args.quality, 0.1, 1) : 0.8 });
+      if (!result.ok || !result.dataUrl || args.output !== "image") return result;
+      const comma = result.dataUrl.indexOf(",");
+      return { ok: true, width: result.width, height: result.height, region: result.region,
+        content: [{ type: "image", mimeType: args.format === "jpeg" ? "image/jpeg" : "image/png", data: result.dataUrl.slice(comma + 1) }] };
     }
   );
 
@@ -543,7 +664,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
 
   Promise.all(registrations).then(
     () => {
-      console.info("[WebMCP] Miliastra image editor tools registered (12)");
+      console.info(`[WebMCP] Miliastra image editor tools registered (${registrations.length})`);
     },
     () => {
       /* 单个工具注册失败已在上方记录，无需额外处理 */

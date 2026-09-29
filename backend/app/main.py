@@ -39,6 +39,15 @@ TRANSPARENT_BACKGROUND = "transparent"
 DEFAULT_SHAPE_SIZE = 80.0
 HEX_COLOR_RE = re.compile(r"^[0-9a-f]+$")
 TRIANGLE_CLIP_PATH = "polygon(50% 0%, 0% 100%, 100% 100%)"
+# 与 frontend/src/styles.css 的星形 clip-path 相同，以图元尺寸盒为坐标系。
+STAR_VERTICES = {
+    4: [(50, 0), (62, 38), (100, 50), (62, 62), (50, 100), (38, 62), (0, 50), (38, 38)],
+    5: [(50, 0), (61, 35), (98, 35), (68, 57), (79, 92), (50, 71), (21, 92), (32, 57), (2, 35), (39, 35)],
+}
+STAR_CLIP_PATHS = {
+    f"{name}_point_star": "polygon(" + ", ".join(f"{x}% {y}%" for x, y in STAR_VERTICES[count]) + ")"
+    for name, count in (("four", 4), ("five", 5))
+}
 RING_INNER_RATIO = 0.8
 RING_GRADIENT_RE = re.compile(
     r"radial-gradient\([^)]*transparent\s+[\d.]+%\s*,\s*(#[0-9a-f]{3,8}|rgb\([^)]*\)|[a-z]+)\s*[\d.]+%"
@@ -970,8 +979,8 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
             color = normalize_color(triangle_border["color"])
             shape_x = parse_px(find_css_value(body, "left"), width / 2)
             shape_y = parse_px(find_css_value(body, "top"), height / 2) + shape_height / 2
-        elif clip_path == TRIANGLE_CLIP_PATH:
-            shape_type = "triangle"
+        elif clip_path == TRIANGLE_CLIP_PATH or clip_path in STAR_CLIP_PATHS.values():
+            shape_type = next((kind for kind, path in STAR_CLIP_PATHS.items() if path == clip_path), "triangle")
             shape_width = parse_px(find_css_value(body, "width"), DEFAULT_SHAPE_SIZE)
             shape_height = parse_px(find_css_value(body, "height"), DEFAULT_SHAPE_SIZE)
             shape_x = parse_px(find_css_value(body, "left"), width / 2)
@@ -1359,6 +1368,8 @@ def scene_to_css(scene: SceneDocumentModel) -> str:
             lines.append("  border-radius: 50%;")
         if element.type == "triangle":
             lines.append(f"  clip-path: {TRIANGLE_CLIP_PATH};")
+        if element.type in STAR_CLIP_PATHS:
+            lines.append(f"  clip-path: {STAR_CLIP_PATHS[element.type]};")
         lines.append("}")
     return "\n".join(lines)
 
@@ -1435,12 +1446,12 @@ def scene_to_svg(scene: SceneDocumentModel) -> str:
                 f'<polygon points="{format_points(points)}" fill="{element.color}" opacity="{opacity}" transform="{transform}" />'
             )
         elif element.type == "four_point_star":
-            points = star_points(element.x, element.y, element.width, element.height, 4, 0.45)
+            points = star_points(element.x, element.y, element.width, element.height, 4)
             parts.append(
                 f'<polygon points="{format_points(points)}" fill="{element.color}" opacity="{opacity}" transform="{transform}" />'
             )
         elif element.type == "five_point_star":
-            points = star_points(element.x, element.y, element.width, element.height, 5, 0.42)
+            points = star_points(element.x, element.y, element.width, element.height, 5)
             parts.append(
                 f'<polygon points="{format_points(points)}" fill="{element.color}" opacity="{opacity}" transform="{transform}" />'
             )
@@ -1515,7 +1526,7 @@ def paste_sprite(image: Image.Image, element: SceneElementModel, sprite: Image.I
 
     left = int(round(element.x - sprite.width / 2))
     top = int(round(element.y - sprite.height / 2))
-    image.paste(sprite, (left, top), sprite)
+    image.alpha_composite(sprite, (left, top))
 
 
 def scene_to_png_bytes(scene: SceneDocumentModel) -> bytes:
@@ -1525,7 +1536,6 @@ def scene_to_png_bytes(scene: SceneDocumentModel) -> bytes:
         else ImageColor.getrgb(scene.canvas.background) + (255,)
     )
     image = Image.new("RGBA", (int(scene.canvas.width), int(scene.canvas.height)), canvas_fill)
-    draw = ImageDraw.Draw(image, "RGBA")
     skipped_assets: list[int] = []
 
     ordered_elements = sorted(scene.elements, key=lambda item: item.zIndex)
@@ -1539,20 +1549,35 @@ def scene_to_png_bytes(scene: SceneDocumentModel) -> bytes:
                 skipped_assets.append(element.imageAssetId)
             else:
                 paste_sprite(image, element, sprite)
-        elif element.type == "ellipse":
-            draw_ellipse(draw, element, rgba)
-        elif element.type == "triangle":
-            draw_polygon(draw, triangle_points(element.x, element.y, element.width, element.height), rgba, element.rotation)
-        elif element.type == "four_point_star":
-            draw_polygon(draw, star_points(element.x, element.y, element.width, element.height, 4, 0.45), rgba, element.rotation)
-        elif element.type == "five_point_star":
-            draw_polygon(draw, star_points(element.x, element.y, element.width, element.height, 5, 0.42), rgba, element.rotation)
-        elif element.type == "ring":
-            draw_ring(image, element, rgba)
-        elif element.type == "textbox":
-            draw_textbox(image, draw, element)
+            continue
+        if element.type == "textbox":
+            layer = Image.new("RGBA", image.size)
+            draw_textbox(layer, ImageDraw.Draw(layer, "RGBA"), element)
+            image.alpha_composite(layer)
+            continue
+
+        # ImageDraw 在 RGBA 画布上直接写入 alpha，不会执行 source-over。
+        # 仅为当前图元的可见外接框分配透明层，再正确叠加到已有内容上。
+        left, top, right, bottom = get_element_bounds(element)
+        x0, y0 = max(0, math.floor(left)), max(0, math.floor(top))
+        x1, y1 = min(image.width, math.ceil(right) + 1), min(image.height, math.ceil(bottom) + 1)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        layer = Image.new("RGBA", (x1 - x0, y1 - y0))
+        draw = ImageDraw.Draw(layer, "RGBA")
+        local = element.model_copy(update={"x": element.x - x0, "y": element.y - y0})
+        if local.type == "ellipse":
+            draw_ellipse(draw, local, rgba)
+        elif local.type == "triangle":
+            draw_polygon(draw, triangle_points(local.x, local.y, local.width, local.height), rgba, local)
+        elif local.type in {"four_point_star", "five_point_star"}:
+            points = 4 if local.type == "four_point_star" else 5
+            draw_polygon(draw, star_points(local.x, local.y, local.width, local.height, points), rgba, local)
+        elif local.type == "ring":
+            draw_ring(layer, local, rgba)
         else:
-            draw_rect(draw, element, rgba)
+            draw_rect(draw, local, rgba)
+        image.alpha_composite(layer, (x0, y0))
 
     buffer = io.BytesIO()
     info = PngImagePlugin.PngInfo()
@@ -1862,20 +1887,8 @@ def triangle_points(cx: float, cy: float, width: float, height: float) -> list[t
     ]
 
 
-def star_points(cx: float, cy: float, width: float, height: float, points: int, inner_ratio: float) -> list[tuple[float, float]]:
-    result: list[tuple[float, float]] = []
-    outer_rx = width / 2
-    outer_ry = height / 2
-    inner_rx = outer_rx * inner_ratio
-    inner_ry = outer_ry * inner_ratio
-    total = points * 2
-
-    for index in range(total):
-        angle = -math.pi / 2 + index * math.pi / points
-        radius_x = outer_rx if index % 2 == 0 else inner_rx
-        radius_y = outer_ry if index % 2 == 0 else inner_ry
-        result.append((cx + math.cos(angle) * radius_x, cy + math.sin(angle) * radius_y))
-    return result
+def star_points(cx: float, cy: float, width: float, height: float, points: int) -> list[tuple[float, float]]:
+    return [(cx - width / 2 + x * width / 100, cy - height / 2 + y * height / 100) for x, y in STAR_VERTICES[points]]
 
 
 def format_points(points: list[tuple[float, float]]) -> str:
@@ -1894,11 +1907,10 @@ def rotate_points(points: list[tuple[float, float]], cx: float, cy: float, degre
     return rotated
 
 
-def draw_polygon(draw: ImageDraw.ImageDraw, points: list[tuple[float, float]], fill: tuple[int, int, int, int], rotation: float) -> None:
-    cx = sum(point[0] for point in points) / len(points)
-    cy = sum(point[1] for point in points) / len(points)
+def draw_polygon(draw: ImageDraw.ImageDraw, points: list[tuple[float, float]], fill: tuple[int, int, int, int], element: SceneElementModel) -> None:
+    # 使用尺寸盒中心；顶点均值是三角形的重心，旋转 180° 会错位 height/3。
     # PIL drawing happens in screen coordinates, so invert CCW-positive scene rotation.
-    draw.polygon(rotate_points(points, cx, cy, -rotation), fill=fill)
+    draw.polygon(rotate_points(points, element.x, element.y, -element.rotation), fill=fill)
 
 
 def draw_rect(draw: ImageDraw.ImageDraw, element: SceneElementModel, fill: tuple[int, int, int, int]) -> None:
@@ -1908,7 +1920,7 @@ def draw_rect(draw: ImageDraw.ImageDraw, element: SceneElementModel, fill: tuple
         (element.x + element.width / 2, element.y + element.height / 2),
         (element.x - element.width / 2, element.y + element.height / 2),
     ]
-    draw_polygon(draw, points, fill, element.rotation)
+    draw_polygon(draw, points, fill, element)
 
 
 def draw_ellipse(draw: ImageDraw.ImageDraw, element: SceneElementModel, fill: tuple[int, int, int, int]) -> None:
@@ -1919,7 +1931,7 @@ def draw_ellipse(draw: ImageDraw.ImageDraw, element: SceneElementModel, fill: tu
     if abs(element.rotation) < 0.001:
         draw.ellipse([left, top, right, bottom], fill=fill)
         return
-    draw_polygon(draw, ellipse_points(element.x, element.y, element.width, element.height), fill, element.rotation)
+    draw_polygon(draw, ellipse_points(element.x, element.y, element.width, element.height), fill, element)
 
 
 def ellipse_points(
@@ -2092,14 +2104,14 @@ def draw_textbox(_image: Image.Image, draw: ImageDraw.ImageDraw, element: SceneE
 def draw_ring(image: Image.Image, element: SceneElementModel, fill: tuple[int, int, int, int]) -> None:
     layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
     layer_draw = ImageDraw.Draw(layer, "RGBA")
-    draw_polygon(layer_draw, ellipse_points(element.x, element.y, element.width, element.height), fill, element.rotation)
+    draw_polygon(layer_draw, ellipse_points(element.x, element.y, element.width, element.height), fill, element)
     draw_polygon(
         layer_draw,
         ellipse_points(element.x, element.y, element.width, element.height, RING_INNER_RATIO),
         (0, 0, 0, 0),
-        element.rotation,
+        element,
     )
-    image.paste(layer, (0, 0), layer)
+    image.alpha_composite(layer)
 
 
 def color_with_alpha(color: str, opacity: float) -> tuple[int, int, int, int]:

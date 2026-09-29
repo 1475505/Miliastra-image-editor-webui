@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { registerEditorTools, type AddElementInput, type EditorBridge } from "./webmcp";
+import { registerEditorTools, type EditorBridge, type ElementPatch, type ElementUpdate } from "./webmcp";
 import { useI18n } from "./i18n";
 import {
   assetMaskUrl,
@@ -361,8 +361,11 @@ function App() {
   const sceneRef = useRef(scene);
   const selectedIdRef = useRef(selectedId);
   const snapConfigRef = useRef(snapConfig);
-  const historyRef = useRef<SceneDocument[]>([cloneScene(EMPTY_SCENE())]);
+  // 场景不可变更新，历史共享未改动的图元，避免每一步深拷贝整个场景。
+  const historyRef = useRef<SceneDocument[]>([scene]);
   const historyIndexRef = useRef(0);
+  const [previewRevision, setPreviewRevision] = useState(0);
+  const previewCacheRef = useRef<Partial<Record<PreviewTab, { scene: SceneDocument; text: string }>>>({});
   const saveAndApplyRef = useRef<() => Promise<void>>(async () => {});
 
   const orderedElements = useMemo(
@@ -563,10 +566,6 @@ function App() {
   }, [snapConfig]);
 
   useEffect(() => {
-    sceneRef.current = scene;
-  }, [scene]);
-
-  useEffect(() => {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
 
@@ -594,12 +593,11 @@ function App() {
   }, []);
 
   function replaceScene(nextSceneOrUpdater: SceneDocument | ((current: SceneDocument) => SceneDocument)) {
-    setScene((current) => {
-      const rawNext = typeof nextSceneOrUpdater === "function" ? nextSceneOrUpdater(current) : nextSceneOrUpdater;
-      const next = ensureSceneLibrary(rawNext);
-      sceneRef.current = next;
-      return next;
-    });
+    const current = sceneRef.current;
+    const next = typeof nextSceneOrUpdater === "function" ? nextSceneOrUpdater(current) : nextSceneOrUpdater;
+    if (sameValue(current, next)) return;
+    sceneRef.current = next;
+    setScene(next);
   }
 
   function syncHistoryState() {
@@ -610,29 +608,25 @@ function App() {
   }
 
   function commitHistory(nextScene: SceneDocument) {
-    const snapshot = cloneScene(ensureSceneLibrary(nextScene));
+    if (sameValue(historyRef.current[historyIndexRef.current], nextScene)) return;
     const trimmed = historyRef.current.slice(0, historyIndexRef.current + 1);
-    const last = trimmed[trimmed.length - 1];
-    if (JSON.stringify(last) === JSON.stringify(snapshot)) {
-      historyRef.current = trimmed;
-      historyIndexRef.current = trimmed.length - 1;
-      syncHistoryState();
-      return;
-    }
-    trimmed.push(snapshot);
+    trimmed.push(nextScene);
+    // 当前状态 + 最近 100 次编辑，限制长会话内存；批量操作只占一步。
+    if (trimmed.length > 101) trimmed.shift();
     historyRef.current = trimmed;
     historyIndexRef.current = trimmed.length - 1;
     syncHistoryState();
   }
 
   function commitScene(nextSceneOrUpdater: SceneDocument | ((current: SceneDocument) => SceneDocument)) {
-    setScene((current) => {
-      const rawNext = typeof nextSceneOrUpdater === "function" ? nextSceneOrUpdater(current) : nextSceneOrUpdater;
-      const next = ensureSceneLibrary(rawNext);
-      sceneRef.current = next;
-      commitHistory(next);
-      return next;
-    });
+    const current = sceneRef.current;
+    const rawNext = typeof nextSceneOrUpdater === "function" ? nextSceneOrUpdater(current) : nextSceneOrUpdater;
+    const next = rawNext.library === current.library ? rawNext : ensureSceneLibrary(rawNext);
+    if (sameValue(current, next)) return;
+    // 同步 ref 后再交给 React 渲染，连续工具调用无需等待下一次 render。
+    sceneRef.current = next;
+    commitHistory(next);
+    setScene(next);
   }
 
   function undoScene() {
@@ -640,7 +634,7 @@ function App() {
       return;
     }
     historyIndexRef.current -= 1;
-    const snapshot = cloneScene(historyRef.current[historyIndexRef.current]);
+    const snapshot = historyRef.current[historyIndexRef.current];
     sceneRef.current = snapshot;
     setScene(snapshot);
     setSelectedId(null);
@@ -654,7 +648,7 @@ function App() {
       return;
     }
     historyIndexRef.current += 1;
-    const snapshot = cloneScene(historyRef.current[historyIndexRef.current]);
+    const snapshot = historyRef.current[historyIndexRef.current];
     sceneRef.current = snapshot;
     setScene(snapshot);
     setSelectedId(null);
@@ -819,8 +813,8 @@ function App() {
             element.id === action.id
               ? {
                   ...element,
-                  width: Math.max(8, Math.abs(local.x) * 2),
-                  height: Math.max(8, Math.abs(local.y) * 2)
+                  width: Math.max(1, Math.abs(local.x) * 2),
+                  height: Math.max(1, Math.abs(local.y) * 2)
                 }
               : element
           )
@@ -885,7 +879,6 @@ function App() {
       setSelectedId(null);
       setWarnings([]);
       setStatus(t("statusbar.emptyLoaded"));
-      await refreshPreviews(emptyScene);
       return;
     }
 
@@ -918,22 +911,45 @@ function App() {
     setQuickEdit(null);
     setLeftTab("layers");
     setStatus(t("statusbar.imported"));
-    await refreshPreviews(ensureSceneLibrary(data.scene));
     window.setTimeout(() => fitCanvasToStage(), 60);
   }
 
-  async function refreshPreviews(nextScene: SceneDocument) {
-    setGeneratedJson(JSON.stringify(nextScene, null, 2));
-    const [cssText, svgText, luaText] = await Promise.all([
-      fetchTextExport("/api/export/css", nextScene),
-      fetchTextExport("/api/export/svg", nextScene),
-      fetchTextExport("/api/export/lua", nextScene)
-    ]);
-    setGeneratedCss(cssText);
-    setGeneratedSvg(svgText);
-    setGeneratedLua(luaText);
-    setSvgExportWarning(extractSvgExportWarning(svgText));
-  }
+  useEffect(() => {
+    if (rightTab !== "code") return;
+    const controller = new AbortController();
+    const setText = (text: string) => {
+      if (previewTab === "json") setGeneratedJson(text);
+      if (previewTab === "css") setGeneratedCss(text);
+      if (previewTab === "lua") setGeneratedLua(text);
+      if (previewTab === "svg") {
+        setGeneratedSvg(text);
+        setSvgExportWarning(extractSvgExportWarning(text));
+      }
+    };
+    const cached = previewCacheRef.current[previewTab];
+    if (cached?.scene === scene) {
+      setText(cached.text);
+      return;
+    }
+    setText("");
+    const timer = window.setTimeout(async () => {
+      try {
+        const text = previewTab === "json" ? JSON.stringify(scene, null, 2)
+          : await fetchTextExport(`/api/export/${previewTab}`, scene, controller.signal);
+        if (controller.signal.aborted || sceneRef.current !== scene) return;
+        previewCacheRef.current[previewTab] = { scene, text };
+        setText(text);
+      } catch (error) {
+        if (!controller.signal.aborted && sceneRef.current === scene) {
+          setText(error instanceof Error ? error.message : String(error));
+        }
+      }
+    }, 300);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [scene, rightTab, previewTab, previewRevision]);
 
   async function handleSaveAndApply() {
     const nextScene = {
@@ -951,7 +967,6 @@ function App() {
       }
     };
     commitScene(nextScene);
-    await refreshPreviews(nextScene);
     setStatus(t("statusbar.saved"));
   }
 
@@ -962,48 +977,51 @@ function App() {
   // ---- WebMCP：向浏览器 AI 代理（Chrome WebMCP / ChatGPT site tools）暴露编辑器工具 ----
   const webmcpBridgeRef = useRef<EditorBridge | null>(null);
 
-  function schedulePreviewRefresh() {
-    window.setTimeout(() => {
-      void refreshPreviews(sceneRef.current);
-    }, 0);
-  }
-
   webmcpBridgeRef.current = {
     getScene: () => sceneRef.current,
-    addElement: (input: AddElementInput) => {
-      const element = addShapeToCanvas(input.type, input.x, input.y, {
-        name: input.name,
-        width: input.width,
-        height: input.height,
-        rotation: input.rotation,
-        color: input.color,
-        opacity: input.opacity,
-        textBox: input.textBox as SceneElement["textBox"],
-        imageAssetId: input.imageAssetId,
-        imageTint: input.imageTint
-      });
-      if (!element) {
-        return { ok: false, error: "The \"other\" shape type is not available" };
+    addElements: (inputs, replace, select) => {
+      const current = sceneRef.current;
+      const existing = replace ? [] : [...current.elements].sort((a, b) => a.zIndex - b.zIndex);
+      const ids = new Set(existing.map((element) => element.id));
+      const startZ = existing.reduce((max, element) => Math.max(max, element.zIndex + 1), 0);
+      const added: SceneElement[] = [];
+      for (const [index, input] of inputs.entries()) {
+        if (input.type === "other") return { ok: false, error: 'The "other" shape type is not available' };
+        const element = createShape(input.type, { ...input, zIndex: input.zIndex ?? startZ + index });
+        if (ids.has(element.id)) return { ok: false, error: `Duplicate element id: ${element.id}` };
+        ids.add(element.id);
+        added.push(element);
       }
-      schedulePreviewRefresh();
-      return { ok: true, element };
+      if (!replace && !added.length) return { ok: true, count: 0, elements: [] };
+      const elements = normalizeZIndex([...existing, ...added].sort((a, b) => a.zIndex - b.zIndex));
+      commitScene({ ...current, elements });
+      if (replace) {
+        setSelectedId(null);
+        setQuickEdit(null);
+      }
+      if (select && added.length) setSelectedId(added[added.length - 1].id);
+      const byId = new Map(elements.map((element) => [element.id, element]));
+      return { ok: true, count: added.length, elements: added.map((element) => byId.get(element.id)!) };
     },
-    updateElement: (id, patch) => {
-      const target = sceneRef.current.elements.find((element) => element.id === id);
-      if (!target) {
+    updateElements: (updates) => applyElementUpdates(updates),
+    removeElements: (ids) => {
+      const current = sceneRef.current;
+      const removed = new Set(ids);
+      const existing = new Set(current.elements.map((element) => element.id));
+      const missing = ids.find((id) => !existing.has(id));
+      if (missing) return { ok: false, error: `Element not found: ${missing}` };
+      if (!removed.size) return { ok: true, count: 0 };
+      commitScene({ ...current, elements: normalizeZIndex(current.elements.filter((element) => !removed.has(element.id)).sort((a, b) => a.zIndex - b.zIndex)) });
+      setSelectedId((id) => id && removed.has(id) ? null : id);
+      setQuickEdit((edit) => edit && removed.has(edit.targetId) ? null : edit);
+      return { ok: true, count: removed.size };
+    },
+    setSelection: (id) => {
+      if (id !== null && !sceneRef.current.elements.some((element) => element.id === id)) {
         return { ok: false, error: `Element not found: ${id}` };
       }
-      updateElementById(id, patch);
-      schedulePreviewRefresh();
-      return { ok: true };
-    },
-    removeElement: (id) => {
-      const target = sceneRef.current.elements.find((element) => element.id === id);
-      if (!target) {
-        return { ok: false, error: `Element not found: ${id}` };
-      }
-      removeElementById(id);
-      schedulePreviewRefresh();
+      setSelectedId(id);
+      setQuickEdit(null);
       return { ok: true };
     },
     setCanvas: (patch) => {
@@ -1022,7 +1040,6 @@ function App() {
         }
       };
       commitScene(next);
-      schedulePreviewRefresh();
       return { ok: true };
     },
     clearCanvas: () => {
@@ -1032,7 +1049,6 @@ function App() {
       setQuickEdit(null);
       setWarnings([]);
       setStatus(t("statusbar.aiCleared"));
-      void refreshPreviews(emptyScene);
       return { ok: true };
     },
     importSource: async (sourceType, content, name) => {
@@ -1051,12 +1067,11 @@ function App() {
       const data = (await response.json()) as { scene: SceneDocument; warnings: string[] };
       const next = ensureSceneLibrary(data.scene);
       commitScene(next);
-      setSelectedId(next.elements[0]?.id ?? null);
+      setSelectedId(null);
       setWarnings(data.warnings);
       setQuickEdit(null);
       setLeftTab("layers");
       setStatus(t("statusbar.aiImported"));
-      await refreshPreviews(next);
       window.setTimeout(() => fitCanvasToStage(), 60);
       return { ok: true, warnings: data.warnings ?? [] };
     },
@@ -1066,7 +1081,7 @@ function App() {
       }
       return fetchTextExport(`/api/export/${format}`, sceneRef.current);
     },
-    getCanvasPreview: async (maxSize) => {
+    getCanvasPreview: async ({ maxSize, region, format, quality }) => {
       const current = sceneRef.current;
       const response = await fetch("/api/export/png", {
         method: "POST",
@@ -1079,15 +1094,30 @@ function App() {
       try {
         const blob = await response.blob();
         const bitmap = await createImageBitmap(blob);
-        const scale = Math.min(1, maxSize / Math.max(bitmap.width, bitmap.height));
-        const width = Math.max(1, Math.round(bitmap.width * scale));
-        const height = Math.max(1, Math.round(bitmap.height * scale));
-        const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
-        canvas.getContext("2d")?.drawImage(bitmap, 0, 0, width, height);
-        bitmap.close();
-        return { ok: true, dataUrl: canvas.toDataURL("image/png"), width, height };
+        try {
+          const x = Math.max(0, region?.x ?? 0);
+          const y = Math.max(0, region?.y ?? 0);
+          const right = Math.min(bitmap.width, region ? region.x + region.width : bitmap.width);
+          const bottom = Math.min(bitmap.height, region ? region.y + region.height : bitmap.height);
+          if (right <= x || bottom <= y) return { ok: false, error: "region does not intersect the canvas" };
+          const crop = { x, y, width: right - x, height: bottom - y };
+          const scale = Math.min(region ? Infinity : 1, maxSize / Math.max(crop.width, crop.height));
+          const width = Math.max(1, Math.round(crop.width * scale));
+          const height = Math.max(1, Math.round(crop.height * scale));
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const context = canvas.getContext("2d");
+          if (!context) throw new Error("Canvas 2D context is unavailable");
+          if (format === "jpeg") {
+            context.fillStyle = "#ffffff";
+            context.fillRect(0, 0, width, height);
+          }
+          context.drawImage(bitmap, crop.x, crop.y, crop.width, crop.height, 0, 0, width, height);
+          return { ok: true, dataUrl: canvas.toDataURL(`image/${format}`, quality), width, height, region: crop };
+        } finally {
+          bitmap.close();
+        }
       } catch (error) {
         return {
           ok: false,
@@ -1100,7 +1130,6 @@ function App() {
         return { ok: false, error: "Nothing to undo" };
       }
       undoScene();
-      schedulePreviewRefresh();
       return { ok: true };
     },
     redo: () => {
@@ -1108,7 +1137,6 @@ function App() {
         return { ok: false, error: "Nothing to redo" };
       }
       redoScene();
-      schedulePreviewRefresh();
       return { ok: true };
     }
   };
@@ -1150,13 +1178,21 @@ function App() {
     setWarnings([]);
     setLeftTab("layers");
     setStatus(t("statusbar.sampleLoaded"));
-    void refreshPreviews(sample);
     window.setTimeout(() => fitCanvasToStage(), 60);
   }
 
   async function copyCurrentCode() {
     const label = previewLabels[previewTab];
-    const text = previewTab === "json" ? generatedJson : previewTab === "css" ? generatedCss : previewTab === "lua" ? generatedLua : generatedSvg;
+    const current = sceneRef.current;
+    let text: string;
+    try {
+      const cached = previewCacheRef.current[previewTab];
+      text = cached?.scene === current ? cached.text : previewTab === "json" ? JSON.stringify(current, null, 2)
+        : await fetchTextExport(`/api/export/${previewTab}`, current);
+    } catch (error) {
+      setStatus(t("statusbar.exportFailed", { msg: error instanceof Error ? error.message : String(error) }));
+      return;
+    }
     try {
       await navigator.clipboard.writeText(text);
       setStatus(t("statusbar.copied", { label }));
@@ -1175,21 +1211,22 @@ function App() {
     }
   }
 
-  function createShape(type: ShapeType, override?: Partial<SceneElement>): SceneElement {
-    const libraryItem = baseShapePresets.find((item) => item.type === type);
+  function createShape(type: ShapeType, override?: ElementPatch): SceneElement {
+    const current = sceneRef.current;
+    const libraryItem = current.library.baseShapePresets.find((item) => item.type === type);
     const color = override?.color ?? libraryItem?.color ?? "#4f46e5";
     const next: SceneElement = {
-      id: crypto.randomUUID().slice(0, 8),
+      id: override?.id ?? crypto.randomUUID(),
       name: override?.name ?? (type === "textbox" ? "文本" : shapeLabels[type]),
       type,
-      x: scene.canvas.width / 2,
-      y: scene.canvas.height / 2,
+      x: override?.x ?? current.canvas.width / 2,
+      y: override?.y ?? current.canvas.height / 2,
       width: override?.width ?? libraryItem?.width ?? 90,
       height: override?.height ?? libraryItem?.height ?? 90,
       rotation: normalizeRotation(override?.rotation ?? 0),
       color,
       opacity: override?.opacity ?? (type === "textbox" ? DEFAULT_TEXTBOX.textOpacity : 0.85),
-      zIndex: scene.elements.length,
+      zIndex: override?.zIndex ?? current.elements.length,
       isBackground: override?.isBackground ?? false
     };
     if (type === "textbox") {
@@ -1241,45 +1278,53 @@ function App() {
   }
 
   function updateElementById(id: string, patch: Partial<SceneElement>) {
-    const normalizedPatch = normalizeElementPatch(patch);
-    commitScene((current) => {
-      const target = current.elements.find((element) => element.id === id);
-      const elements = current.elements.map((element) => {
-        if (element.id !== id) {
-          return element;
-        }
-        const merged: SceneElement = { ...element, ...normalizedPatch };
-        if (merged.type === "textbox") {
-          const nextBox = { ...textBoxOf(element), ...normalizedPatch.textBox };
-          if (typeof normalizedPatch.color === "string" && !normalizedPatch.textBox?.textColor) {
-            nextBox.textColor = normalizedPatch.color;
-          }
-          if (typeof normalizedPatch.opacity === "number" && normalizedPatch.textBox?.textOpacity === undefined) {
-            nextBox.textOpacity = normalizedPatch.opacity;
-          }
-          merged.textBox = nextBox;
-          merged.color = nextBox.textColor;
-          merged.opacity = nextBox.textOpacity;
-        }
-        return merged;
-      });
-      const shouldSyncPresetColor =
-        typeof normalizedPatch.color === "string" && !!target && isBasicShape(target.type);
-      return {
-        ...current,
-        elements,
-        library: shouldSyncPresetColor
-          ? {
-              ...current.library,
-              baseShapePresets: syncBaseShapePresetColor(
-                current.library.baseShapePresets,
-                target.type,
-                normalizedPatch.color as string
-              )
-            }
-          : current.library
-      };
+    applyElementUpdates([{ id, patch }]);
+  }
+
+  function applyElementUpdates(updates: ElementUpdate[]) {
+    const current = sceneRef.current;
+    const existing = new Map(current.elements.map((element) => [element.id, element]));
+    const patches = new Map<string, ElementPatch>();
+    for (const { id, patch } of updates) {
+      const target = existing.get(id);
+      if (!target) return { ok: false, error: `Element not found: ${id}` };
+      if (patches.has(id)) return { ok: false, error: `Duplicate update id: ${id}` };
+      if (patch.textBox && target.type !== "textbox") return { ok: false, error: `Element is not a textbox: ${id}` };
+      if ((patch.imageAssetId !== undefined || patch.imageTint !== undefined) && target.type !== "image") {
+        return { ok: false, error: `Element is not an image: ${id}` };
+      }
+      patches.set(id, normalizeElementPatch(patch));
+    }
+    let count = 0;
+    let presets = current.library.baseShapePresets;
+    let elements = current.elements.map((element) => {
+      const patch = patches.get(element.id);
+      if (!patch) return element;
+      const merged = { ...element, ...patch } as SceneElement;
+      if (merged.type === "textbox") {
+        const box = { ...textBoxOf(element), ...patch.textBox };
+        if (patch.color !== undefined && patch.textBox?.textColor === undefined) box.textColor = patch.color;
+        if (patch.opacity !== undefined && patch.textBox?.textOpacity === undefined) box.textOpacity = patch.opacity;
+        merged.textBox = box;
+        merged.color = box.textColor;
+        merged.opacity = box.textOpacity;
+      }
+      if (sameValue(element, merged)) return element;
+      count += 1;
+      if (patch.color !== undefined && patch.color !== element.color && isBasicShape(element.type)) {
+        presets = syncBaseShapePresetColor(presets, element.type, patch.color);
+      }
+      return merged;
     });
+    if (!count) return { ok: true, count: 0 };
+    if (updates.some(({ patch }) => patch.zIndex !== undefined)) {
+      elements = normalizeZIndex(elements.sort((a, b) => a.zIndex - b.zIndex));
+    }
+    // 排序键的变化若没有改变实际层级，也属于原值更新。
+    if (sameValue(elements, current.elements) && presets === current.library.baseShapePresets) return { ok: true, count: 0 };
+    commitScene({ ...current, elements, library: presets === current.library.baseShapePresets ? current.library
+      : { ...current.library, baseShapePresets: presets } });
+    return { ok: true, count };
   }
 
   function updateQuickEdit(patch: Partial<SceneElement>) {
@@ -1294,8 +1339,8 @@ function App() {
       return;
     }
     updateQuickEdit({
-      width: Math.max(4, quickEditElement.width * factor),
-      height: Math.max(4, quickEditElement.height * factor)
+      width: Math.max(1, quickEditElement.width * factor),
+      height: Math.max(1, quickEditElement.height * factor)
     });
   }
 
@@ -2293,8 +2338,8 @@ function App() {
                   <div className="grid-2">
                     <NumField label="X" value={Math.round(selectedElement.x)} onChange={(value) => updateSelected({ x: value })} />
                     <NumField label="Y" value={Math.round(selectedElement.y)} onChange={(value) => updateSelected({ y: value })} />
-                    <NumField label={t("props.width")} value={Math.round(selectedElement.width)} min={4} onChange={(value) => updateSelected({ width: Math.max(4, value) })} />
-                    <NumField label={t("props.height")} value={Math.round(selectedElement.height)} min={4} onChange={(value) => updateSelected({ height: Math.max(4, value) })} />
+                    <NumField label={t("props.width")} value={Math.round(selectedElement.width)} min={1} onChange={(value) => updateSelected({ width: Math.max(1, value) })} />
+                    <NumField label={t("props.height")} value={Math.round(selectedElement.height)} min={1} onChange={(value) => updateSelected({ height: Math.max(1, value) })} />
                   </div>
                   <div className="field">
                     <span>{t("props.rotation")}</span>
@@ -2503,7 +2548,10 @@ function App() {
                 />
               </div>
               <div className="sidebar-footer sidebar-footer-row">
-                <button className="btn btn-ghost" onClick={() => refreshPreviews(scene)} title={t("code.refreshTitle")}>
+                <button className="btn btn-ghost" onClick={() => {
+                  delete previewCacheRef.current[previewTab];
+                  setPreviewRevision((value) => value + 1);
+                }} title={t("code.refreshTitle")}>
                   <Icon name="rotateCw" size={13} />
                   <span>{t("code.refresh")}</span>
                 </button>
@@ -3129,14 +3177,16 @@ async function readApiError(response: Response) {
   return text;
 }
 
-async function fetchTextExport(endpoint: string, scene: SceneDocument) {
+async function fetchTextExport(endpoint: string, scene: SceneDocument, signal?: AbortSignal) {
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ scene })
+    body: JSON.stringify({ scene }),
+    signal
   });
+  if (!response.ok) throw new Error(await readApiError(response));
   return await response.text();
 }
 
@@ -3146,10 +3196,7 @@ function extractSvgExportWarning(text: string) {
 }
 
 function normalizeZIndex(elements: SceneElement[]) {
-  return elements.map((element, index) => ({
-    ...element,
-    zIndex: index
-  }));
+  return elements.map((element, index) => element.zIndex === index ? element : { ...element, zIndex: index });
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -3167,7 +3214,7 @@ function normalizeRotation(value: number) {
   return Object.is(normalized, -0) ? 0 : normalized;
 }
 
-function normalizeElementPatch(patch: Partial<SceneElement>) {
+function normalizeElementPatch(patch: ElementPatch) {
   if (patch.rotation === undefined) {
     return patch;
   }
@@ -3288,8 +3335,16 @@ function computeSnapGuides(
   };
 }
 
-function cloneScene(scene: SceneDocument) {
-  return JSON.parse(JSON.stringify(scene)) as SceneDocument;
+function sameValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every((key) =>
+    Object.prototype.hasOwnProperty.call(right, key) && sameValue(left[key], right[key])
+  );
 }
 
 function getSceneSourceName(scene: SceneDocument) {

@@ -352,7 +352,38 @@ type SceneLibrary = {
 }
 ```
 
-## 12. 验收点
+## 12. WebMCP 批量编辑与预览
+
+工具在 `frontend/src/webmcp.ts` 注册，由 `App.tsx` 的桥接对象读取最新场景；工具返回值与场景隔离，连续调用无需等待 React 渲染。
+
+- `add_elements({elements:[...]})` 批量追加；`set_elements({elements:[...]})` 整体替换图元、保留画布及素材库，空数组清空图元。每个条目使用 `add_element` 的参数，可指定唯一 `id`。默认只返回 `count` 和输入顺序的 `ids`，`returnElements:true` 返回完整新增图元。
+- `update_elements({updates:[{id,...fields}]})` 批量修改；`remove_elements({ids:[...]})` 批量删除。整批先校验，再提交；无效 ID、重复更新 ID、无效数值不会造成部分修改。每批只记一步撤销。
+- 单个及批量新增/更新均支持 `zIndex`。它是排序键，数值越大越靠上，同值保持原有/输入顺序；提交后重排为连续索引。可用 `-1` 置底、超过当前最大值置顶、半整数插入两层之间，也可批量设置整组排序键。
+- `add_element` / `add_elements` 默认 `select:false`，保持已有选择；`set_elements` 默认清除选择，`select:true` 选中最后新增图元。`set_selection({id})` 选择指定图元，`set_selection({})` 取消选择，不产生撤销记录。
+- 坐标原点为左上，位置是尺寸盒中心，旋转逆时针为正且绕尺寸盒中心。三角形朝上；星形顶点与编辑器 CSS clip-path 一致；圆环内外径比为 0.8。工具和属性面板支持最小 1px 尺寸。基础图形默认透明度仍为 0.85，文本框和素材图为 1；需要实色时显式传 `opacity:1`。`background:"transparent"` 表示透明画布。
+- `list_elements` 默认每页 100 个简要条目（id/name/type/zIndex），可设 `details:true`、`offset`、`limit`（最多 1000）、名称子串 `name`、`type`、`ids` 及 `region:{x,y,width,height}`。区域按旋转后的轴对齐外接框相交筛选。响应包含 `total`、`matched`、`count`、`nextOffset`。
+- `get_scene()` 保留完整文档返回；`summary:true` 只返回画布、元数据和图元数，`includeLibrary:false` 排除素材库快照。也支持上述分页筛选参数。
+- `import_source` 描述中提供可直接使用的 JSON 场景示例。含 `canvas` 的格式中，图元必填 `id/type/x/y/width/height`；其余字段采用后端默认值（特别是 JSON 的默认 opacity 为 1）。仅含图元数组的格式会自动拟合画布。
+- `get_canvas_preview` 默认返回 PNG data URL；可设 `format:"jpeg"`、`quality`、`region` 和 `maxSize`。区域坐标为左上角，裁切至画布后可放大到 maxSize；全图仅缩小。JPEG 用白色衬底。`output:"image"` 返回 `{content:[{type:"image",mimeType,data}]}`，能否作为视觉内容而非文本消费取决于调用客户端；旧客户端继续使用默认 `output:"dataUrl"`。
+- 代码面板仅在显示时自动生成当前格式，300ms 防抖，取消过时请求并缓存当前结果；JSON 本地生成。工具编辑不再主动发送 CSS/SVG/Lua 三种全量导出。显式导出与复制读取最新场景。
+- 撤销使用不可变场景与图元引用共享，保留最近 100 次编辑。原值修改不生成状态、快照或导出，也不会清除重做分支。
+- PNG 多边形显式使用图元中心旋转（修复 180° 三角形偏移 height/3），基本图形、圆环及素材图按 source-over 叠加透明度；星形 PNG/SVG/CSS 使用与画布相同的顶点。
+
+批量调用示例：
+
+```js
+add_elements({elements: [
+  {id: "base", type: "rectangle", x: 150, y: 150, width: 100, height: 1, color: "#ffffff", opacity: 1},
+  {id: "tip", type: "triangle", x: 150, y: 100, width: 60, height: 60, color: "#ff0000", opacity: 1}
+]});
+update_elements({updates: [{id: "tip", rotation: 180}, {id: "base", zIndex: 10}]});
+list_elements({name: "triangle", limit: 20, details: true});
+get_canvas_preview({region: {x: 100, y: 50, width: 100, height: 100}, maxSize: 512, format: "jpeg", output: "image"});
+```
+
+验证：后端 `python -m unittest discover -s tests -v` 覆盖旋转中心、星形、透明叠加和 CSS 往返；前端 `npm run build` 完成类型检查和构建。图片内容块需在具体 WebMCP 客户端验证兼容性。
+
+## 13. 验收点
 
 ### 文档
 - README 能说明项目目标、启动方式、当前能力
