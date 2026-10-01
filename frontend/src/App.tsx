@@ -127,11 +127,25 @@ type SceneLibrary = {
   savedItems: SavedLibraryItem[];
 };
 
+export type CanvasMask = {
+  /** 遮罩中心的组内偏移（导出 GIA 时 y 轴向上） */
+  x: number;
+  y: number;
+  /** null 表示跟随画布尺寸 */
+  width: number | null;
+  height: number | null;
+  shapeType: 1 | 2;
+  enabled: boolean;
+  /** 是否在编辑器画布上叠加遮罩预览（仅前端，不影响导出） */
+  previewOnCanvas: boolean;
+};
+
 export type SceneDocument = {
   canvas: {
     width: number;
     height: number;
     background: string;
+    mask?: CanvasMask;
   };
   elements: SceneElement[];
   meta: {
@@ -141,6 +155,32 @@ export type SceneDocument = {
   };
   library: SceneLibrary;
 };
+
+const DEFAULT_CANVAS_MASK: CanvasMask = {
+  x: 0,
+  y: 0,
+  width: null,
+  height: null,
+  shapeType: 1,
+  enabled: true,
+  previewOnCanvas: false
+};
+
+function canvasMaskOf(canvas: SceneDocument["canvas"]): CanvasMask {
+  return { ...DEFAULT_CANVAS_MASK, ...(canvas.mask ?? {}) };
+}
+
+function scaleCanvasMask(canvas: SceneDocument["canvas"], factor: number): CanvasMask {
+  const mask = canvasMaskOf(canvas);
+  const scale = (value: number) => Math.round(value * factor * 100) / 100;
+  return {
+    ...mask,
+    x: scale(mask.x),
+    y: scale(mask.y),
+    width: mask.width == null ? null : Math.max(1, scale(mask.width)),
+    height: mask.height == null ? null : Math.max(1, scale(mask.height))
+  };
+}
 
 type QuickEditState = {
   x: number;
@@ -223,7 +263,8 @@ const EMPTY_SCENE = (): SceneDocument => ({
   canvas: {
     width: 300,
     height: 300,
-    background: "#ffffff"
+    background: "#ffffff",
+    mask: { ...DEFAULT_CANVAS_MASK }
   },
   elements: [],
   meta: {
@@ -377,6 +418,10 @@ function App() {
     () => orderedElements.find((element) => element.id === selectedId) ?? null,
     [orderedElements, selectedId]
   );
+
+  const canvasMask = useMemo(() => canvasMaskOf(scene.canvas), [scene.canvas]);
+  const canvasMaskWidth = canvasMask.width ?? scene.canvas.width;
+  const canvasMaskHeight = canvasMask.height ?? scene.canvas.height;
 
   const quickEditElement = useMemo(
     () => (quickEdit ? orderedElements.find((element) => element.id === quickEdit.targetId) ?? null : null),
@@ -1491,6 +1536,16 @@ function App() {
     }));
   }
 
+  function updateCanvasMask(patch: Partial<CanvasMask>) {
+    commitScene((current) => ({
+      ...current,
+      canvas: {
+        ...current.canvas,
+        mask: { ...canvasMaskOf(current.canvas), ...patch }
+      }
+    }));
+  }
+
   function scaleScene(factor: number) {
     const value = Number(factor);
     if (!Number.isFinite(value) || value <= 0 || value === 1) {
@@ -1501,7 +1556,8 @@ function App() {
       canvas: {
         ...current.canvas,
         width: clamp(Math.round(current.canvas.width * value), 1, 2048),
-        height: clamp(Math.round(current.canvas.height * value), 1, 2048)
+        height: clamp(Math.round(current.canvas.height * value), 1, 2048),
+        mask: scaleCanvasMask(current.canvas, value)
       },
       elements: current.elements.map((element) => {
         const scaled: SceneElement = {
@@ -2227,6 +2283,90 @@ function App() {
                     />
                   )
                 )}
+                {canvasMask.enabled && canvasMask.previewOnCanvas && (propsView === "canvas" || !selectedElement) ? (
+                  <svg
+                    className="canvas-mask-preview"
+                    width={scene.canvas.width}
+                    height={scene.canvas.height}
+                    viewBox={`0 0 ${scene.canvas.width} ${scene.canvas.height}`}
+                    aria-hidden="true"
+                  >
+                    <defs>
+                      <mask id="canvas-mask-cutout">
+                        <rect width={scene.canvas.width} height={scene.canvas.height} fill="white" />
+                        {canvasMask.shapeType === 2 ? (
+                          <ellipse
+                            cx={scene.canvas.width / 2 + canvasMask.x}
+                            cy={scene.canvas.height / 2 - canvasMask.y}
+                            rx={canvasMaskWidth / 2}
+                            ry={canvasMaskHeight / 2}
+                            fill="black"
+                          />
+                        ) : (
+                          <rect
+                            x={scene.canvas.width / 2 + canvasMask.x - canvasMaskWidth / 2}
+                            y={scene.canvas.height / 2 - canvasMask.y - canvasMaskHeight / 2}
+                            width={canvasMaskWidth}
+                            height={canvasMaskHeight}
+                            fill="black"
+                          />
+                        )}
+                      </mask>
+                    </defs>
+                    {/* 遮罩外压暗 */}
+                    <rect
+                      width={scene.canvas.width}
+                      height={scene.canvas.height}
+                      fill="rgba(17, 24, 39, 0.32)"
+                      mask="url(#canvas-mask-cutout)"
+                    />
+                    {/* 遮罩边界：深色虚线 + 内层白线 */}
+                    {canvasMask.shapeType === 2 ? (
+                      <ellipse
+                        cx={scene.canvas.width / 2 + canvasMask.x}
+                        cy={scene.canvas.height / 2 - canvasMask.y}
+                        rx={canvasMaskWidth / 2}
+                        ry={canvasMaskHeight / 2}
+                        fill="none"
+                        stroke="rgba(15, 23, 42, 0.85)"
+                        strokeWidth="1.5"
+                        strokeDasharray="6 4"
+                      />
+                    ) : (
+                      <rect
+                        x={scene.canvas.width / 2 + canvasMask.x - canvasMaskWidth / 2}
+                        y={scene.canvas.height / 2 - canvasMask.y - canvasMaskHeight / 2}
+                        width={canvasMaskWidth}
+                        height={canvasMaskHeight}
+                        fill="none"
+                        stroke="rgba(15, 23, 42, 0.85)"
+                        strokeWidth="1.5"
+                        strokeDasharray="6 4"
+                      />
+                    )}
+                    {canvasMask.shapeType === 2 ? (
+                      <ellipse
+                        cx={scene.canvas.width / 2 + canvasMask.x}
+                        cy={scene.canvas.height / 2 - canvasMask.y}
+                        rx={canvasMaskWidth / 2 - 1}
+                        ry={canvasMaskHeight / 2 - 1}
+                        fill="none"
+                        stroke="rgba(255, 255, 255, 0.7)"
+                        strokeWidth="1"
+                      />
+                    ) : (
+                      <rect
+                        x={scene.canvas.width / 2 + canvasMask.x - canvasMaskWidth / 2 + 1}
+                        y={scene.canvas.height / 2 - canvasMask.y - canvasMaskHeight / 2 + 1}
+                        width={canvasMaskWidth - 2}
+                        height={canvasMaskHeight - 2}
+                        fill="none"
+                        stroke="rgba(255, 255, 255, 0.7)"
+                        strokeWidth="1"
+                      />
+                    )}
+                  </svg>
+                ) : null}
               </div>
             </div>
           </div>
@@ -2499,6 +2639,87 @@ function App() {
                       {t("props.transparent")}
                       <em>{t("props.transparentHint")}</em>
                     </span>
+                  </label>
+
+                  <div className="section-head"><span>{t("props.maskSettings")}</span></div>
+                  <label className="check-row" title={t("props.maskEnabledTitle")}>
+                    <input
+                      type="checkbox"
+                      checked={canvasMask.enabled}
+                      onChange={(event) => updateCanvasMask({ enabled: event.target.checked })}
+                    />
+                    <span>{t("props.maskEnabled")}</span>
+                  </label>
+                  <div className="field">
+                    <span>{t("props.maskShape")}</span>
+                    <div className="seg seg-compact">
+                      <button
+                        className={canvasMask.shapeType === 1 ? "active" : ""}
+                        onClick={() => updateCanvasMask({ shapeType: 1 })}
+                      >
+                        {t("props.maskShapeRect")}
+                      </button>
+                      <button
+                        className={canvasMask.shapeType === 2 ? "active" : ""}
+                        onClick={() => updateCanvasMask({ shapeType: 2 })}
+                      >
+                        {t("props.maskShapeCircle")}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="grid-2">
+                    <NumField
+                      label={t("props.maskOffsetX")}
+                      value={Math.round(canvasMask.x)}
+                      min={-4096}
+                      max={4096}
+                      onChange={(value) => updateCanvasMask({ x: value })}
+                    />
+                    <NumField
+                      label={t("props.maskOffsetY")}
+                      value={Math.round(canvasMask.y)}
+                      min={-4096}
+                      max={4096}
+                      onChange={(value) => updateCanvasMask({ y: value })}
+                    />
+                  </div>
+                  <label className="check-row" title={t("props.maskFollowTitle")}>
+                    <input
+                      type="checkbox"
+                      checked={canvasMask.width === null && canvasMask.height === null}
+                      onChange={(event) =>
+                        updateCanvasMask(
+                          event.target.checked
+                            ? { width: null, height: null }
+                            : { width: Math.round(scene.canvas.width), height: Math.round(scene.canvas.height) }
+                        )
+                      }
+                    />
+                    <span>{t("props.maskFollow")}</span>
+                  </label>
+                  <div className="grid-2">
+                    <NumField
+                      label={t("props.widthW")}
+                      value={Math.round(canvasMaskWidth)}
+                      min={1}
+                      max={4096}
+                      onChange={(value) => updateCanvasMask({ width: Math.max(1, value) })}
+                    />
+                    <NumField
+                      label={t("props.heightH")}
+                      value={Math.round(canvasMaskHeight)}
+                      min={1}
+                      max={4096}
+                      onChange={(value) => updateCanvasMask({ height: Math.max(1, value) })}
+                    />
+                  </div>
+                  <label className="check-row" title={t("props.maskPreviewTitle")}>
+                    <input
+                      type="checkbox"
+                      checked={canvasMask.previewOnCanvas}
+                      onChange={(event) => updateCanvasMask({ previewOnCanvas: event.target.checked })}
+                    />
+                    <span>{t("props.maskPreview")}</span>
                   </label>
 
                   <div className="section-head"><span>{t("props.stats")}</span></div>
@@ -3105,7 +3326,7 @@ function buildSampleScene(shapeLabels: Record<ShapeType, string>, sourceName: st
 
   return {
     ...base,
-    canvas: { width: 300, height: 300, background: "#ffffff" },
+    canvas: { width: 300, height: 300, background: "#ffffff", mask: { ...DEFAULT_CANVAS_MASK } },
     elements,
     meta: { sourceType: "editor", sourceName, warnings: [] }
   };

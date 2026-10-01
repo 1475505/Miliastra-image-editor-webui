@@ -139,10 +139,24 @@ def default_gia_group_name() -> str:
     return date.today().strftime("%Y%m%d")
 
 
+class CanvasMaskModel(BaseModel):
+    """导出 GIA 时覆盖素材组模板遮罩。position 是遮罩中心的组内偏移（y 轴向上），
+    width / height 为 None 时跟随画布尺寸。"""
+
+    x: float = 0.0
+    y: float = 0.0
+    width: float | None = None
+    height: float | None = None
+    shapeType: int = 1  # 1 = 矩形，2 = 圆形
+    enabled: bool = True
+    previewOnCanvas: bool = False
+
+
 class CanvasModel(BaseModel):
     width: float = DEFAULT_CANVAS_WIDTH
     height: float = DEFAULT_CANVAS_HEIGHT
     background: str = DEFAULT_CANVAS_BACKGROUND
+    mask: CanvasMaskModel = Field(default_factory=CanvasMaskModel)
 
 
 class MetaModel(BaseModel):
@@ -360,9 +374,9 @@ def export_lua(request: ExportRequest) -> Response:
         gia_bytes = None
         if image_scene.elements:
             gia_document = scene_to_gia_document(image_scene, request.giaGroupName)
-            # The editor canvas allows overflowing art; remove the base GIA
-            # template's mask before handing it to the shared Lua converter.
-            gia_document["mask"] = {"enabled": False}
+            # 编辑器画布允许图元溢出；Lua 侧始终关闭裁剪，但仍写入画布遮罩的位置与尺寸，
+            # 避免残留模板里 225×207 的默认遮罩几何。
+            gia_document["mask"] = {**canvas_mask_gia_json(scene.canvas), "enabled": False}
             gia_bytes = convert_scene_to_gia_bytes(gia_document)
         content = lua_scene.dumps(scene.model_dump(), gia_bytes, request.giaGroupName)
     except ValueError as exc:
@@ -480,10 +494,13 @@ def normalize_canvas_background(value: str | None) -> str:
 
 
 def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
+    canvas_width = max(1, scene.canvas.width)
+    canvas_height = max(1, scene.canvas.height)
     canvas = CanvasModel(
-        width=max(1, scene.canvas.width),
-        height=max(1, scene.canvas.height),
+        width=canvas_width,
+        height=canvas_height,
         background=normalize_canvas_background(scene.canvas.background),
+        mask=normalize_canvas_mask(scene.canvas.mask, canvas_width, canvas_height),
     )
     elements: list[SceneElementModel] = []
     sorted_elements = sorted(scene.elements, key=lambda item: item.zIndex)
@@ -553,6 +570,25 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
             warnings=list(scene.meta.warnings),
         ),
         library=normalize_library(scene.library),
+    )
+
+
+def normalize_canvas_mask(mask: CanvasMaskModel, canvas_width: float, canvas_height: float) -> CanvasMaskModel:
+    def normalize_size(value: float | None, fallback: float) -> float | None:
+        if value is None:
+            return None
+        if not math.isfinite(value):
+            return fallback
+        return max(1.0, value)
+
+    return CanvasMaskModel(
+        x=mask.x if math.isfinite(mask.x) else 0.0,
+        y=mask.y if math.isfinite(mask.y) else 0.0,
+        width=normalize_size(mask.width, canvas_width),
+        height=normalize_size(mask.height, canvas_height),
+        shapeType=mask.shapeType if mask.shapeType in (1, 2) else 1,
+        enabled=mask.enabled,
+        previewOnCanvas=mask.previewOnCanvas,
     )
 
 
@@ -1588,6 +1624,20 @@ def scene_to_png_bytes(scene: SceneDocumentModel) -> bytes:
     return buffer.getvalue()
 
 
+def canvas_mask_gia_json(canvas: CanvasModel) -> dict:
+    """把画布遮罩配置翻译成 json_to_gia 的 mask 结构。"""
+    mask = canvas.mask
+    return {
+        "enabled": mask.enabled,
+        "position": {"x": mask.x, "y": mask.y},
+        "size": {
+            "x": mask.width if mask.width is not None else canvas.width,
+            "y": mask.height if mask.height is not None else canvas.height,
+        },
+        "shape_type": mask.shapeType,
+    }
+
+
 def scene_to_gia_document(scene: SceneDocumentModel, group_name: str | None = None) -> dict:
     elements = []
     canvas_center_x = scene.canvas.width / 2
@@ -1652,6 +1702,7 @@ def scene_to_gia_document(scene: SceneDocumentModel, group_name: str | None = No
     return {
         "group_name": normalize_gia_group_name(group_name),
         "canvas": {"width": scene.canvas.width, "height": scene.canvas.height},
+        "mask": canvas_mask_gia_json(scene.canvas),
         "elements": elements,
     }
 
