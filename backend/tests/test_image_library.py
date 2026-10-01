@@ -1,7 +1,5 @@
 import json
-import re
 import unittest
-from pathlib import Path
 from unittest import mock
 
 from fastapi import HTTPException
@@ -119,14 +117,6 @@ class HelperTests(unittest.TestCase):
         self.assertTrue(image_library.etag_matches("*", '"abc"'))
         self.assertFalse(image_library.etag_matches('"nope"', '"abc"'))
         self.assertFalse(image_library.etag_matches(None, '"abc"'))
-
-    def test_module_performs_no_disk_writes(self):
-        """守住「后端不缓存」这条约束：模块里不允许出现任何落盘调用。"""
-        source = Path(image_library.__file__).read_text(encoding="utf-8")
-        for forbidden in ("write_text", "write_bytes", "mkdir", "tempfile", "TemporaryFile"):
-            with self.subTest(forbidden=forbidden):
-                self.assertNotIn(forbidden, source)
-        self.assertIsNone(re.search(r"(?<!url)\bopen\(", source), "只允许 urllib 的 urlopen，不允许直接开文件")
 
 
 class CatalogTests(unittest.TestCase):

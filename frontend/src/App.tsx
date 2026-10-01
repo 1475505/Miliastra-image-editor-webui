@@ -1081,7 +1081,8 @@ function App() {
           ...(patch.height !== undefined
             ? { height: clamp(Math.round(patch.height) || 1, 1, 2048) }
             : {}),
-          ...(patch.background !== undefined ? { background: patch.background } : {})
+          ...(patch.background !== undefined ? { background: patch.background } : {}),
+          ...(patch.mask !== undefined ? { mask: { ...canvasMaskOf(current.canvas), ...patch.mask } } : {})
         }
       };
       commitScene(next);

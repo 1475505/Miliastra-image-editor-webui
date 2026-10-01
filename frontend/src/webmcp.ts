@@ -1,19 +1,7 @@
-// WebMCP (Web Model Context Protocol) 集成模块。
-//
-// 规范: W3C Web Machine Learning CG Draft Community Group Report
-//   https://webmachinelearning.github.io/webmcp/
-//
-// 页面通过 document.modelContext.registerTool() 将编辑器能力注册为带
-// JSON Schema 的命名工具，供浏览器 AI 代理（Chrome WebMCP origin trial、
-// ChatGPT 桌面版 site tools 等）直接调用，而无需截图或解析 DOM。
-//
-// 工具命名遵循规范约束: 1-128 个字符，仅限 ASCII 字母数字与 _ - .
-// 只读工具带 annotations.readOnlyHint（代理可将其标记为无需确认的安全操作）；
-// 返回内容可能来自导入的外部文件的工具另带 untrustedContentHint，提示代理
-// 将其视为数据而非指令（规范 §6.3.1.2 输出注入攻击的缓解措施）。
-// 不支持 WebMCP 的浏览器中静默跳过注册，不影响编辑器本身。
+// WebMCP editor tools. Unsupported browsers skip registration.
+// Read-only tools are annotated; imported content is untrusted data.
 
-import type { SceneDocument, SceneElement, ShapeType, SourceType, TextBoxSettings } from "./App";
+import type { CanvasMask, SceneDocument, SceneElement, ShapeType, SourceType, TextBoxSettings } from "./App";
 
 // ---------------------------------------------------------------------------
 // WebMCP 浏览器 API 的最小类型声明（规范 IDL 子集）
@@ -73,7 +61,7 @@ export type AddElementInput = {
   textBox?: Partial<TextBoxSettings>;
   /** type === "image"：素材库 sprite id（6 位） */
   imageAssetId?: number;
-  /** 单色素材染色开关 */
+  /** 素材 RGB 乘色开关 */
   imageTint?: boolean;
 };
 
@@ -98,6 +86,7 @@ export type EditorBridge = {
     width?: number;
     height?: number;
     background?: string;
+    mask?: Partial<CanvasMask>;
   }): { ok: boolean; error?: string };
   clearCanvas(): { ok: boolean };
   importSource(
@@ -149,8 +138,8 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
-const GEOMETRY = "Coordinates use a top-left origin, x rightwards and y downwards. x/y denote the center of the width/height box; all shapes rotate about that center, counter-clockwise positive. Triangle vertices in box fractions are (0.5,0),(0,1),(1,1). Four-point star vertices in percent are (50,0),(62,38),(100,50),(62,62),(50,100),(38,62),(0,50),(38,38); five-point star: (50,0),(61,35),(98,35),(68,57),(79,92),(50,71),(21,92),(32,57),(2,35),(39,35). Ring inner/outer diameter ratio is fixed at 0.8. Width/height support 1-2048 px, including thin lines made with rectangles.";
-const DEFAULTS = "New elements default to the canvas center, rotation 0, opacity 0.85 for basic shapes and 1 for textbox/image; pass opacity:1 for solid shapes. Width/height/color use the current library preset (image fallback: 90x90, #4f46e5). Textboxes default to fontSize 20, white text, transparent background, top-left alignment. zIndex is a stacking sort key (larger = above, ties keep existing/input order); mutations normalize keys to consecutive indices. Omit zIndex to append on top. select defaults to false.";
+const GEOMETRY = "Pixels: origin top-left, x right, y down; x/y are box centers, rotation counter-clockwise. Triangle points up; ring inner/outer diameter ratio is 0.8.";
+const DEFAULTS = "Defaults: canvas center, current library size/color, rotation 0; opacity 0.85 for shapes, 1 for text/image. Pass explicit size/color/opacity for predictable results. Omit zIndex to append on top.";
 
 const elementProperties = {
   name: { type: "string", description: "Display name; new elements default to the shape name" },
@@ -341,7 +330,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "get_scene",
       title: "Get scene",
       description:
-        "Get the scene document. With no arguments returns the full document for compatibility; prefer list_elements for bounded output. Set summary:true for canvas/meta/count only; includeLibrary:false omits saved library snapshots. Optional offset/limit/name/type/ids/region filter elements and add pagination metadata. " + GEOMETRY,
+        "Read canvas, metadata and elements. Start with summary:true; use list_elements for paginated inspection. No arguments returns the full scene including library. " + GEOMETRY,
       annotations: { readOnlyHint: true, untrustedContentHint: true },
       inputSchema: { type: "object", properties: {
         ...queryProperties,
@@ -404,7 +393,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
         description: (replace
           ? "Replace ALL elements while preserving canvas, metadata and library. Empty array clears elements. "
           : "Add many elements in one call. ") +
-          "Validates the entire array before applying; one undo step, no partial edits. Returns count and ids in input order (returnElements:true also returns full elements). " + GEOMETRY + " " + DEFAULTS,
+          "Atomic, one undo step. Returns count and ids in input order; returnElements:true adds full elements. " + GEOMETRY + " " + DEFAULTS,
         inputSchema: { type: "object", required: ["elements"], properties: {
           elements: { type: "array", items: { type: "object", required: ["type"], properties: addProperties } },
           select: selectProperty,
@@ -426,7 +415,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "update_element",
       title: "Update element",
       description:
-        "Update only supplied properties of one element, including zIndex (larger = above; ties retain order, then indices normalize). Does not change selection. Unchanged values create no undo step. " + GEOMETRY,
+        "Patch one element by id; prefer update_elements for batches. Preserves selection; unchanged values create no undo step. " + GEOMETRY,
       inputSchema: {
         type: "object",
         required: ["id"],
@@ -443,7 +432,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
     {
       name: "update_elements",
       title: "Update elements",
-      description: "Atomically update multiple elements in one undo step. updates is an array of {id, ...fields}, e.g. [{id:'a',color:'#ff0000'},{id:'b',zIndex:-1}]. All ids must exist and be unique; any invalid entry rejects the whole batch. Only changed elements count; an all-no-op batch creates no undo step. zIndex sort keys are applied together, then normalized; fractional/negative values allow insertion between/below layers.",
+      description: "Patch a batch of {id, ...fields} atomically in one undo step. Ids must exist and be unique. Returns changed count; no-op edits create no history. zIndex accepts fractional/negative sort keys, then normalizes. " + GEOMETRY,
       inputSchema: { type: "object", required: ["updates"], properties: {
         updates: { type: "array", items: { type: "object", required: ["id"], properties: {
           id: { type: "string" }, ...elementProperties
@@ -506,27 +495,57 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
     {
       name: "set_canvas",
       title: "Set canvas",
-      description: "Update the canvas size (pixels, 1-2048) and background (#RRGGBB or transparent).",
+      description: "Patch canvas size/background and GIA mask in one undo step. Mask offsets are relative to canvas center, y UP; mask does not affect PNG or get_canvas_preview.",
       inputSchema: {
         type: "object",
         properties: {
           width: numberProp("Canvas width in pixels (1-2048)", 1, 2048),
           height: numberProp("Canvas height in pixels (1-2048)", 1, 2048),
-          background: { type: "string", description: "Background color, e.g. #ffffff, or transparent for no background" }
+          background: { type: "string", description: "#RRGGBB or transparent" },
+          mask: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              enabled: { type: "boolean", description: "Enable GIA clipping (default true)" },
+              shapeType: { type: "integer", enum: [1, 2], description: "1 rectangle (default), 2 ellipse" },
+              x: numberProp("Center offset X, right positive (default 0)"),
+              y: numberProp("Center offset Y, UP positive (default 0)"),
+              width: { type: ["number", "null"], minimum: 1, description: "Pixels; null follows canvas width (default)" },
+              height: { type: ["number", "null"], minimum: 1, description: "Pixels; null follows canvas height (default)" },
+              previewOnCanvas: { type: "boolean", description: "Show editor overlay only (default false)" }
+            }
+          }
         }
       }
     },
     (bridge, args) => {
-      const patch: { width?: number; height?: number; background?: string } = {};
-      if (typeof args.width === "number" && Number.isFinite(args.width)) {
-        patch.width = args.width;
+      const patch: Parameters<EditorBridge["setCanvas"]>[0] = {};
+      for (const key of ["width", "height"] as const) {
+        if (args[key] === undefined) continue;
+        const value = args[key];
+        if (typeof value !== "number" || !Number.isFinite(value) || value < 1 || value > 2048) return err(`${key} must be 1-2048`);
+        patch[key] = value;
       }
-      if (typeof args.height === "number" && Number.isFinite(args.height)) {
-        patch.height = args.height;
-      }
-      if (typeof args.background === "string") {
-        if (args.background !== "transparent" && !/^#[0-9a-f]{6}$/i.test(args.background)) return err("background must be #RRGGBB or transparent");
+      if (args.background !== undefined) {
+        if (typeof args.background !== "string" || (args.background !== "transparent" && !/^#[0-9a-f]{6}$/i.test(args.background))) return err("background must be #RRGGBB or transparent");
         patch.background = args.background;
+      }
+      if (args.mask !== undefined) {
+        const mask = objectArg(args.mask, "mask");
+        const fields = ["enabled", "shapeType", "x", "y", "width", "height", "previewOnCanvas"];
+        for (const [key, value] of Object.entries(mask)) {
+          if (!fields.includes(key)) return err(`Unknown mask field: ${key}`);
+          if (key === "enabled" || key === "previewOnCanvas") {
+            if (typeof value !== "boolean") return err(`mask.${key} must be boolean`);
+          } else if (key === "shapeType") {
+            if (value !== 1 && value !== 2) return err("mask.shapeType must be 1 or 2");
+          } else if (value === null && (key === "width" || key === "height")) {
+            continue;
+          } else if (typeof value !== "number" || !Number.isFinite(value) || ((key === "width" || key === "height") && value < 1)) {
+            return err(`Invalid mask.${key}`);
+          }
+        }
+        if (Object.keys(mask).length) patch.mask = mask as Partial<CanvasMask>;
       }
       if (Object.keys(patch).length === 0) {
         return err("No canvas fields provided");
@@ -550,7 +569,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "import_source",
       title: "Import source",
       description:
-        'Parse CSS / JSON / SVG / Lua source and replace the scene in one undo step. For many elements prefer add_elements/set_elements. JSON content is a serialized object, e.g. {"canvas":{"width":300,"height":300,"background":"transparent"},"elements":[{"id":"a","type":"triangle","x":150,"y":150,"width":100,"height":100,"rotation":180,"color":"#ff0000","opacity":1,"zIndex":0}]}. With canvas, each element requires id/type/x/y/width/height; name/rotation/color/opacity/zIndex/isBackground are optional (JSON opacity defaults to 1). Textbox settings go in textBox:{text,fontSize,...}. A bare element array or {elements:[...]} also works and auto-fits the canvas. CSS uses Primitive Shaper conventions; SVG supports basic shapes only. Lua accepts ROOT/ELEMENTS and PALETTE/ELEMENTS literal data without executing code.',
+        "Import CSS/JSON/SVG/Lua text, replacing the entire scene in one undo step. Prefer batch tools for direct edits. JSON with canvas requires element id/type/x/y/width/height; text settings use textBox. SVG supports basic shapes and library images, with limited round-trip fidelity. Lua reads literal data only.",
       annotations: { untrustedContentHint: true },
       inputSchema: {
         type: "object",
@@ -614,7 +633,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "get_canvas_preview",
       title: "Get canvas preview",
       description:
-        'Render a canvas snapshot without selection outlines. Optional region:{x,y,width,height} crops in canvas coordinates (top-left origin), clipped to the canvas; cropped previews are enlarged to maxSize for detail inspection. Full-canvas previews only shrink. format png preserves transparency; jpeg uses a white matte and quality (default 0.8). maxSize defaults to 512 (128-2048). output:"image" returns an MCP image content block for image-capable clients; output:"dataUrl" (default, compatible with existing callers) returns a base64 URL. Clients must interpret image blocks to avoid treating base64 as text.',
+        "Render without selection outlines. Region uses top-left canvas coordinates, clips to canvas and enlarges to maxSize; full canvas only shrinks. PNG preserves alpha; JPEG uses white matte. Use output:image for image-capable clients, otherwise dataUrl (default).",
       annotations: { readOnlyHint: true, untrustedContentHint: true },
       inputSchema: {
         type: "object",
