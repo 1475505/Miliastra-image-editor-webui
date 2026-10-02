@@ -2,6 +2,10 @@
 // Read-only tools are annotated; imported content is untrusted data.
 
 import type { CanvasMask, SceneDocument, SceneElement, ShapeType, SourceType, TextBoxSettings } from "./App";
+import {
+  listLibraryAssetCategories, loadLibraryCatalog, queryLibraryAssetIds, scopeLibraryAssetIds, searchLibraryAssets,
+  type AssetSearchOptions, type LibraryCatalogState
+} from "./imageLibrary";
 
 // ---------------------------------------------------------------------------
 // WebMCP 浏览器 API 的最小类型声明（规范 IDL 子集）
@@ -182,6 +186,56 @@ const queryProperties = {
   region: { ...regionSchema, description: "Match elements whose rotated bounding boxes intersect this region" }
 };
 
+const assetFilterProperties = {
+  category: { type: "string", description: "Shape category key or full Chinese label from list_asset_categories; icons/图标 combines function, gameplay and skill icons" },
+  use: { type: "string", description: "Purpose code/full label from list_asset_uses (e.g. purpose.avatar), fine code (avatar.frame), or group:control" },
+  query: { type: "string", description: "ID, description or use keywords; whitespace-separated words must all match" },
+  tone: { type: "string", enum: ["mono", "color"] },
+  refresh: { type: "boolean", default: false, description: "Reload the published catalog" }
+};
+const assetIdsProperty = { type: "array", minItems: 1, maxItems: 2000,
+  items: { type: "integer", minimum: 100000, maximum: 999999 }, description: "Explicit library asset IDs; cannot combine with category/use/query/tone" };
+
+function parseAssetOptions(args: Record<string, unknown>, maxLimit = 100): AssetSearchOptions {
+  for (const key of ["query", "use", "category"] as const) {
+    if (args[key] !== undefined && typeof args[key] !== "string") throw new Error(`${key} must be a string`);
+  }
+  if (args.tone !== undefined && args.tone !== "mono" && args.tone !== "color") throw new Error("tone must be mono or color");
+  if (args.refresh !== undefined && typeof args.refresh !== "boolean") throw new Error("refresh must be boolean");
+  for (const key of ["offset", "limit"] as const) {
+    const value = args[key];
+    if (value !== undefined && (typeof value !== "number" || !Number.isInteger(value) || value < (key === "offset" ? 0 : 1) || (key === "limit" && value > maxLimit))) throw new Error(`Invalid ${key}`);
+  }
+  return args as AssetSearchOptions;
+}
+
+function selectAssetIds(state: LibraryCatalogState, args: Record<string, unknown>): number[] {
+  const filters = ["category", "use", "query", "tone"].some((key) => args[key] !== undefined);
+  if (args.all !== undefined && typeof args.all !== "boolean") throw new Error("all must be boolean");
+  if (args.all === true) {
+    if (args.ids !== undefined || filters) throw new Error("all:true cannot combine with ids or filters");
+    return queryLibraryAssetIds(state);
+  }
+  if (args.ids === undefined) return queryLibraryAssetIds(state, parseAssetOptions(args, 48));
+  if (filters) throw new Error("ids cannot combine with category/use/query/tone");
+  if (!Array.isArray(args.ids) || !args.ids.length || args.ids.length > 2000) throw new Error("ids must contain 1-2000 asset IDs");
+  const ids = args.ids as unknown[];
+  for (const id of ids) {
+    if (typeof id !== "number" || !Number.isInteger(id) || !state.assets[id]) throw new Error(`Unknown image asset ID: ${String(id)}`);
+  }
+  return [...new Set(ids as number[])];
+}
+
+function absoluteLibraryUrl(path: string): string {
+  return new URL(path, typeof location === "undefined" ? "http://127.0.0.1:8439" : location.origin).href;
+}
+
+function imageDataUrl(bytes: Uint8Array): string {
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 8192) binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+  return `data:image/png;base64,${btoa(binary)}`;
+}
+
 function objectArg(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   return value as Record<string, unknown>;
@@ -297,21 +351,21 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
 
   function register(
     def: Omit<WebMcpToolDefinition, "execute">,
-    run: (bridge: EditorBridge, args: Record<string, unknown>) => unknown | Promise<unknown>
+    run: (bridge: EditorBridge, args: Record<string, unknown>, options: WebMcpExecuteOptions) => unknown | Promise<unknown>
   ) {
     registrations.push(
       ctx
         .registerTool(
           {
             ...def,
-            execute: async (args) => {
+            execute: async (args, options) => {
               const bridge = getBridge();
               if (!bridge) {
                 return err("Editor is not ready yet, please retry later");
               }
               try {
                 // 输出可被页面脚本持有；隔离引用，避免修改结果污染不可变场景/撤销历史。
-                return structuredClone(await run(bridge, args ?? {}));
+                return structuredClone(await run(bridge, args ?? {}, options));
               } catch (error) {
                 return err(error instanceof Error ? error.message : String(error));
               }
@@ -324,6 +378,149 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
         })
     );
   }
+
+  register(
+    {
+      name: "list_asset_categories",
+      title: "List image shape categories",
+      description: "Start here to discover shape category keys/Chinese labels and available image counts. icons/图标 combines function, gameplay and skill icons. Next call list_asset_uses with a category to see purposes available within that category, then search_assets with category/use/keywords. Does not edit the canvas.",
+      annotations: { readOnlyHint: true, untrustedContentHint: true },
+      inputSchema: { type: "object", properties: {
+        query: assetFilterProperties.query, tone: assetFilterProperties.tone, refresh: assetFilterProperties.refresh
+      } }
+    },
+    async (_bridge, args) => {
+      const options = parseAssetOptions(args);
+      const state = await loadLibraryCatalog({ refresh: args.refresh === true });
+      return { ok: true, total: state.total, categories: listLibraryAssetCategories(state, options) };
+    }
+  );
+
+  register(
+    {
+      name: "search_assets",
+      title: "Search image assets",
+      description: "Find existing sprites with category AND purpose AND keyword conditions. Prefer list_asset_categories → list_asset_uses({category}) → search_assets({category,use,query}); category and use accept discovered keys or full Chinese labels. Omit any condition to broaden. Empty results do not silently relax filters. Whitespace-separated query words must all match. Returns IDs, descriptions and image URLs; preview_assets compares candidates visually and prepare_asset_pack gives a downloadable ZIP request. Use id as imageAssetId in add_elements.",
+      annotations: { readOnlyHint: true, untrustedContentHint: true },
+      inputSchema: { type: "object", properties: {
+        ...assetFilterProperties,
+        offset: { type: "integer", minimum: 0, default: 0 },
+        limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+      } }
+    },
+    async (_bridge, args) => {
+      const options = parseAssetOptions(args);
+      const state = await loadLibraryCatalog({ refresh: args.refresh === true });
+      return { ok: true, describedCount: Object.values(state.assets).filter((asset) => asset.description).length,
+        ...searchLibraryAssets(state, options) };
+    }
+  );
+
+  register(
+    {
+      name: "list_asset_uses",
+      title: "List image asset uses",
+      description: "Discover purposes available inside a shape category (e.g. category:图标 or function-icon). Counts respect category/tone and count each image once per purpose. Defaults return nonempty medium-grained purposes; includeFine:true also returns fine use codes, includeEmpty:true shows zero-count purposes. query matches purpose codes/labels/synonyms. Pass a returned code to search_assets or prepare_asset_pack. Does not edit the canvas.",
+      annotations: { readOnlyHint: true, untrustedContentHint: true },
+      inputSchema: { type: "object", properties: {
+        category: assetFilterProperties.category, tone: assetFilterProperties.tone, query: assetFilterProperties.query,
+        refresh: assetFilterProperties.refresh, group: { type: "string", description: "Use group id, e.g. control" },
+        includeFine: { type: "boolean", default: false }, includeEmpty: { type: "boolean", default: false }
+      } }
+    },
+    async (_bridge, args) => {
+      parseAssetOptions(args);
+      if (args.group !== undefined && typeof args.group !== "string") return err("group must be a string");
+      for (const key of ["includeFine", "includeEmpty"] as const) {
+        if (args[key] !== undefined && typeof args[key] !== "boolean") return err(`${key} must be boolean`);
+      }
+      const state = await loadLibraryCatalog({ refresh: args.refresh === true });
+      if (args.group && !state.useTaxonomy.groups.some((group) => group.id === args.group)) return err(`Unknown use group: ${String(args.group)}`);
+      const scopedIds = scopeLibraryAssetIds(state, args as AssetSearchOptions);
+      const assets = scopedIds.map((id) => state.assets[id]);
+      const counts = new Map<string, number>();
+      for (const asset of assets) {
+        for (const code of asset.uses) counts.set(code, (counts.get(code) ?? 0) + 1);
+      }
+      const query = typeof args.query === "string" ? args.query.normalize("NFKC").toLowerCase().trim() : "";
+      const uses = args.includeFine === true ? Object.entries(state.useTaxonomy.uses).filter(([code, definition]) =>
+        (!args.group || definition.group === args.group) &&
+        (args.includeEmpty === true || (counts.get(code) ?? 0) > 0) &&
+        (!query || [code, definition.label, ...definition.keywords].join(" ").normalize("NFKC").toLowerCase().includes(query))
+      ).map(([code, definition]) => ({ code, ...definition, count: counts.get(code) ?? 0 })) : [];
+      const filters = Object.entries(state.useTaxonomy.filters ?? {}).filter(([code, definition]) =>
+        (!args.group || definition.group === args.group) &&
+        (!query || [code, definition.label, ...definition.keywords].join(" ").normalize("NFKC").toLowerCase().includes(query))
+      ).map(([code, definition]) => ({ code, ...definition,
+        count: assets.filter((asset) => definition.uses.some((use) => asset.uses.includes(use))).length
+      })).filter((filter) => args.includeEmpty === true || filter.count > 0);
+      return { ok: true, matched: scopedIds.length, groups: state.useTaxonomy.groups, uses, filters,
+        categories: listLibraryAssetCategories(state, { tone: args.tone as "mono" | "color" | undefined }) };
+    }
+  );
+
+  register(
+    {
+      name: "preview_assets",
+      title: "Compare library images",
+      description: "Compare candidate sprites visually on a checkerboard contact sheet labeled with asset IDs, without adding anything to the canvas. Supply explicit ids or the same category/use/query/tone conditions as search_assets. Paginate at most 48 images per sheet; returned IDs correspond to image order. output:image returns an image content block; output:dataUrl returns PNG data URL. Use chosen IDs with prepare_asset_pack or add_elements.",
+      annotations: { readOnlyHint: true, untrustedContentHint: true },
+      inputSchema: { type: "object", properties: {
+        ...assetFilterProperties, ids: assetIdsProperty,
+        offset: { type: "integer", minimum: 0, default: 0 },
+        limit: { type: "integer", minimum: 1, maximum: 48, default: 32 },
+        output: { type: "string", enum: ["image", "dataUrl"], default: "image" }
+      } }
+    },
+    async (_bridge, args, options) => {
+      const query = parseAssetOptions(args, 48);
+      if (args.output !== undefined && args.output !== "image" && args.output !== "dataUrl") return err("output must be image or dataUrl");
+      const state = await loadLibraryCatalog({ refresh: args.refresh === true });
+      const matchedIds = selectAssetIds(state, args);
+      const offset = query.offset ?? 0;
+      const ids = matchedIds.slice(offset, offset + (query.limit ?? 32));
+      if (!ids.length) return { ok: true, matched: matchedIds.length, count: 0, offset, nextOffset: null, ids, message: "No candidates match these conditions." };
+      const response = await fetch("/api/library/contact-sheet", { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }), signal: options?.signal });
+      if (!response.ok) throw new Error(`Asset preview failed (${response.status}): ${(await response.text()).slice(0, 300)}`);
+      const failedIds = (response.headers.get("X-Failed-Asset-IDs") ?? "").split(",")
+        .filter(Boolean).map(Number).filter((id) => ids.includes(id));
+      const dataUrl = imageDataUrl(new Uint8Array(await response.arrayBuffer()));
+      const result = { ok: true, matched: matchedIds.length, count: ids.length, offset,
+        nextOffset: offset + ids.length < matchedIds.length ? offset + ids.length : null, ids, failedIds,
+        imageUrl: absoluteLibraryUrl(`/api/library/contact-sheet?ids=${ids.join(",")}`) };
+      return args.output === "dataUrl" ? { ...result, dataUrl } : { ...result,
+        content: [{ type: "image", mimeType: "image/png", data: dataUrl.slice(dataUrl.indexOf(",") + 1) }] };
+    }
+  );
+
+  register(
+    {
+      name: "prepare_asset_pack",
+      title: "Prepare an image asset ZIP download",
+      description: "Select every matching image for batch download and local comparison/processing. Supply category/use/query/tone filters, explicit ids, or all:true for the complete library. This returns a concrete POST request and a GET downloadUrl when short enough; fetch it to build/download the ZIP. The ZIP contains original PNGs, manifest.json with IDs/descriptions/sizes/errors, and ID-labeled contact sheets. Selection is not limited to search_assets' result page and does not edit the canvas.",
+      annotations: { readOnlyHint: true, untrustedContentHint: true },
+      inputSchema: { type: "object", properties: {
+        ...assetFilterProperties, ids: assetIdsProperty,
+        all: { type: "boolean", default: false, description: "Select every image in the catalog; cannot combine with ids or filters" }
+      } }
+    },
+    async (_bridge, args) => {
+      parseAssetOptions(args);
+      if (args.ids === undefined && args.all !== true && !["category", "use", "query", "tone"].some((key) => args[key] !== undefined)) {
+        return err("Provide ids or search filters, or all:true to download the complete library.");
+      }
+      const state = await loadLibraryCatalog({ refresh: args.refresh === true });
+      const ids = selectAssetIds(state, args);
+      if (!ids.length) return { ok: true, count: 0, downloadUrl: null, request: null, message: "No candidates match these conditions." };
+      const body = args.all === true ? { all: true } : { ids };
+      const query = args.all === true ? "all=true" : `ids=${ids.join(",")}`;
+      return { ok: true, count: ids.length,
+        downloadUrl: query.length <= 1800 ? absoluteLibraryUrl(`/api/library/assets.zip?${query}`) : null,
+        request: { method: "POST", url: absoluteLibraryUrl("/api/library/assets.zip"), body },
+        contents: ["images/{id}.png", "manifest.json", "contact-sheets/{page}.png"] };
+    }
+  );
 
   register(
     {

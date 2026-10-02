@@ -1031,6 +1031,33 @@ input[type="range"]::-moz-range-thumb {
   gap: 8px;
 }
 
+.asset-category-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.asset-description {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+.asset-use-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.asset-use-tags span {
+  border-radius: 4px;
+  padding: 2px 5px;
+  font-size: 10px;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
 .asset-id-row code {
   font-family: var(--mono);
   font-size: 12px;

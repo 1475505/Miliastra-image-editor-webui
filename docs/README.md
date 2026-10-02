@@ -14,6 +14,8 @@ Production deployment is intentionally simple: one FastAPI process serves both t
 
 ## Quick Start / 快速上手
 
+图片描述、40 类用途搜索、看图筛选、素材包下载及 R2 文件发布步骤见 [素材库上传与接入](image-library-upload.md)。AI 选型与批量拼接见 [素材选择技能](../skills/miliastra-image-asset-selector/SKILL.md)。
+
 1. 从左侧图形库拖入形状（或双击添加），也可在「导入」中上传文件或粘贴数据。
 2. 直接拖动图元，使用手柄缩放、旋转；在右侧属性面板精调尺寸、颜色和文字。
 3. 点击右上角「导出」下载作品。GIA 用于游戏素材，JSON / Lua 可保留场景数据以便继续编辑。
@@ -48,7 +50,8 @@ Need to turn a raster image into shapes? Open the [image fitting tool / 图元�
   - five-point star
   - ring (圆环, fixed inner:outer radius ratio 0.8, GIA asset ref 100006)
   - textbox (文本框: 默认字号 20、白字、透明白底、描边 `#333333` 20%、左/上对齐；支持 `<color>` / `<i>` / `<size>`)
-- Other categories are reserved in the UI and JSON interface
+- Browse the existing image library by original category, 40 purpose filters, tone and keywords; purpose and category stay separate
+- WebMCP discovers categories and purpose counts, searches assets, previews up to 48 ID-labelled thumbnails, and prepares selected or complete asset ZIPs with original images and a manifest
 - Drag shapes into canvas or double-click to add
 - Canvas supports:
   - panning
@@ -138,6 +141,5 @@ For deeper implementation details, see [technical-design.md](technical-design.md
 
 - Complex SVG is not guaranteed to round-trip correctly
 - SVG export skips ring (圆环) elements and writes a `Miliastra-Warning` comment in the file head; use CSS or JSON export for rings
-- Non-basic library categories are placeholders today
 - Current transform editing is single-element only
 - Undo / redo is session-level and not persisted

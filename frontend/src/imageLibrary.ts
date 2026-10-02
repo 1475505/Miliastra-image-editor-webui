@@ -10,10 +10,12 @@
  * 元数据（尺寸 / 九宫格）只在用户选中素材时按需拉取，并长期缓存在 localStorage。
  */
 
+import bundledUseTaxonomy from "../../docs/category.json";
+
 const API_BASE = "/api/library";
 export const OSS_IMAGE_BASE = "https://oss.070077.xyz/images";
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 const CATALOG_CACHE_KEY = `miliastra:image-library:v${CACHE_VERSION}:catalog`;
 const META_CACHE_KEY = `miliastra:image-library:v${CACHE_VERSION}:meta`;
 
@@ -46,8 +48,34 @@ export type SpriteMeta = {
   pivot: { x: number; y: number };
 };
 
+export type AssetDescription = { description: string; uses: string[] };
+export type UseFilter = { group: string; label: string; keywords: string[]; uses: string[] };
+export type UseTaxonomy = {
+  schemaVersion: number;
+  groups: { id: string; label: string }[];
+  uses: Record<string, { group: string; label: string; keywords: string[] }>;
+  filters?: Record<string, UseFilter>;
+};
+export type LibraryAsset = AssetDescription & {
+  id: number;
+  groupKey: string;
+  groupLabel: string;
+  tone: LibraryTone | null;
+};
+
+export type LibraryAssetCategory = {
+  key: string;
+  label: string;
+  count: number;
+  tones: { tone: LibraryTone | null; label: string; count: number }[];
+};
+
+export type AssetScopeOptions = { category?: string; tone?: LibraryTone };
+
 export type LibraryCatalogState = {
   groups: LibraryGroup[];
+  assets: Record<number, LibraryAsset>;
+  useTaxonomy: UseTaxonomy;
   total: number;
   /** 索引里存在、归属分类但没有图片文件的条目数（浏览时隐藏） */
   hiddenCount: number;
@@ -61,6 +89,8 @@ type CatalogPayload = {
   images?: Record<string, { id?: number; img?: string; border?: string }>;
   categories?: Record<string, { id?: number; images?: number[] }>;
   names?: Record<string, Record<string, string>>;
+  descriptions?: Record<string, AssetDescription>;
+  useTaxonomy?: UseTaxonomy;
 };
 
 type CachedRecord<T> = { version: number; etag: string | null; fetchedAt: number; payload: T };
@@ -82,6 +112,9 @@ const GROUP_DEFINITIONS: { key: string; categoryIds: number[] }[] = [
   { key: "item", categoryIds: [9] },
   { key: "creation", categoryIds: [12] },
 ];
+
+// AI 检索使用的汇总范围；不加入页面原有图形分类菜单。
+const ICON_CATEGORY_KEYS = new Set(["function-icon", "gameplay-icon", "skill-talent"]);
 
 const TONE_KEYWORDS: { tone: LibraryTone; labels: string }[] = [
   { tone: "mono", labels: "单色 Monochrome" },
@@ -247,17 +280,192 @@ function readCatalogCache(): CachedRecord<CatalogPayload> | null {
   return record;
 }
 
-function toState(payload: CatalogPayload, source: CacheSource, fromBrowserCache: boolean): LibraryCatalogState {
+export function toCatalogState(payload: CatalogPayload, source: CacheSource, fromBrowserCache: boolean): LibraryCatalogState {
   const missing = collectMissingIds(payload);
   const groups = buildGroups(payload, missing);
+  const taxonomy = payload.useTaxonomy ?? { schemaVersion: 1, groups: [], uses: {} };
+  // 随构建提供中等粒度用途，旧版 OSS 字典也能直接使用；已发布的字典优先。
+  const filterDefinitions: Record<string, UseFilter> = taxonomy.filters ?? bundledUseTaxonomy.filters;
+  const filters = Object.fromEntries(Object.entries(filterDefinitions).flatMap(([code, definition]) => {
+    const uses = definition.uses.filter((use) => taxonomy.uses[use]);
+    return uses.length && taxonomy.groups.some((group) => group.id === definition.group)
+      ? [[code, { ...definition, uses }]] : [];
+  }));
+  const useTaxonomy: UseTaxonomy = { ...taxonomy, filters };
+  const assets: Record<number, LibraryAsset> = {};
+  for (const group of groups) {
+    for (const bucket of group.tones) {
+      for (const id of bucket.ids) {
+        const description = payload.descriptions?.[id];
+        assets[id] = { id, groupKey: group.key, groupLabel: group.label,
+          tone: group.key === "basic-shape" ? "mono" : bucket.tone,
+          description: description?.description ?? "", uses: description?.uses ?? [] };
+      }
+    }
+  }
   return {
     groups,
+    assets,
+    useTaxonomy,
     total: groups.reduce((sum, group) => sum + group.ids.length, 0),
     hiddenCount: countHiddenIds(payload, missing),
     source,
     fetchedAt: Date.now(),
     fromBrowserCache,
   };
+}
+
+function normalizeLookupValue(value: string): string {
+  return value.normalize("NFKC").trim();
+}
+
+function queryTokens(query?: string): string[] {
+  return normalizeLookupValue(query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+function libraryCategoryDefinitions(state: LibraryCatalogState): { key: string; label: string }[] {
+  return [
+    { key: "all", label: "全部素材" },
+    { key: "icons", label: "图标" },
+    ...state.groups.map(({ key, label }) => ({ key, label })),
+  ];
+}
+
+/** 只接受稳定分类 key 或完整名称；汇总「图标」包含三种原有图标分类。 */
+export function resolveLibraryCategory(state: LibraryCatalogState, value?: string): string | undefined {
+  const selected = normalizeLookupValue(value ?? "");
+  if (!selected || selected === "all" || selected === "全部素材") return undefined;
+  const definitions = libraryCategoryDefinitions(state);
+  if (definitions.some((category) => category.key === selected)) return selected;
+  const matches = definitions.filter((category) => normalizeLookupValue(category.label) === selected);
+  if (matches.length === 1) return matches[0].key;
+  if (matches.length > 1) {
+    throw new Error(`图形分类名称“${selected}”对应多个分类：${matches.map((category) => category.key).join("、")}。请使用 key，并调用 list_asset_categories 查看可用分类。`);
+  }
+  throw new Error(`未知图形分类“${selected}”。请先调用 list_asset_categories 获取可用的 key 和完整名称。`);
+}
+
+/** 保留所有匹配 ID，供用途发现、分页搜索与整包候选筛选共享。 */
+export function scopeLibraryAssetIds(state: LibraryCatalogState, options: AssetScopeOptions = {}): number[] {
+  const category = resolveLibraryCategory(state, options.category);
+  if (options.tone !== undefined && options.tone !== "mono" && options.tone !== "color") {
+    throw new Error(`未知素材色态“${options.tone}”。tone 仅支持 mono（单色）或 color（彩色）。`);
+  }
+  return Object.values(state.assets).filter((asset) =>
+    (!category || (category === "icons" ? ICON_CATEGORY_KEYS.has(asset.groupKey) : asset.groupKey === category)) &&
+    (!options.tone || asset.tone === options.tone)
+  ).map((asset) => asset.id).sort((a, b) => a - b);
+}
+
+/** 分类名称检索与素材计数；不改写页面的原有分类定义。 */
+export function listLibraryAssetCategories(
+  state: LibraryCatalogState, options: { query?: string; tone?: LibraryTone } = {}
+): LibraryAssetCategory[] {
+  const tokens = queryTokens(options.query);
+  return libraryCategoryDefinitions(state).filter(({ key, label }) => {
+    const searchable = normalizeLookupValue(`${key} ${label}`).toLowerCase();
+    return tokens.every((token) => searchable.includes(token));
+  }).map(({ key, label }) => {
+    const ids = scopeLibraryAssetIds(state, { category: key, tone: options.tone });
+    const toneCounts = new Map<LibraryTone | null, number>();
+    for (const id of ids) {
+      const tone = state.assets[id].tone;
+      toneCounts.set(tone, (toneCounts.get(tone) ?? 0) + 1);
+    }
+    const toneLabels = { mono: "单色", color: "彩色" };
+    const tones = (["mono", "color", null] as const).flatMap((tone) => {
+      const count = toneCounts.get(tone) ?? 0;
+      return count ? [{ tone, label: tone === null ? "未指定色态" : toneLabels[tone], count }] : [];
+    });
+    return { key, label, count: ids.length, tones };
+  });
+}
+
+/** 用途中类、细用途和用途分组均支持精确代码或完整名称。 */
+export function resolveLibraryUse(state: LibraryCatalogState, value?: string): string | undefined {
+  const selected = normalizeLookupValue(value ?? "");
+  if (!selected || selected === "all" || selected === "全部用途") return undefined;
+  const { filters = {}, uses, groups } = state.useTaxonomy;
+  if (Object.prototype.hasOwnProperty.call(filters, selected) || Object.prototype.hasOwnProperty.call(uses, selected)) {
+    return selected;
+  }
+  // 中文名称优先匹配界面的 40 个中类；精细用途可显式传代码。
+  const purposeMatches = Object.entries(filters).filter(([, definition]) => normalizeLookupValue(definition.label) === selected);
+  if (purposeMatches.length === 1) return purposeMatches[0][0];
+  if (purposeMatches.length > 1) {
+    throw new Error(`用途名称“${selected}”对应多个用途：${purposeMatches.map(([code]) => code).join("、")}。请使用用途代码，并调用 list_asset_uses 查看。`);
+  }
+  const definitions = [
+    ...Object.entries(filters).map(([code, definition]) => ({ code, label: definition.label })),
+    ...Object.entries(uses).map(([code, definition]) => ({ code, label: definition.label })),
+    ...groups.map((group) => ({ code: `group:${group.id}`, label: group.label })),
+  ];
+  if (selected.startsWith("group:")) {
+    const groupValue = selected.slice(6);
+    const matches = groups.filter((group) => group.id === groupValue || normalizeLookupValue(group.label) === groupValue);
+    if (matches.length === 1) return `group:${matches[0].id}`;
+    if (matches.length > 1) {
+      throw new Error(`用途分组名称“${groupValue}”对应多个分组：${matches.map((group) => `group:${group.id}`).join("、")}。请使用分组代码，并调用 list_asset_uses 查看。`);
+    }
+  } else {
+    const matches = definitions.filter((definition) => normalizeLookupValue(definition.label) === selected);
+    if (matches.length === 1) return matches[0].code;
+    if (matches.length > 1) {
+      throw new Error(`用途名称“${selected}”对应多个用途：${matches.map((definition) => definition.code).join("、")}。请使用用途代码，并调用 list_asset_uses 查看。`);
+    }
+  }
+  throw new Error(`未知用途“${selected}”。请先调用 list_asset_uses 获取可用的用途代码和完整名称。`);
+}
+
+/** 用途筛选与 ID / 描述 / 中文同义词搜索，页面和 AI 工具共享同一套规则。 */
+export function filterLibraryAssetIds(
+  state: LibraryCatalogState, ids: number[], options: { query?: string; use?: string } = {}
+): number[] {
+  const tokens = queryTokens(options.query);
+  // 页面已有筛选在字典缺失/更新时允许暂时为空；AI 查询在上层校验代码。
+  const selected = options.use && options.use !== "all" ? options.use : undefined;
+  return ids.filter((id) => {
+    const asset = state.assets[id];
+    if (!asset) return false;
+    if (selected) {
+      const filter = state.useTaxonomy.filters?.[selected];
+      const matches = selected.startsWith("group:")
+        ? asset.uses.some((code) => state.useTaxonomy.uses[code]?.group === selected.slice(6))
+        : filter ? filter.uses.some((code) => asset.uses.includes(code)) : asset.uses.includes(selected);
+      if (!matches) return false;
+    }
+    if (!tokens.length) return true;
+    const purposes = asset.uses.flatMap((code) => {
+      const definition = state.useTaxonomy.uses[code];
+      const group = state.useTaxonomy.groups.find((item) => item.id === definition?.group);
+      return [code, definition?.label ?? "", ...(definition?.keywords ?? []), group?.label ?? ""];
+    });
+    const filters = Object.entries(state.useTaxonomy.filters ?? {}).flatMap(([code, definition]) =>
+      definition.uses.some((use) => asset.uses.includes(use)) ? [code, definition.label, ...definition.keywords] : []
+    );
+    const searchable = [id, asset.description, asset.groupLabel, ...purposes, ...filters].join(" ").normalize("NFKC").toLowerCase();
+    return tokens.every((token) => searchable.includes(token));
+  });
+}
+
+export type AssetSearchOptions = {
+  query?: string; use?: string; category?: string; tone?: LibraryTone; offset?: number; limit?: number;
+};
+
+/** 返回完整候选集；offset / limit 仅用于 searchLibraryAssets 的结果分页。 */
+export function queryLibraryAssetIds(state: LibraryCatalogState, options: AssetSearchOptions = {}): number[] {
+  return filterLibraryAssetIds(state, scopeLibraryAssetIds(state, options), { ...options, use: resolveLibraryUse(state, options.use) });
+}
+
+export function searchLibraryAssets(state: LibraryCatalogState, options: AssetSearchOptions = {}) {
+  const matched = queryLibraryAssetIds(state, options);
+  const offset = Math.max(0, Math.floor(options.offset ?? 0));
+  const limit = Math.max(1, Math.min(100, Math.floor(options.limit ?? 20)));
+  const selected = matched.slice(offset, offset + limit);
+  return { matched: matched.length, offset, count: selected.length,
+    nextOffset: offset + selected.length < matched.length ? offset + selected.length : null,
+    assets: selected.map((id) => ({ ...state.assets[id], imageUrl: imageUrl(id),
+      useLabels: state.assets[id].uses.map((code) => state.useTaxonomy.uses[code]?.label ?? code) })) };
 }
 
 type CatalogResponse =
@@ -292,7 +500,7 @@ async function revalidate(): Promise<void> {
     const result = await requestCatalog({ refresh: false, etag: cached.etag });
     if (result.notModified) {
       writeJson(CATALOG_CACHE_KEY, { ...cached, etag: result.etag ?? cached.etag, fetchedAt: Date.now() / 1000 });
-      emit(toState(cached.payload, "browser", true));
+      emit(toCatalogState(cached.payload, "browser", true));
       return;
     }
     writeJson(CATALOG_CACHE_KEY, {
@@ -301,7 +509,7 @@ async function revalidate(): Promise<void> {
       fetchedAt: Date.now() / 1000,
       payload: result.payload,
     });
-    emit(toState(result.payload, "network", false));
+    emit(toCatalogState(result.payload, "network", false));
   } catch {
     // 后台校验失败不影响已渲染内容
   }
@@ -317,7 +525,7 @@ export async function loadLibraryCatalog(options: { refresh?: boolean } = {}): P
   const age = cached ? Date.now() - cached.fetchedAt * 1000 : Number.POSITIVE_INFINITY;
 
   if (cached && age < CATALOG_TTL_MS) {
-    const state = toState(cached.payload, "browser", true);
+    const state = toCatalogState(cached.payload, "browser", true);
     emit(state);
     void revalidate();
     return state;
@@ -332,7 +540,7 @@ export async function loadLibraryCatalog(options: { refresh?: boolean } = {}): P
       const result = await requestCatalog({ refresh, etag: refresh ? null : cached?.etag });
       if (result.notModified && cached) {
         writeJson(CATALOG_CACHE_KEY, { ...cached, etag: result.etag ?? cached.etag, fetchedAt: Date.now() / 1000 });
-        const state = toState(cached.payload, "browser", true);
+        const state = toCatalogState(cached.payload, "browser", true);
         emit(state);
         return state;
       }
@@ -343,14 +551,14 @@ export async function loadLibraryCatalog(options: { refresh?: boolean } = {}): P
           fetchedAt: Date.now() / 1000,
           payload: result.payload,
         });
-        const state = toState(result.payload, "network", false);
+        const state = toCatalogState(result.payload, "network", false);
         emit(state);
         return state;
       }
       throw new Error("素材索引返回了意外的空响应");
     } catch (error) {
       if (cached) {
-        const state = toState(cached.payload, "offline", true);
+        const state = toCatalogState(cached.payload, "offline", true);
         emit(state);
         return state;
       }

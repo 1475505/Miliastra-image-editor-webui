@@ -3,6 +3,7 @@ import { registerEditorTools, type EditorBridge, type ElementPatch, type Element
 import { useI18n } from "./i18n";
 import {
   assetMaskUrl,
+  filterLibraryAssetIds,
   getCachedLibraryCatalog,
   imageUrl,
   loadLibraryCatalog,
@@ -356,6 +357,7 @@ function App() {
   const [assetTone, setAssetTone] = useState<string>("all");
   const isCanvasTransparent = scene.canvas.background === TRANSPARENT_BACKGROUND;
   const [assetQuery, setAssetQuery] = useState("");
+  const [assetUse, setAssetUse] = useState("all");
   const [assetLimit, setAssetLimit] = useState(ASSET_PAGE_SIZE);
   const [assetLoading, setAssetLoading] = useState(false);
   const [assetError, setAssetError] = useState("");
@@ -430,7 +432,15 @@ function App() {
 
   const baseShapePresets = scene.library.baseShapePresets ?? defaultBaseShapePresets;
 
-  const assetGroups = assetCatalog?.groups ?? [];
+  const assetGroups = useMemo<LibraryGroup[]>(() => {
+    if (!assetCatalog) return [];
+    const assets = Object.values(assetCatalog.assets);
+    const tones: LibraryToneBucket[] = (["mono", "color", null] as const).map((tone) => ({
+      tone, label: toneLabel(tone), ids: assets.filter((asset) => asset.tone === tone).map((asset) => asset.id)
+    })).filter((bucket) => bucket.ids.length > 0);
+    return [{ key: "all", label: t("library.allAssets"), ids: assets.map((asset) => asset.id).sort((a, b) => a - b), tones },
+      ...assetCatalog.groups];
+  }, [assetCatalog, t]);
   const activeAssetGroup = useMemo<LibraryGroup | null>(
     () => assetGroups.find((group) => group.key === assetGroupKey) ?? assetGroups[0] ?? null,
     [assetGroups, assetGroupKey]
@@ -452,12 +462,18 @@ function App() {
   }, [activeAssetGroup, assetTone, hasToneSplit, toneBuckets]);
 
   const filteredAssetIds = useMemo(() => {
-    const query = assetQuery.trim();
-    if (!query) {
-      return scopedAssetIds;
+    return assetCatalog ? filterLibraryAssetIds(assetCatalog, scopedAssetIds, { query: assetQuery, use: assetUse }) : [];
+  }, [assetCatalog, scopedAssetIds, assetQuery, assetUse]);
+  const assetUseCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const id of scopedAssetIds) {
+      const uses = assetCatalog?.assets[id]?.uses ?? [];
+      for (const [code, filter] of Object.entries(assetCatalog?.useTaxonomy.filters ?? {})) {
+        if (filter.uses.some((use) => uses.includes(use))) counts.set(code, (counts.get(code) ?? 0) + 1);
+      }
     }
-    return scopedAssetIds.filter((id) => String(id).includes(query));
-  }, [scopedAssetIds, assetQuery]);
+    return counts;
+  }, [assetCatalog, scopedAssetIds]);
 
   const visibleAssetIds = useMemo(
     () => filteredAssetIds.slice(0, assetLimit),
@@ -471,7 +487,7 @@ function App() {
     if (tone === "color") {
       return t("library.toneColor");
     }
-    return t("library.toneAll");
+    return t("library.toneOther");
   }
 
   function toneBucketCount(bucket: LibraryToneBucket): number {
@@ -600,7 +616,7 @@ function App() {
 
   useEffect(() => {
     setAssetLimit(ASSET_PAGE_SIZE);
-  }, [assetGroupKey, assetTone, assetQuery]);
+  }, [assetGroupKey, assetTone, assetQuery, assetUse]);
 
   useEffect(() => {
     zoomRef.current = zoom;
@@ -1824,24 +1840,28 @@ function App() {
             </div>
           ) : leftTab === "library" ? (
             <div className="panel-scroll stack">
-              <label className="field">
-                <span>{t("library.category")}</span>
+              <div className="field">
+                <span className="asset-category-heading">
+                  {t("library.category")}
+                  <button type="button" className="asset-retry" disabled={assetLoading} onClick={() => void reloadAssetCatalog(true)}>
+                    {t("library.refresh")}
+                  </button>
+                </span>
                 <select
+                  aria-label={t("library.category")}
                   value={activeAssetGroup?.key ?? ""}
                   onChange={(event) => selectAssetGroup(event.target.value)}
                   disabled={!assetGroups.length}
                 >
                   {assetGroups.length ? (
                     assetGroups.map((group) => (
-                      <option key={group.key} value={group.key}>
-                        {group.label} · {group.ids.length}
-                      </option>
+                      <option key={group.key} value={group.key}>{group.label} · {group.ids.length}</option>
                     ))
                   ) : (
                     <option value="">{assetLoading ? t("library.loading") : t("library.loadFailed")}</option>
                   )}
                 </select>
-              </label>
+              </div>
 
               {assetError ? (
                 <div className="tip-box asset-error">
@@ -1885,12 +1905,31 @@ function App() {
                     <div className="field-hint">{t("library.toneMonoHint")}</div>
                   ) : null}
 
+                  {Object.keys(assetCatalog?.useTaxonomy.filters ?? {}).length ? (
+                    <label className="field">
+                      <span>{t("library.use")}</span>
+                      <select value={assetUse} onChange={(event) => setAssetUse(event.target.value)}>
+                        <option value="all">{t("library.allUses")}</option>
+                        {assetCatalog?.useTaxonomy.groups.map((group) => (
+                          <optgroup key={group.id} label={group.label}>
+                            {Object.entries(assetCatalog.useTaxonomy.filters ?? {})
+                              .filter(([, definition]) => definition.group === group.id)
+                              .map(([code, definition]) => (
+                                <option key={code} value={code}>{definition.label} · {assetUseCounts.get(code) ?? 0}</option>
+                              ))}
+                          </optgroup>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+
                   <input
                     value={assetQuery}
                     onChange={(event) => setAssetQuery(event.target.value)}
                     placeholder={t("library.searchPlaceholder")}
-                    inputMode="numeric"
+                    aria-label={t("library.searchPlaceholder")}
                   />
+                  <div className="field-hint">{t("library.matchCount", { n: filteredAssetIds.length })}</div>
 
                   <div className="asset-grid" onScroll={handleAssetGridScroll}>
                     {visibleAssetIds.map((id) => {
@@ -1910,7 +1949,7 @@ function App() {
                             )
                           }
                           onDoubleClick={() => addAssetToCanvas(id, isMono, activeAssetGroup?.label)}
-                          title={`${id} · ${t("library.dragHint")}`}
+                          title={`${id} · ${assetCatalog?.assets[id]?.description || t("library.dragHint")}`}
                         >
                           <span className="asset-thumb">
                             <img src={imageUrl(id)} alt="" loading="lazy" decoding="async" draggable={false} />
@@ -1928,7 +1967,15 @@ function App() {
                     <div className="asset-detail">
                       <div className="asset-detail-head">
                         <strong>{selectedAssetId}</strong>
-                        <span>{activeAssetGroup?.label}</span>
+                        <span>{assetCatalog?.assets[selectedAssetId]?.groupLabel ?? activeAssetGroup?.label}</span>
+                      </div>
+                      {assetCatalog?.assets[selectedAssetId]?.description ? (
+                        <p className="asset-description">{assetCatalog.assets[selectedAssetId].description}</p>
+                      ) : null}
+                      <div className="asset-use-tags">
+                        {(assetCatalog?.assets[selectedAssetId]?.uses ?? []).map((code) => (
+                          <span key={code}>{assetCatalog?.useTaxonomy.uses[code]?.label ?? code}</span>
+                        ))}
                       </div>
                       <div className="asset-detail-meta">
                         {assetMeta?.status === "loading" ? <span>{t("library.metaLoading")}</span> : null}

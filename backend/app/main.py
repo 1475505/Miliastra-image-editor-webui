@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool, StrictInt
 from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFont, PngImagePlugin
 
 from . import image_library, lua_scene
@@ -260,6 +260,15 @@ class ExportRequest(BaseModel):
     giaGroupName: str = Field(default_factory=default_gia_group_name)
 
 
+class AssetPackRequest(BaseModel):
+    ids: list[StrictInt] | None = None
+    all: StrictBool = False
+
+
+class ContactSheetRequest(BaseModel):
+    ids: list[StrictInt]
+
+
 app = FastAPI(title="Miliastra Image Editor API")
 app.add_middleware(
     CORSMiddleware,
@@ -288,7 +297,7 @@ def library_proxy_response(
 
 @app.get("/api/library/catalog")
 def library_catalog(request: Request, refresh: bool = False) -> Response:
-    """图片素材库索引（data.json + 中英分类名合并后的单一响应）。"""
+    """图片素材索引、中英分类名、简洁描述与用途字典的合并响应。"""
     try:
         result = image_library.get_catalog_bundle(request.headers.get("if-none-match"), force=refresh)
     except image_library.LibraryUpstreamError as error:
@@ -329,6 +338,74 @@ def library_sprite(image_id: str, request: Request, refresh: bool = False) -> Re
     except image_library.LibraryUpstreamError as error:
         raise HTTPException(status_code=502, detail=f"素材贴图不可用：{error}") from error
     return library_proxy_response(result, media_type="image/png")
+
+
+def _library_download_response(build, *, media_type: str, filename: str) -> Response:
+    try:
+        content = build()
+    except image_library.LibrarySelectionError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except image_library.LibrarySizeError as error:
+        raise HTTPException(status_code=413, detail=str(error)) from error
+    except image_library.LibraryUpstreamError as error:
+        raise HTTPException(status_code=502, detail=f"素材索引不可用：{error}") from error
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Cache-Control": "no-store",
+    }
+    if media_type == "image/png":
+        headers["X-Asset-IDs"] = ""
+        headers["X-Failed-Asset-IDs"] = ""
+        try:
+            with Image.open(io.BytesIO(content)) as preview:
+                headers["X-Asset-IDs"] = preview.info.get("AssetIDs", "")
+                headers["X-Failed-Asset-IDs"] = preview.info.get("FailedAssetIDs", "")
+        except (OSError, ValueError):
+            pass
+    return Response(content, media_type=media_type, headers=headers)
+
+
+def _library_query_ids(ids: str | None) -> list[int] | None:
+    if ids is None:
+        return None
+    values = ids.split(",")
+    if not values or any(not image_library.IMAGE_ID_RE.fullmatch(value.strip()) for value in values):
+        raise HTTPException(status_code=400, detail="ids 必须是逗号分隔的六位素材 ID")
+    return [int(value.strip()) for value in values]
+
+
+@app.get("/api/library/assets.zip")
+def library_assets_zip_get(ids: str | None = None, all: bool = False) -> Response:
+    selected = _library_query_ids(ids)
+    return _library_download_response(
+        lambda: image_library.build_asset_pack(selected, all_assets=all),
+        media_type="application/zip", filename="miliastra-assets.zip",
+    )
+
+
+@app.post("/api/library/assets.zip")
+def library_assets_zip_post(selection: AssetPackRequest) -> Response:
+    return _library_download_response(
+        lambda: image_library.build_asset_pack(selection.ids, all_assets=selection.all),
+        media_type="application/zip", filename="miliastra-assets.zip",
+    )
+
+
+@app.get("/api/library/contact-sheet")
+def library_contact_sheet_get(ids: str) -> Response:
+    selected = _library_query_ids(ids)
+    return _library_download_response(
+        lambda: image_library.build_contact_sheet(selected),
+        media_type="image/png", filename="miliastra-contact-sheet.png",
+    )
+
+
+@app.post("/api/library/contact-sheet")
+def library_contact_sheet_post(selection: ContactSheetRequest) -> Response:
+    return _library_download_response(
+        lambda: image_library.build_contact_sheet(selection.ids),
+        media_type="image/png", filename="miliastra-contact-sheet.png",
+    )
 
 
 @app.post("/api/import", response_model=ImportResponse)

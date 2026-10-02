@@ -16,6 +16,9 @@ CATALOG = {
 }
 NAMES_ZH = {"1": "底板-单色"}
 NAMES_EN = {"1": "Surface - Monochrome"}
+DESCRIPTIONS = [{"assetID": 106001, "description": "白色细线方框，适合面板描边。", "uses": ["container.frame"]}]
+USE_TAXONOMY = {"schemaVersion": 1, "groups": [{"id": "container", "label": "面板与容器"}],
+                "uses": {"container.frame": {"group": "container", "label": "内容边框", "keywords": ["面板描边", "图片框"]}}}
 
 
 def make_request(headers: dict | None = None) -> Request:
@@ -60,6 +63,8 @@ def standard_files(zh_etag: str = "zh111") -> dict[str, tuple[object, str]]:
         "data.json": (CATALOG, "cat111"),
         "i18n/zh-cn.json": (NAMES_ZH, zh_etag),
         "i18n/en-us.json": (NAMES_EN, "en111"),
+        "desc.json": (DESCRIPTIONS, "desc111"),
+        "category.json": (USE_TAXONOMY, "use111"),
     }
 
 
@@ -99,11 +104,11 @@ class HelperTests(unittest.TestCase):
         self.assertFalse(meta["stretchable"])
 
     def test_bundle_etag_round_trip(self):
-        etag = image_library.build_bundle_etag(("cat111", "zh111", "en111"))
-        self.assertEqual(etag, '"m1.cat111.zh111.en111"')
-        self.assertEqual(image_library.parse_bundle_etag(etag), ("cat111", "zh111", "en111"))
-        self.assertEqual(image_library.parse_bundle_etag('W/"m1.a.b.c"'), ("a", "b", "c"))
-        self.assertEqual(image_library.parse_bundle_etag('"other", "m1.a.b.c"'), ("a", "b", "c"))
+        etag = image_library.build_bundle_etag(("cat111", "zh111", "en111", "desc111", "use111"))
+        self.assertEqual(etag, '"m2.cat111.zh111.en111.desc111.use111"')
+        self.assertEqual(image_library.parse_bundle_etag(etag), ("cat111", "zh111", "en111", "desc111", "use111"))
+        self.assertEqual(image_library.parse_bundle_etag('W/"m2.a.b.c.d.e"'), ("a", "b", "c", "d", "e"))
+        self.assertEqual(image_library.parse_bundle_etag('"other", "m2.a.b.c.d.e"'), ("a", "b", "c", "d", "e"))
 
     def test_parse_bundle_etag_rejects_garbage(self):
         for bad in (None, "", '"m1..b.c"', '"m2.a.b.c"', '"m1.a.b"', "not-an-etag"):
@@ -129,15 +134,18 @@ class CatalogTests(unittest.TestCase):
         result = self.run_bundle(upstream)
 
         self.assertFalse(result.not_modified)
-        self.assertEqual(upstream.paths(), ["data.json", "i18n/zh-cn.json", "i18n/en-us.json"])
+        self.assertEqual(upstream.paths(), ["data.json", "i18n/zh-cn.json", "i18n/en-us.json", "desc.json", "category.json"])
         self.assertIsNone(upstream.calls[0][1], "冷请求不应带 If-None-Match")
-        self.assertEqual(result.etag, '"m1.cat111.zh111.en111"')
+        self.assertEqual(result.etag, '"m2.cat111.zh111.en111.desc111.use111"')
 
         bundle = json.loads(result.payload)
         self.assertIn("106001", bundle["images"])
         self.assertEqual(bundle["categories"]["1"]["images"], [106001])
         self.assertEqual(bundle["names"]["zh-CN"], NAMES_ZH)
         self.assertEqual(bundle["names"]["en-US"], NAMES_EN)
+        self.assertEqual(bundle["descriptions"]["106001"]["description"], DESCRIPTIONS[0]["description"])
+        self.assertEqual(bundle["descriptions"]["106001"]["uses"], ["container.frame"])
+        self.assertEqual(bundle["useTaxonomy"], USE_TAXONOMY)
 
     def test_revalidation_hit_transfers_no_body(self):
         upstream = FakeUpstream(standard_files())
@@ -149,7 +157,7 @@ class CatalogTests(unittest.TestCase):
         self.assertTrue(second.not_modified)
         self.assertIsNone(second.payload)
         self.assertEqual(second.etag, first.etag)
-        self.assertEqual(len(upstream.calls), 3)
+        self.assertEqual(len(upstream.calls), 5)
         for path, header in upstream.calls:
             with self.subTest(path=path):
                 self.assertIsNotNone(header, "校验请求必须带上上游 ETag")
@@ -164,7 +172,7 @@ class CatalogTests(unittest.TestCase):
 
         self.assertFalse(second.not_modified)
         self.assertNotEqual(second.etag, first.etag)
-        self.assertEqual(second.etag, '"m1.cat111.zh222.en111"')
+        self.assertEqual(second.etag, '"m2.cat111.zh222.en111.desc111.use111"')
         bundle = json.loads(second.payload)
         self.assertEqual(bundle["names"]["zh-CN"], {"1": "底板-彩色"})
         self.assertEqual(bundle["names"]["en-US"], NAMES_EN)
@@ -182,6 +190,113 @@ class CatalogTests(unittest.TestCase):
 
         self.assertFalse(result.not_modified)
         self.assertTrue(all(header is None for _path, header in upstream.calls))
+
+    def test_description_change_invalidates_merged_catalog(self):
+        upstream = FakeUpstream(standard_files())
+        first = self.run_bundle(upstream)
+        upstream.files["desc.json"] = ([{**DESCRIPTIONS[0], "description": "新的面板描边描述。"}], "desc222")
+        second = self.run_bundle(upstream, if_none_match=first.etag)
+        self.assertFalse(second.not_modified)
+        self.assertNotEqual(first.etag, second.etag)
+        self.assertEqual(json.loads(second.payload)["descriptions"]["106001"]["description"], "新的面板描边描述。")
+
+    def test_use_keyword_change_invalidates_merged_catalog(self):
+        upstream = FakeUpstream(standard_files())
+        first = self.run_bundle(upstream)
+        updated = json.loads(json.dumps(USE_TAXONOMY))
+        updated["uses"]["container.frame"]["keywords"].append("面板框")
+        upstream.files["category.json"] = (updated, "use222")
+        second = self.run_bundle(upstream, if_none_match=first.etag)
+        self.assertFalse(second.not_modified)
+        self.assertIn("面板框", json.loads(second.payload)["useTaxonomy"]["uses"]["container.frame"]["keywords"])
+
+    def test_use_filters_preserve_middle_level_mapping(self):
+        files = standard_files()
+        taxonomy = {**USE_TAXONOMY, "filters": {
+            "purpose.frames": {"group": "container", "label": "边框与描边",
+                               "keywords": ["轮廓", "外框"], "uses": ["container.frame"]},
+        }}
+        files["category.json"] = (taxonomy, "use222")
+
+        bundle = json.loads(self.run_bundle(FakeUpstream(files)).payload)
+
+        self.assertEqual(bundle["useTaxonomy"], taxonomy)
+        self.assertEqual(bundle["descriptions"]["106001"]["uses"], ["container.frame"])
+
+    def test_use_filters_drop_invalid_definitions_and_clean_mapping(self):
+        files = standard_files()
+        valid = {"group": "container", "label": "边框与描边", "uses": ["container.frame"]}
+        taxonomy = {**USE_TAXONOMY, "filters": {
+            "purpose.frames": {**valid, "keywords": ["外框", 42, None, {}],
+                               "uses": ["unknown", "container.frame", "container.frame", {}, None]},
+            "empty-keywords": {**valid, "keywords": "轮廓"},
+            "bad-group": {**valid, "group": "unknown"},
+            "non-string-group": {**valid, "group": {}},
+            "bad-label": {**valid, "label": None},
+            "no-mapping": {**valid, "uses": ["unknown", None]},
+            "non-list-mapping": {**valid, "uses": "container.frame"},
+            "non-object": [],
+        }}
+        files["category.json"] = (taxonomy, "use222")
+
+        bundle = json.loads(self.run_bundle(FakeUpstream(files)).payload)
+
+        self.assertEqual(bundle["useTaxonomy"]["filters"], {
+            "purpose.frames": {**valid, "keywords": ["外框"]},
+            "empty-keywords": {**valid, "keywords": []},
+        })
+        self.assertEqual(bundle["useTaxonomy"]["uses"], USE_TAXONOMY["uses"])
+
+    def test_non_object_use_filters_leave_original_taxonomy_shape(self):
+        files = standard_files()
+        files["category.json"] = ({**USE_TAXONOMY, "filters": []}, "use222")
+
+        bundle = json.loads(self.run_bundle(FakeUpstream(files)).payload)
+
+        self.assertEqual(bundle["useTaxonomy"], USE_TAXONOMY)
+
+    def test_optional_files_can_be_published_after_first_load(self):
+        files = standard_files()
+        files.pop("desc.json")
+        files.pop("category.json")
+        upstream = FakeUpstream(files)
+        first = self.run_bundle(upstream)
+        self.assertEqual(json.loads(first.payload)["descriptions"], {})
+        self.assertTrue(self.run_bundle(upstream, if_none_match=first.etag).not_modified)
+        upstream.files.update(standard_files())
+        published = self.run_bundle(upstream, if_none_match=first.etag)
+        self.assertFalse(published.not_modified)
+        self.assertIn("106001", json.loads(published.payload)["descriptions"])
+
+    def test_unknown_or_missing_images_and_unknown_uses_are_excluded(self):
+        files = standard_files()
+        files["data.json"] = ({**CATALOG, "imageData": {**CATALOG["imageData"], "106002": {"id": 106002, "img": ""}}}, "cat222")
+        files["desc.json"] = ([{**DESCRIPTIONS[0], "uses": ["container.frame", "unknown", "container.frame"]},
+                               {**DESCRIPTIONS[0], "assetID": 106002}, {**DESCRIPTIONS[0], "assetID": 999999}], "desc222")
+        descriptions = json.loads(self.run_bundle(FakeUpstream(files)).payload)["descriptions"]
+        self.assertEqual(set(descriptions), {"106001"})
+        self.assertEqual(descriptions["106001"]["uses"], ["container.frame"])
+
+    def test_optional_upstream_failure_does_not_break_image_catalog(self):
+        upstream = FakeUpstream(standard_files())
+        def fetch(path, **kwargs):
+            if path == "desc.json":
+                raise image_library.LibraryUpstreamError("HTTP 403")
+            return upstream(path, **kwargs)
+        with mock.patch.object(image_library, "fetch_document", side_effect=fetch):
+            bundle = json.loads(image_library.get_catalog_bundle().payload)
+        self.assertIn("106001", bundle["images"])
+        self.assertEqual(bundle["descriptions"], {})
+
+    def test_invalid_optional_json_and_use_definitions_are_tolerated(self):
+        files = standard_files()
+        files["desc.json"] = (b'{"broken": ', "desc222")
+        files["category.json"] = ({"schemaVersion": 1, "groups": USE_TAXONOMY["groups"],
+                                      "uses": {"broken": {"group": {}, "label": "错误"}}}, "use222")
+        bundle = json.loads(self.run_bundle(FakeUpstream(files)).payload)
+        self.assertIn("106001", bundle["images"])
+        self.assertEqual(bundle["descriptions"], {})
+        self.assertEqual(bundle["useTaxonomy"]["uses"], {})
 
     def test_missing_i18n_is_tolerated(self):
         files = standard_files()
@@ -304,7 +419,7 @@ class EndpointTests(unittest.TestCase):
             response = library_catalog(make_request())
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.headers["etag"], '"m1.cat111.zh111.en111"')
+        self.assertEqual(response.headers["etag"], '"m2.cat111.zh111.en111.desc111.use111"')
         self.assertIn("max-age=43200", response.headers["cache-control"])
         self.assertEqual(json.loads(response.body)["categories"]["1"]["images"], [106001])
 
