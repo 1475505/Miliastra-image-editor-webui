@@ -1,28 +1,14 @@
-# 图片描述与用途索引：R2 上传和接入
+# 图片描述与用途索引：OSS 接入
 
-`docs/desc.json` 保存各图片的简洁描述和精细用途代码；`docs/category.json` 保存用途分组、中文名称、同义词，以及供界面筛选的 40 个中间用途分类。两份文件通过 `assetID` 补充现有 `data.json`。
+生产素材数据以以下 OSS 地址为唯一来源，仓库不保存完整字典或描述副本：
 
-本次用途分类更新只需覆盖上传 `docs/category.json`，`desc.json` 没有变化。首次接入时再按下面步骤上传两份文件。
+- [素材索引](https://oss.070077.xyz/images/data.json)
+- [图片描述](https://oss.070077.xyz/images/desc.json)
+- [用途字典](https://oss.070077.xyz/images/category.json)
 
-## 上传到现有 R2 桶
+`desc.json` 通过 `assetID` 补充图片描述和精细用途代码；`category.json` 定义用途分组、名称、同义词及中间用途的 `filters` 映射。后端运行时从这些地址获取数据，不读取仓库 JSON，也没有内置生产数据兜底。浏览器缓存仅保存已从 OSS 获取的数据。
 
-1. 打开 Cloudflare 控制台，进入 **R2 Object Storage**，选择当前提供图片素材的桶。
-2. 找到现有 `data.json` 所在的目录，进入同一目录，点击 **Upload**。
-3. 从本项目 `docs/` 上传 `desc.json` 和 `category.json`，保留原文件名。若现有对象键为 `images/data.json`，新增对象键就是 `images/desc.json` 与 `images/category.json`。
-4. 确认下面两个地址返回 JSON：
-   - [图片描述](https://oss.070077.xyz/images/desc.json)
-   - [用途字典](https://oss.070077.xyz/images/category.json)
-
-上传入口与文件选择方式见 [Cloudflare 官方上传文档](https://developers.cloudflare.com/r2/objects/upload-objects/)。使用现有桶及域名的读取方式即可。项目通过后端请求 JSON，不需要为这一接入额外配置浏览器 CORS。
-
-若使用 Wrangler 管理桶，可在已登录 Cloudflare 的 PowerShell 中，从仓库根目录执行（将 `YOUR_BUCKET` 改成桶名；路径前缀以现有 `data.json` 为准）：
-
-```powershell
-npx wrangler r2 object put "YOUR_BUCKET/images/desc.json" --file="docs/desc.json" --content-type="application/json; charset=utf-8" --cache-control="public, max-age=300" --remote
-npx wrangler r2 object put "YOUR_BUCKET/images/category.json" --file="docs/category.json" --content-type="application/json; charset=utf-8" --cache-control="public, max-age=300" --remote
-```
-
-后续更新只需重新上传有变化的对象。若自定义域名配置了 CDN 缓存，更新后清除对应 URL 的缓存，再在编辑器图形分类旁点击“刷新”。本次只需上传 `category.json` 并清除其 URL 缓存。
+数据在 R2 中独立维护；更新对象后清除对应 URL 的 CDN 缓存，再在编辑器图形分类旁点击“刷新”，无需重新构建或发布项目。项目通过后端请求 JSON，不需要为这一接入额外配置浏览器 CORS。
 
 ## 项目接入
 
@@ -40,7 +26,7 @@ R2: data.json + i18n/zh-cn.json + i18n/en-us.json
 
 “用途”保持独立筛选栏，与“图形分类”、色态和文字搜索交叉筛选。界面提供 40 个中间用途分类，原来的 8 个用途分组只作为不可选择的段标题；129 个精细用途继续用于文字搜索、素材详情和 AI 精确查询。
 
-`category.json` 的 `filters` 字段把中间分类映射到精细用途，结构为 `Record<string, { group, label, keywords, uses: string[] }>`。例如 `purpose.avatar` 可包含 `avatar.background` 和 `avatar.frame`；选中时匹配任一精细用途，同一素材只计数一次。后端运行时从 OSS 读取 `category.json`，通过 `/api/library/catalog` 将用途字典返回前端。`docs/category.json` 仅作为上传源文件，不是前端构建依赖；更新字典后刷新图形库即可，无需重新构建前端。若字典缺失，用途筛选不可用，基本素材浏览和 ID 搜索仍可使用。
+`category.json` 的 `filters` 字段把中间分类映射到精细用途，结构为 `Record<string, { group, label, keywords, uses: string[] }>`。例如 `purpose.avatar` 可包含 `avatar.background` 和 `avatar.frame`；选中时匹配任一精细用途，同一素材只计数一次。后端运行时从 OSS 读取 `category.json`，通过 `/api/library/catalog` 将用途字典返回前端。若字典缺失，用途筛选不可用，基本素材浏览和 ID 搜索仍可使用。
 
 本地运行新版项目时，在 `frontend/` 执行 `npm run build`，重启后端；线上则按 [现有部署流程](deploy.md) 发布新版镜像。上传 JSON 后，在图形库选择“全部素材”，搜索“头像框”“按钮底板”或“分隔线”，选中素材可查看描述和用途。
 

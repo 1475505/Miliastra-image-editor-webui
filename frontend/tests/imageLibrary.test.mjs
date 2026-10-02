@@ -13,8 +13,28 @@ function moduleUrl(path) {
 
 const libraryUrl = moduleUrl("../src/imageLibrary.ts");
 const library = await import(libraryUrl);
-const descriptions = JSON.parse(readFileSync(new URL("../../docs/desc.json", import.meta.url), "utf8"));
-const taxonomy = JSON.parse(readFileSync(new URL("../../docs/category.json", import.meta.url), "utf8"));
+// 独立的最小测试样例，不读取或复制生产素材字典，也不用于运行时兜底。
+const descriptions = [
+  { assetID: 100006, description: "测试圆环", uses: ["avatar.frame"] },
+  { assetID: 107083, description: "蓝色测试底板", uses: ["button.background"] },
+  { assetID: 111001, description: "测试物品", uses: ["item.icon"] },
+  { assetID: 112001, description: "测试角色", uses: ["character.portrait"] }
+];
+const taxonomy = {
+  schemaVersion: 1,
+  groups: [{ id: "content", label: "内容" }, { id: "control", label: "交互" }],
+  uses: {
+    "avatar.frame": { group: "content", label: "头像描边", keywords: ["头像框"] },
+    "button.background": { group: "control", label: "按钮底板", keywords: [] },
+    "item.icon": { group: "content", label: "物品图标", keywords: [] },
+    "character.portrait": { group: "content", label: "角色肖像", keywords: [] }
+  },
+  filters: {
+    "purpose.avatar": { group: "content", label: "头像与徽章底框", keywords: ["头像框"], uses: ["avatar.frame"] },
+    "purpose.buttons": { group: "control", label: "按钮底板", keywords: [], uses: ["button.background"] },
+    "purpose.characters": { group: "content", label: "角色展示", keywords: [], uses: ["character.portrait"] }
+  }
+};
 const ids = [100006, 107083, 111001, 112001];
 const payload = {
   images: Object.fromEntries([...ids.map((id) => [id, { id, img: `sprite/${id}.png` }]), [119999, { id: 119999, img: "" }]]),
