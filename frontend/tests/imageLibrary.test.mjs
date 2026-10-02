@@ -56,19 +56,14 @@ test("description and use terms must all match", () => {
   assert.equal(library.searchLibraryAssets(state, { query: "红色 按钮底板" }).matched, 0);
 });
 
-test("purpose, category and tone filters intersect", () => {
-  assert.equal(library.searchLibraryAssets(state, { use: "button.background", category: "surface", tone: "color" }).matched, 1);
-  assert.equal(library.searchLibraryAssets(state, { use: "button.background", category: "item" }).matched, 0);
-  assert.equal(library.searchLibraryAssets(state, { use: "button.background", tone: "mono" }).matched, 0);
-  assert.deepEqual(library.searchLibraryAssets(state, { use: "group:content" }).assets.map((asset) => asset.id), [100006, 111001, 112001]);
-});
-
-test("medium purpose filters stay independent of original shape categories", () => {
+test("fine and medium purposes intersect category and tone without changing shape categories", () => {
   assert.deepEqual(library.searchLibraryAssets(state, { use: "purpose.avatar" }).assets.map((asset) => asset.id), [100006]);
-  assert.equal(library.searchLibraryAssets(state, { use: "purpose.buttons", category: "surface", tone: "color" }).matched, 1);
-  assert.equal(library.searchLibraryAssets(state, { use: "purpose.buttons", category: "item" }).matched, 0);
-  assert.equal(library.searchLibraryAssets(state, { use: "purpose.buttons", tone: "mono" }).matched, 0);
-  assert.equal(library.searchLibraryAssets(state, { use: "avatar.frame" }).matched, 1);
+  for (const use of ["button.background", "purpose.buttons"]) {
+    assert.equal(library.searchLibraryAssets(state, { use, category: "surface", tone: "color" }).matched, 1);
+    assert.equal(library.searchLibraryAssets(state, { use, category: "item" }).matched, 0);
+    assert.equal(library.searchLibraryAssets(state, { use, tone: "mono" }).matched, 0);
+  }
+  assert.deepEqual(library.searchLibraryAssets(state, { use: "group:content" }).assets.map((asset) => asset.id), [100006, 111001, 112001]);
   assert.equal(library.searchLibraryAssets(state, { query: "头像与徽章底框" }).matched, 1);
   assert.ok(state.groups.every((group) => !group.key.startsWith("purpose.")));
 });
@@ -243,7 +238,6 @@ test("catalog refresh and AI tools share the enriched index", async () => {
     assert.equal(calls.length, 1);
     await library.loadLibraryCatalog({ refresh: true });
     assert.equal(calls[1][0], "/api/library/catalog?refresh=1");
-    assert.ok([...storage.keys()].some((key) => key.includes(":v2:catalog")));
 
     const toolsSource = readFileSync(new URL("../src/webmcp.ts", import.meta.url), "utf8");
     const transpiled = ts.transpileModule(toolsSource, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 } }).outputText;

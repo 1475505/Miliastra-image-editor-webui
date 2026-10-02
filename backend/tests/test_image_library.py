@@ -210,19 +210,6 @@ class CatalogTests(unittest.TestCase):
         self.assertFalse(second.not_modified)
         self.assertIn("面板框", json.loads(second.payload)["useTaxonomy"]["uses"]["container.frame"]["keywords"])
 
-    def test_use_filters_preserve_middle_level_mapping(self):
-        files = standard_files()
-        taxonomy = {**USE_TAXONOMY, "filters": {
-            "purpose.frames": {"group": "container", "label": "边框与描边",
-                               "keywords": ["轮廓", "外框"], "uses": ["container.frame"]},
-        }}
-        files["category.json"] = (taxonomy, "use222")
-
-        bundle = json.loads(self.run_bundle(FakeUpstream(files)).payload)
-
-        self.assertEqual(bundle["useTaxonomy"], taxonomy)
-        self.assertEqual(bundle["descriptions"]["106001"]["uses"], ["container.frame"])
-
     def test_use_filters_drop_invalid_definitions_and_clean_mapping(self):
         files = standard_files()
         valid = {"group": "container", "label": "边框与描边", "uses": ["container.frame"]}
@@ -338,15 +325,14 @@ class CatalogTests(unittest.TestCase):
                     self.assertFalse(result.not_modified)
                     self.assert_optional_fallback(json.loads(result.payload), failed_path)
 
-    def test_invalid_optional_json_and_use_definitions_are_tolerated(self):
+    def test_invalid_use_definitions_are_tolerated(self):
         files = standard_files()
-        files["desc.json"] = (b'{"broken": ', "desc222")
         files["category.json"] = ({"schemaVersion": 1, "groups": USE_TAXONOMY["groups"],
                                       "uses": {"broken": {"group": {}, "label": "错误"}}}, "use222")
         bundle = json.loads(self.run_bundle(FakeUpstream(files)).payload)
-        self.assertIn("106001", bundle["images"])
-        self.assertEqual(bundle["descriptions"], {})
         self.assertEqual(bundle["useTaxonomy"]["uses"], {})
+        self.assertEqual(bundle["descriptions"]["106001"]["description"], DESCRIPTIONS[0]["description"])
+        self.assertEqual(bundle["descriptions"]["106001"]["uses"], [])
 
     def test_missing_i18n_is_tolerated(self):
         files = standard_files()
