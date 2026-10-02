@@ -4,10 +4,7 @@ import test from "node:test";
 import ts from "typescript";
 
 function moduleUrl(path) {
-  const source = readFileSync(new URL(path, import.meta.url), "utf8").replace(
-    'import bundledUseTaxonomy from "../../docs/category.json";',
-    `const bundledUseTaxonomy = ${readFileSync(new URL("../../docs/category.json", import.meta.url), "utf8")};`
-  );
+  const source = readFileSync(new URL(path, import.meta.url), "utf8");
   const { outputText } = ts.transpileModule(source, {
     compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext }
   });
@@ -61,7 +58,7 @@ test("category and purpose discovery accept full labels and keep invalid filters
   assert.equal(library.resolveLibraryUse(state, "角色展示"), "purpose.characters");
   assert.throws(() => library.searchLibraryAssets(state, { category: "made-up" }), /list_asset_categories/);
   assert.throws(() => library.searchLibraryAssets(state, { use: "made-up" }), /list_asset_uses/);
-  assert.equal(library.filterLibraryAssetIds(state, ids, { use: "removed.purpose" }).length, 0);
+  assert.equal(library.filterLibraryAssetIds(state, ids, { use: "removed.purpose" }).length, 4);
   const iconState = library.toCatalogState({ ...payload,
     categories: { 3: { images: [100006] }, 15: { images: [107083] }, 17: { images: [112001] }, 9: { images: [111001] } },
     names: { "zh-CN": { 3: "功能图标-单色", 15: "玩法图标-彩色", 17: "技能图标-彩色", 9: "物品-彩色" } }
@@ -73,11 +70,12 @@ test("category and purpose discovery accept full labels and keep invalid filters
   assert.ok(iconState.groups.every((group) => group.key !== "icons"));
 });
 
-test("old OSS dictionaries use bundled purpose filters; published filters take priority", () => {
+test("purpose filters come from the published catalog; missing filters retain fine searches", () => {
   const { filters: _filters, ...legacyTaxonomy } = taxonomy;
   const legacy = library.toCatalogState({ ...payload, useTaxonomy: legacyTaxonomy }, "network", false);
-  assert.equal(Object.keys(legacy.useTaxonomy.filters).length, Object.keys(taxonomy.filters).length);
-  assert.equal(library.searchLibraryAssets(legacy, { use: "purpose.avatar" }).matched, 1);
+  assert.deepEqual(legacy.useTaxonomy.filters, {});
+  assert.equal(library.searchLibraryAssets(legacy, { use: "avatar.frame" }).matched, 1);
+  assert.throws(() => library.searchLibraryAssets(legacy, { use: "purpose.avatar" }), /list_asset_uses/);
   const published = library.toCatalogState({ ...payload, useTaxonomy: { ...taxonomy, filters: {
     "purpose.custom": { group: "content", label: "Custom avatars", keywords: [], uses: ["avatar.frame", "invalid.code"] }
   } } }, "network", false);
@@ -103,7 +101,43 @@ test("catalog without optional annotations still supports browsing and ID search
   assert.equal(library.searchLibraryAssets(basic).matched, 4);
   assert.equal(library.searchLibraryAssets(basic, { query: "107083" }).matched, 1);
   assert.throws(() => library.searchLibraryAssets(basic, { use: "button.background" }), /list_asset_uses/);
-  assert.equal(library.filterLibraryAssetIds(basic, ids, { use: "purpose.avatar" }).length, 0);
+  assert.equal(library.filterLibraryAssetIds(basic, ids, { use: "purpose.avatar" }).length, 4);
+  assert.deepEqual(library.filterLibraryAssetIds(basic, ids, { use: "purpose.avatar", query: "107083" }), [107083]);
+});
+
+test("failed refresh keeps the last catalog in memory or browser storage", async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  const storage = new Map();
+  globalThis.window = { localStorage: {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: (key) => storage.delete(key)
+  } };
+  try {
+    library.clearLibraryCache();
+    globalThis.fetch = async () => new Response(JSON.stringify(payload), { headers: { ETag: '"m2.fixture"' } });
+    await library.loadLibraryCatalog();
+    const saved = [...storage.entries()];
+    globalThis.fetch = async () => { throw new Error("OSS unavailable"); };
+    storage.clear();
+    const memory = await library.loadLibraryCatalog({ refresh: true });
+    assert.equal(memory.source, "offline");
+    assert.equal(library.searchLibraryAssets(memory, { query: "107083" }).matched, 1);
+
+    library.clearLibraryCache();
+    for (const [key, value] of saved) storage.set(key, value);
+    const persisted = await library.loadLibraryCatalog({ refresh: true });
+    assert.equal(persisted.source, "offline");
+    assert.equal(library.searchLibraryAssets(persisted).matched, 4);
+
+    library.clearLibraryCache();
+    await assert.rejects(library.loadLibraryCatalog(), /OSS unavailable/);
+  } finally {
+    library.clearLibraryCache();
+    globalThis.window = originalWindow;
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("catalog refresh and AI tools share the enriched index", async () => {

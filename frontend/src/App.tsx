@@ -461,9 +461,13 @@ function App() {
     return bucket ? bucket.ids : activeAssetGroup.ids;
   }, [activeAssetGroup, assetTone, hasToneSplit, toneBuckets]);
 
+  const hasAssetUses = useMemo(
+    () => Object.values(assetCatalog?.assets ?? {}).some((asset) => asset.uses.length > 0),
+    [assetCatalog]
+  );
   const filteredAssetIds = useMemo(() => {
-    return assetCatalog ? filterLibraryAssetIds(assetCatalog, scopedAssetIds, { query: assetQuery, use: assetUse }) : [];
-  }, [assetCatalog, scopedAssetIds, assetQuery, assetUse]);
+    return assetCatalog ? filterLibraryAssetIds(assetCatalog, scopedAssetIds, { query: assetQuery, use: hasAssetUses ? assetUse : "all" }) : [];
+  }, [assetCatalog, scopedAssetIds, assetQuery, assetUse, hasAssetUses]);
   const assetUseCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const id of scopedAssetIds) {
@@ -617,6 +621,12 @@ function App() {
   useEffect(() => {
     setAssetLimit(ASSET_PAGE_SIZE);
   }, [assetGroupKey, assetTone, assetQuery, assetUse]);
+
+  useEffect(() => {
+    if (assetCatalog && assetUse !== "all" && (!hasAssetUses || !assetCatalog.useTaxonomy.filters?.[assetUse])) {
+      setAssetUse("all");
+    }
+  }, [assetCatalog, assetUse, hasAssetUses]);
 
   useEffect(() => {
     zoomRef.current = zoom;
@@ -1905,7 +1915,7 @@ function App() {
                     <div className="field-hint">{t("library.toneMonoHint")}</div>
                   ) : null}
 
-                  {Object.keys(assetCatalog?.useTaxonomy.filters ?? {}).length ? (
+                  {hasAssetUses && Object.keys(assetCatalog?.useTaxonomy.filters ?? {}).length ? (
                     <label className="field">
                       <span>{t("library.use")}</span>
                       <select value={assetUse} onChange={(event) => setAssetUse(event.target.value)}>

@@ -278,15 +278,65 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(descriptions["106001"]["uses"], ["container.frame"])
 
     def test_optional_upstream_failure_does_not_break_image_catalog(self):
-        upstream = FakeUpstream(standard_files())
-        def fetch(path, **kwargs):
-            if path == "desc.json":
-                raise image_library.LibraryUpstreamError("HTTP 403")
-            return upstream(path, **kwargs)
-        with mock.patch.object(image_library, "fetch_document", side_effect=fetch):
-            bundle = json.loads(image_library.get_catalog_bundle().payload)
-        self.assertIn("106001", bundle["images"])
-        self.assertEqual(bundle["descriptions"], {})
+        for failed_path in image_library.OPTIONAL_CATALOG_PATHS:
+            with self.subTest(path=failed_path):
+                upstream = FakeUpstream(standard_files())
+
+                def fetch(path, **kwargs):
+                    if path == failed_path:
+                        raise image_library.LibraryUpstreamError("HTTP 503 / timeout")
+                    return upstream(path, **kwargs)
+
+                with mock.patch.object(image_library, "fetch_document", side_effect=fetch):
+                    result = image_library.get_catalog_bundle()
+                self.assert_optional_fallback(json.loads(result.payload), failed_path)
+
+    def assert_optional_fallback(self, bundle, failed_path):
+        self.assertEqual(bundle["images"], CATALOG["imageData"])
+        self.assertEqual(bundle["categories"], CATALOG["category"])
+        if failed_path == "desc.json":
+            self.assertEqual(bundle["descriptions"], {})
+            self.assertEqual(bundle["useTaxonomy"], USE_TAXONOMY)
+        elif failed_path == "category.json":
+            self.assertEqual(bundle["useTaxonomy"]["uses"], {})
+            self.assertEqual(bundle["descriptions"]["106001"]["description"], DESCRIPTIONS[0]["description"])
+        else:
+            language = next(key for key, path in image_library.CATEGORY_NAME_PATHS if path == failed_path)
+            self.assertEqual(bundle["names"][language], {})
+            self.assertEqual(bundle["useTaxonomy"], USE_TAXONOMY)
+
+    def test_optional_failure_during_revalidation_or_body_refetch_is_tolerated(self):
+        for failed_path in image_library.OPTIONAL_CATALOG_PATHS:
+            for phase in ("conditional", "body-refetch"):
+                with self.subTest(path=failed_path, phase=phase):
+                    upstream = FakeUpstream(standard_files())
+                    first = self.run_bundle(upstream)
+                    # 变更索引迫使条件请求后的 304 文件无条件重取正文。
+                    upstream.files["data.json"] = (CATALOG, "cat222")
+
+                    def fetch(path, **kwargs):
+                        conditional = kwargs.get("if_none_match") is not None
+                        if path == failed_path and conditional == (phase == "conditional"):
+                            raise image_library.LibraryUpstreamError("HTTP 503 / timeout")
+                        return upstream(path, **kwargs)
+
+                    with mock.patch.object(image_library, "fetch_document", side_effect=fetch):
+                        result = image_library.get_catalog_bundle(first.etag)
+                    self.assertFalse(result.not_modified)
+                    self.assertNotEqual(result.etag, first.etag)
+                    self.assert_optional_fallback(json.loads(result.payload), failed_path)
+
+    def test_invalid_optional_json_does_not_break_image_catalog(self):
+        for failed_path in image_library.OPTIONAL_CATALOG_PATHS:
+            for conditional in (False, True):
+                with self.subTest(path=failed_path, conditional=conditional):
+                    upstream = FakeUpstream(standard_files())
+                    first = self.run_bundle(upstream) if conditional else None
+                    invalid_body = b'{"broken": ' if conditional else b'\xff'
+                    upstream.files[failed_path] = (invalid_body, "invalid222")
+                    result = self.run_bundle(upstream, if_none_match=first.etag if first else None)
+                    self.assertFalse(result.not_modified)
+                    self.assert_optional_fallback(json.loads(result.payload), failed_path)
 
     def test_invalid_optional_json_and_use_definitions_are_tolerated(self):
         files = standard_files()

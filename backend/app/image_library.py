@@ -44,6 +44,7 @@ CATEGORY_NAME_PATHS: tuple[tuple[str, str], ...] = (
     ("en-US", "i18n/en-us.json"),
 )
 ANNOTATION_PATHS = (("descriptions", "desc.json"), ("useTaxonomy", "category.json"))
+OPTIONAL_CATALOG_PATHS = frozenset(path for _key, path in (*CATEGORY_NAME_PATHS, *ANNOTATION_PATHS))
 LOGGER = logging.getLogger(__name__)
 
 IMAGE_ID_RE = re.compile(r"^\d{6}$")
@@ -232,9 +233,9 @@ def _fetch_catalog_document(path: str, conditional: str | None = None) -> Upstre
     try:
         return fetch_document(path, if_none_match=conditional)
     except LibraryUpstreamError:
-        if path not in {item[1] for item in ANNOTATION_PATHS}:
+        if path not in OPTIONAL_CATALOG_PATHS:
             raise
-        LOGGER.warning("素材用途文件暂不可用：%s", path)
+        LOGGER.warning("素材补充文件暂不可用：%s", path)
         return UpstreamDocument(body=None, etag=None, missing=True)
 
 
@@ -291,7 +292,7 @@ def _annotations(bodies: dict[str, bytes], images: dict) -> tuple[dict, dict]:
 
 
 def get_catalog_bundle(if_none_match: str | None = None, *, force: bool = False) -> BundleResult:
-    """合并索引、分类名与可选用途文件；描述未发布时仍可浏览图片。"""
+    """合并索引与可选分类名、用途文件；补充数据失败时仍可浏览图片。"""
     specs: tuple[tuple[str, str], ...] = (("catalog", CATALOG_PATH), *CATEGORY_NAME_PATHS, *ANNOTATION_PATHS)
     expected = None if force else parse_bundle_etag(if_none_match)
 
@@ -319,8 +320,12 @@ def get_catalog_bundle(if_none_match: str | None = None, *, force: bool = False)
 
     catalog = _decode_json(UpstreamDocument(body=bodies["catalog"], etag=None))
     names: dict[str, dict] = {}
-    for key, _path in CATEGORY_NAME_PATHS:
-        names[key] = _decode_json(UpstreamDocument(body=bodies[key], etag=None))
+    for key, path in CATEGORY_NAME_PATHS:
+        try:
+            names[key] = _decode_json(UpstreamDocument(body=bodies[key], etag=None))
+        except LibraryUpstreamError:
+            LOGGER.warning("素材分类名文件不是合法 JSON：%s", path)
+            names[key] = {}
 
     images = catalog.get("imageData") or {}
     descriptions, taxonomy = _annotations(bodies, images)

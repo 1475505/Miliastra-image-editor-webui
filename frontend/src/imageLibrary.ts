@@ -10,8 +10,6 @@
  * 元数据（尺寸 / 九宫格）只在用户选中素材时按需拉取，并长期缓存在 localStorage。
  */
 
-import bundledUseTaxonomy from "../../docs/category.json";
-
 const API_BASE = "/api/library";
 export const OSS_IMAGE_BASE = "https://oss.070077.xyz/images";
 
@@ -284,8 +282,8 @@ export function toCatalogState(payload: CatalogPayload, source: CacheSource, fro
   const missing = collectMissingIds(payload);
   const groups = buildGroups(payload, missing);
   const taxonomy = payload.useTaxonomy ?? { schemaVersion: 1, groups: [], uses: {} };
-  // 随构建提供中等粒度用途，旧版 OSS 字典也能直接使用；已发布的字典优先。
-  const filterDefinitions: Record<string, UseFilter> = taxonomy.filters ?? bundledUseTaxonomy.filters;
+  // 用途字典由后端在运行时从 OSS 合并返回，不依赖仓库内的上传源文件。
+  const filterDefinitions: Record<string, UseFilter> = taxonomy.filters ?? {};
   const filters = Object.fromEntries(Object.entries(filterDefinitions).flatMap(([code, definition]) => {
     const uses = definition.uses.filter((use) => taxonomy.uses[use]);
     return uses.length && taxonomy.groups.some((group) => group.id === definition.group)
@@ -422,8 +420,13 @@ export function filterLibraryAssetIds(
   state: LibraryCatalogState, ids: number[], options: { query?: string; use?: string } = {}
 ): number[] {
   const tokens = queryTokens(options.query);
-  // 页面已有筛选在字典缺失/更新时允许暂时为空；AI 查询在上层校验代码。
-  const selected = options.use && options.use !== "all" ? options.use : undefined;
+  // 页面字典降级时忽略已失效的筛选；AI 查询在上层严格校验代码。
+  const requested = options.use && options.use !== "all" ? options.use : undefined;
+  const selected = requested && (
+    Object.prototype.hasOwnProperty.call(state.useTaxonomy.filters ?? {}, requested)
+    || Object.prototype.hasOwnProperty.call(state.useTaxonomy.uses, requested)
+    || (requested.startsWith("group:") && state.useTaxonomy.groups.some((group) => group.id === requested.slice(6)))
+  ) ? requested : undefined;
   return ids.filter((id) => {
     const asset = state.assets[id];
     if (!asset) return false;
@@ -521,10 +524,10 @@ export async function loadLibraryCatalog(options: { refresh?: boolean } = {}): P
     return catalogCache;
   }
 
-  const cached = refresh ? null : readCatalogCache();
+  const cached = readCatalogCache();
   const age = cached ? Date.now() - cached.fetchedAt * 1000 : Number.POSITIVE_INFINITY;
 
-  if (cached && age < CATALOG_TTL_MS) {
+  if (!refresh && cached && age < CATALOG_TTL_MS) {
     const state = toCatalogState(cached.payload, "browser", true);
     emit(state);
     void revalidate();
@@ -557,6 +560,11 @@ export async function loadLibraryCatalog(options: { refresh?: boolean } = {}): P
       }
       throw new Error("素材索引返回了意外的空响应");
     } catch (error) {
+      if (catalogCache) {
+        const state: LibraryCatalogState = { ...catalogCache, source: "offline" };
+        emit(state);
+        return state;
+      }
       if (cached) {
         const state = toCatalogState(cached.payload, "offline", true);
         emit(state);

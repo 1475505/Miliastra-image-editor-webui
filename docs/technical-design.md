@@ -318,6 +318,7 @@ type SceneLibrary = {
 
 ### 素材库
 - `GET /api/library/catalog` 合并现有图片、中文/英文名称、描述与用途字典。
+- 分类名称、描述与用途字典为可选文件，请求失败或内容损坏时仅相应检索能力降级。界面会清除失效用途筛选；必要索引 `data.json` 请求失败时保留已有内存或浏览器缓存，无缓存时仅素材库报错，不阻塞画布编辑与基础图形的导入导出。
 - `GET/POST /api/library/contact-sheet` 输出最多 48 个素材的带 ID 棋盘格 PNG 总览，POST 请求为 `{ids:[...]}`。
 - `GET/POST /api/library/assets.zip` 下载指定素材或全部有图片路径的素材；POST 请求为 `{ids:[...]}` 或 `{all:true}`，两者互斥。ZIP 含 `images/{id}.png` 原图、`manifest.json` 和 `contact-sheets/001.png` 等每页最多 48 张的总览。
 - ZIP 清单 `assets` 每项保存 `id/path/imageUrl/description/uses/categoryIds/width/height/status/error/contactSheet`，总览定位字段为 `contactSheet:{path,index}`；`counts:{requested,ok,failed}` 记录结果。单张下载失败不丢失该 ID 的清单信息，也不阻止其他图片进入素材包。
@@ -362,7 +363,7 @@ type SceneLibrary = {
 
 工具在 `frontend/src/webmcp.ts` 注册，由 `App.tsx` 的桥接对象读取最新场景；工具返回值与场景隔离，连续调用无需等待 React 渲染。
 
-- 图形库的“用途”是独立筛选栏，提供 40 个中间用途分类，可与原有图形分类、色态和文字搜索交叉筛选；8 个用途分组只作为不可选择的段标题，129 个精细用途继续用于检索及素材详情。`category.json` 的 `filters` 为 `Record<string, {group, label, keywords, uses: string[]}>`，每个中间分类按精细用途的并集匹配素材并去重。后端读取 OSS 的 `filters`，前端构建内置这 40 个分类作为旧版 OSS 字典的兜底；`desc.json` 继续使用原有精细用途代码，无需为本次分类调整重新上传。
+- 图形库的“用途”是独立筛选栏，提供 40 个中间用途分类，可与原有图形分类、色态和文字搜索交叉筛选；8 个用途分组只作为不可选择的段标题，129 个精细用途继续用于检索及素材详情。`category.json` 的 `filters` 为 `Record<string, {group, label, keywords, uses: string[]}>`，每个中间分类按精细用途的并集匹配素材并去重。后端运行时从 OSS 读取 `category.json`，通过 `/api/library/catalog` 返回用途字典；更新字典后刷新图形库即可，无需重新构建前端。`docs/category.json` 仅作为上传源文件，不是前端构建依赖。若字典缺失，用途筛选不可用，基本素材浏览和 ID 搜索仍可使用。`desc.json` 继续使用原有精细用途代码，无需为本次分类调整重新上传。
 - `list_asset_categories({query?,tone?,refresh?})` 发现原有图形分类，返回 `key/label/count/tones`，并提供 `icons` 图标汇总。`list_asset_uses({category?,tone?,query?,group?,includeFine?,includeEmpty?,refresh?})` 在选定图形分类与色态范围内查询中间用途 `filters`（每项含 `code/group/label/keywords/uses/count`）。默认隐藏空用途且不返回 129 个精细用途；`includeEmpty:true` 保留空用途，`includeFine:true` 返回精细 `uses`。
 - `search_assets({query?,use?,category?,tone?,offset?,limit?,refresh?})` 查找 ID、视觉描述与用途；`use` 接受中间用途（如 `purpose.avatar`）、精细用途（如 `avatar.frame`）或分组（如 `group:content`），`category` 接受原有素材分类 `key` 或 `icons`。分类与用途也接受完整中文名称，完整用途名称优先匹配中间分类，精细筛选用明确代码；未知名称和同层重名报错。默认每页 20 张、最多 100 张，空格分隔的搜索词须全部命中。返回图片 URL、描述、用途和色态；将返回的 `id` 用作 `add_elements` 的 `imageAssetId`。
 - `preview_assets({ids?或搜索筛选条件,offset?,limit?,output?})` 返回带 ID 的素材 PNG 总览，每页最多 48 张；默认 `output:"image"` 返回图片内容，也可用 `output:"dataUrl"` 返回 data URL。`prepare_asset_pack({ids?或搜索筛选条件,all?})` 返回 `count` 和绝对 POST `request:{method,url,body}`；短 ID 列表及全量模式还提供 `downloadUrl`。`all:true` 可下载全部有图片路径的素材，不限制为候选子集。素材发现、搜索、总览与打包准备均不修改场景或撤销历史。
