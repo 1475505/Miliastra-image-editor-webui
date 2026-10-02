@@ -125,6 +125,65 @@ test("catalog without optional annotations still supports browsing and ID search
   assert.deepEqual(library.filterLibraryAssetIds(basic, ids, { use: "purpose.avatar", query: "107083" }), [107083]);
 });
 
+test("missing purposes update automatically from old caches and cold loads without blocking browsing", async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  const storage = new Map();
+  const { useTaxonomy: _taxonomy, descriptions: _descriptions, ...bare } = payload;
+  globalThis.window = { localStorage: {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: (key) => storage.delete(key)
+  } };
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify(payload), { headers: { ETag: '"m2.fixture"' } });
+    library.clearLibraryCache();
+    await library.loadLibraryCatalog();
+    const saved = [...storage.entries()];
+    for (const mode of ["cached", "cold", "failure", "offline"]) {
+      library.clearLibraryCache();
+      if (mode === "cached") {
+        for (const [key, value] of saved) storage.set(key, JSON.stringify({ ...JSON.parse(value), payload: bare }));
+      }
+      const calls = [];
+      let finishRetry;
+      const retry = new Promise((resolve) => { finishRetry = resolve; });
+      globalThis.fetch = async (url, options) => {
+        calls.push([url, options]);
+        if (url.endsWith("?refresh=1")) return retry;
+        return new Response(JSON.stringify(bare), { headers: { ETag: '"m2.degraded"' } });
+      };
+      let updated;
+      const update = new Promise((resolve) => { updated = resolve; });
+      const unsubscribe = library.subscribeLibraryCatalog((next) => {
+        if (next.source === "network" && (mode === "failure" ? calls.length === 2 : Object.keys(next.useTaxonomy.filters).length > 0)) updated(next);
+      });
+      try {
+        const initial = await library.loadLibraryCatalog();
+        assert.equal(library.searchLibraryAssets(initial).matched, 4);
+        assert.deepEqual(initial.useTaxonomy.filters, {});
+        assert.equal(calls.at(-1)[0], "/api/library/catalog?refresh=1");
+        assert.equal(calls.at(-1)[1].headers["If-None-Match"], undefined);
+        finishRetry(mode === "offline"
+          ? new Response("OSS unavailable", { status: 503 })
+          : new Response(JSON.stringify(mode === "failure" ? bare : payload)));
+        // HTTP 失败不发布新状态，等待该次后台请求的微任务处理完毕。
+        if (mode === "offline") await new Promise(setImmediate);
+        const next = mode === "offline" ? library.getCachedLibraryCatalog() : await update;
+        assert.equal(library.searchLibraryAssets(next, { query: "107083" }).matched, 1);
+        if (mode === "cached" || mode === "cold") assert.equal(library.searchLibraryAssets(next, { use: "purpose.avatar" }).matched, 1);
+        assert.equal(calls.length, mode === "cached" ? 1 : 2);
+      } finally {
+        unsubscribe();
+      }
+    }
+  } finally {
+    library.clearLibraryCache();
+    globalThis.window = originalWindow;
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("failed refresh keeps the last catalog in memory or browser storage", async () => {
   const originalWindow = globalThis.window;
   const originalFetch = globalThis.fetch;
