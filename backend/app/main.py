@@ -36,6 +36,18 @@ DEFAULT_CANVAS_HEIGHT = 300
 DEFAULT_CANVAS_BACKGROUND = "#ffffff"
 # 画布透明哨兵值：前端画棋盘格、PNG 导出留 alpha、SVG 不画底、CSS 用 transparent
 TRANSPARENT_BACKGROUND = "transparent"
+# CSS 画布适配策略（-miliastra-canvas-fit）：
+#   expand（默认）图元溢出时按图元包围盒放大画布，保持旧行为；
+#   lock          画布严格等于声明尺寸，绝不自动放大（超出部分裁切）；
+#   fit           画布完全贴合图元包围盒（无 .shaper-container 时的旧行为）。
+CANVAS_FIT_EXPAND = "expand"
+CANVAS_FIT_LOCK = "lock"
+CANVAS_FIT_FIT = "fit"
+CANVAS_FIT_MODES = (CANVAS_FIT_EXPAND, CANVAS_FIT_LOCK, CANVAS_FIT_FIT)
+CSS_CANVAS_SIZE_RE = re.compile(
+    r"^\s*(?P<width>-?[\d.]+)\s*(?:px)?\s*[x×*]\s*(?P<height>-?[\d.]+)\s*(?:px)?\s*$",
+    re.IGNORECASE,
+)
 DEFAULT_SHAPE_SIZE = 80.0
 HEX_COLOR_RE = re.compile(r"^[0-9a-f]+$")
 TRIANGLE_CLIP_PATH = "polygon(50% 0%, 0% 100%, 100% 100%)"
@@ -1001,16 +1013,43 @@ def convert_basic_json_element(item: dict, index: int) -> SceneElementModel:
     )
 
 
+def parse_css_canvas_size(value: str | None) -> tuple[float, float] | None:
+    """解析 `-miliastra-canvas-size`：接受 `300x300` / `300 x 300` / `300*300` / `300px x 300px`。"""
+    if not value:
+        return None
+    match = CSS_CANVAS_SIZE_RE.match(value)
+    if not match:
+        return None
+    width = parse_float(match.group("width"), 0.0)
+    height = parse_float(match.group("height"), 0.0)
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
+def parse_css_canvas_fit(value: str | None) -> str:
+    """解析 `-miliastra-canvas-fit`；无法识别时回落旧的 expand 行为。"""
+    mode = (value or "").strip().lower()
+    return mode if mode in CANVAS_FIT_MODES else CANVAS_FIT_EXPAND
+
+
 def parse_css_scene(content: str) -> SceneDocumentModel:
     warnings: list[str] = []
     canvas_match = re.search(r"\.shaper-container\s*\{(?P<body>.*?)\}", content, re.S)
     width = DEFAULT_CANVAS_WIDTH
     height = DEFAULT_CANVAS_HEIGHT
     background = DEFAULT_CANVAS_BACKGROUND
+    canvas_fit = CANVAS_FIT_EXPAND
     if canvas_match:
         body = canvas_match.group("body")
-        width = parse_px(find_css_value(body, "width"), DEFAULT_CANVAS_WIDTH)
-        height = parse_px(find_css_value(body, "height"), DEFAULT_CANVAS_HEIGHT)
+        # 显式画布声明优先于 width / height（后者可能是百分比等非 px 写法）
+        declared_size = parse_css_canvas_size(find_css_value(body, "-miliastra-canvas-size"))
+        if declared_size is not None:
+            width, height = declared_size
+        else:
+            width = parse_px(find_css_value(body, "width"), DEFAULT_CANVAS_WIDTH)
+            height = parse_px(find_css_value(body, "height"), DEFAULT_CANVAS_HEIGHT)
+        canvas_fit = parse_css_canvas_fit(find_css_value(body, "-miliastra-canvas-fit"))
         container_background = find_css_value(body, "background") or find_css_value(body, "background-color")
         if container_background is not None:
             if container_background.strip().lower() in {"transparent", "none"}:
@@ -1206,14 +1245,25 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
         scene.meta.warnings.append(".shaper-container not found; the canvas size was auto-fitted to the element bounds.")
         return normalize_scene(fit_scene_canvas_to_elements(scene, expand_only=False))
 
-    has_overflow = False
+    if canvas_fit == CANVAS_FIT_FIT:
+        return normalize_scene(fit_scene_canvas_to_elements(scene, expand_only=False))
+
+    overflowing = 0
     for element in elements:
         left, top, right, bottom = get_element_bounds(element)
         if left < 0 or top < 0 or right > width or bottom > height:
-            has_overflow = True
-            break
+            overflowing += 1
 
-    if has_overflow:
+    if canvas_fit == CANVAS_FIT_LOCK:
+        # 画布由 CSS 声明锁定（-miliastra-canvas-fit: lock）：保持声明尺寸，绝不放大
+        if overflowing:
+            scene.meta.warnings.append(
+                f"{overflowing} element(s) extend past the declared canvas {width:.0f}x{height:.0f}; "
+                "the canvas was kept as declared because -miliastra-canvas-fit is lock."
+            )
+        return normalize_scene(scene)
+
+    if overflowing:
         scene = fit_scene_canvas_to_elements(
             scene,
             expand_only=True,
@@ -1458,6 +1508,8 @@ def scene_to_css(scene: SceneDocumentModel) -> str:
         f"  height: {scene.canvas.height:.0f}px;",
         f"  background: {scene.canvas.background};",
         "  overflow: hidden;",
+        f"  -miliastra-canvas-size: {scene.canvas.width:.0f}x{scene.canvas.height:.0f};",
+        "  -miliastra-canvas-fit: lock;",
         "}",
         ".shaper-element {",
         "  position: absolute;",

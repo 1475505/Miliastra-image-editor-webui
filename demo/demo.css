@@ -17,6 +17,8 @@
   height: 300px;
   background: #ffffff;
   overflow: hidden;
+  -miliastra-canvas-size: 300x300;
+  -miliastra-canvas-fit: lock;
 }
 .shaper-element {
   position: absolute;

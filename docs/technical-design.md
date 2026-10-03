@@ -160,12 +160,19 @@ type SceneLibrary = {
 
 ### JSON
 - 优先支持完整 `SceneDocument`
-- 兼容简化格式
-- 如果缺少 `canvas`，后端根据图元外接范围自动拟合画布
+- 兼容简化格式（只有 `elements`，或直接是数组）
+- 元素字段必须扁平：`x / y / width / height` 与数值 `rotation`；嵌套的 `center / size` 或对象形式 `rotation` 不受支持，会抛类型错误
+- 如果缺少 `canvas`，后端根据图元外接范围自动拟合画布（画布尺寸无法由 JSON 控制）
+- `Primitive Shaper` 的结果页 JSON 导出已按完整 `SceneDocument` 结构输出（顶层 `canvas` + 扁平 `elements` + `meta`，原始字段保留在 `shaper` 里），可直接导入
 
 ### CSS
 - 兼容 `Primitive Shaper` 风格输出
 - 优先读取 `.shaper-container` 的宽高作为画布；缺失时根据图元范围自动拟合
+- 画布选项（`-miliastra-*` 自定义属性）：
+  - `-miliastra-canvas-size: WxH` -> 显式画布尺寸，优先于 `width` / `height`（接受 `W x H`、`W*H`、带 `px` 写法；非法值回落宽高）
+  - `-miliastra-canvas-fit: lock` -> 画布严格等于声明尺寸，越界图元只记 warning，不放大画布、不整体平移
+  - `-miliastra-canvas-fit: expand`（缺省，旧行为）-> 图元溢出容器时把画布放大到图元包围盒
+  - `-miliastra-canvas-fit: fit` -> 画布完全贴合图元包围盒（等价于没有 `.shaper-container` 的行为）
 - 忽略 `.shaper-container` 的背景颜色；如需视觉背景，使用铺满画布的矩形图元
 - 读取任意具备 `left / top / width / height` 的规则作为候选图元，不依赖固定类名
 - 映射：
@@ -179,13 +186,13 @@ type SceneLibrary = {
 - `background: radial-gradient(closest-side, transparent 79.5%, <color> 80.5%, transparent 100%) -> ring`（内径:外径 = 0.8，颜色从第二段 stop 提取；尾部 transparent 使环外四角透明）
 - `-miliastra-type: textbox` 或 `-miliastra-text` / `content` -> `textbox`
 - 若存在 `.shaper-container`，先读取其原始宽高作为初始画布
-- 如果图元超出容器，则自动扩展画布；如果图元坐标为负，还会整体平移到可见区域
-- 同时写入 warning，提醒用户当前已为越界图元自动调整画布
+- `lock` 之外的模式下，如果图元超出容器，则自动扩展画布；如果图元坐标为负，还会整体平移到可见区域
+- 同时写入 warning，提醒用户当前已为越界图元自动调整画布（`lock` 模式下改为提示越界图元会被裁切）
 
 ### CSS 到渲染流程
 1. 前端在左侧 `基础模板` 中接收用户粘贴或上传的 CSS 文本。
 2. 用户点击“导入到画布”后，前端通过 `POST /api/import` 把 `{ sourceType: "css", content }` 发给后端。
-3. 后端 `parse_css_scene()` 优先读取 `.shaper-container` 的 `width / height` 建立画布尺寸；如果缺失，则在解析完图元后根据外接范围自动拟合画布。容器背景颜色会被忽略。
+3. 后端 `parse_css_scene()` 优先读取 `.shaper-container` 的 `-miliastra-canvas-size`，否则读 `width / height` 建立画布尺寸；如果缺失，则在解析完图元后根据外接范围自动拟合画布。容器背景颜色会被忽略。
 4. 后端逐个解析 `.shaper-element.shaper-eN`，提取：
    - `left / top`
    - `width / height`
@@ -199,7 +206,7 @@ type SceneLibrary = {
    - `rotate -> rotation`
    - `border-radius: 50% -> ellipse`
    - 其他基础块 -> rectangle
-6. 如果存在 `.shaper-container`，后端会检查图元是否超出容器；如果超出，会自动扩展画布并追加 warning。若不存在 `.shaper-container`，则直接按图元范围自动拟合画布。
+6. 如果存在 `.shaper-container`，后端会检查图元是否超出容器：`-miliastra-canvas-fit: lock` 时保持画布尺寸不变并追加“越界图元被裁切”的 warning，其余模式自动扩展画布并追加 warning（坐标为负时整体平移）。若不存在 `.shaper-container`，则直接按图元范围自动拟合画布。
 7. 后端返回标准化后的 `SceneDocument` 给前端。
 8. 前端执行 `ensureSceneLibrary()`，补齐 `library` 相关字段，再写入当前页面状态。
 9. 前端在中间画布里按 `shapeStyle()` 把每个图元渲染成绝对定位 DOM，并使用：
@@ -207,7 +214,7 @@ type SceneLibrary = {
    - `rotate(...)`
    - `opacity`
    - `border-radius`
-10. 如果 CSS 图元超出 `shaper-container`，导入时会自动扩展画布以容纳全部图元，而不是继续按 `overflow:hidden` 裁切。
+10. 如果 CSS 图元超出 `shaper-container`：带 `-miliastra-canvas-fit: lock` 时保持声明画布并按 `overflow:hidden` 裁切（画布尺寸 = 原图尺寸），否则自动扩展画布以容纳全部图元。
 
 ### 右侧显示名
 - 右侧详情和图元列表统一使用“层级-文件名-图元名”的显示名

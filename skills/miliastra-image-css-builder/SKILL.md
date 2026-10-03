@@ -2,7 +2,7 @@
 name: miliastra-image-css-builder
 slug: miliastra-image-css-builder
 displayName: 千星奇域图片编辑器-css生成
-version: 1.0.9
+version: 1.0.10
 summary: 用有限图元生成可导入的 CSS，或通过 WebMCP 编辑千星图片编辑器画布。
 license: Proprietary
 description: 将图片或描述拟合成千星图片编辑器可导入的 CSS 图元场景，支持旋转、星形、圆环、文本框和素材图片；也用于通过页面 WebMCP 创建或修改画布。不用于任意 CSS 网页或 SVG 路径绘制。
@@ -46,10 +46,18 @@ description: 将图片或描述拟合成千星图片编辑器可导入的 CSS �
   height: 300px;
   background: #ffffff;
   overflow: hidden;
+  -miliastra-canvas-size: 300x300;
+  -miliastra-canvas-fit: lock;
 }
 ```
 
 容器支持透明背景；实色背景会被忽略并警告，需要时用满画布矩形表示。第一个图元为矩形时自动标记 `isBackground`。
+
+末尾两行是画布选项（`-miliastra-*` 自定义属性，浏览器忽略，导入器读取）：
+
+- `-miliastra-canvas-size: WxH`：显式画布尺寸，优先于 `width` / `height`（`300 x 300`、`300*300`、带 `px` 都识别）。宽高仍按 px 写，浏览器预览才有尺寸。
+- `-miliastra-canvas-fit: lock`：画布严格等于声明尺寸，**永不**按图元包围盒自动放大，越界只记警告并按画布裁切。缺省 `expand` 是旧行为（溢出即放大画布），`fit` 完全贴合图元包围盒（等于没有容器块）。
+- 编辑器与 Primitive Shaper 的 CSS 导出都带这两行，手写 CSS 照抄即可，画布才真正等于目标图片尺寸。
 
 每条图元规则使用以下样板：
 
@@ -132,7 +140,8 @@ clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 92%, 50% 71%, 21% 92%,
 | radial-gradient 缺 `transparent → 纯色` 首段结构 | 不识别为圆环 → 同左，静默变成矩形 |
 | 基础规则 `.shaper-element {}` 里写 left/top/width/height | 基础规则本身被导入为一个幽灵图元 |
 | `border-left/right/bottom` 三角形 hack | 能导入为 triangle，但 `top` 被当作包围盒**顶边**而非中心——不要用，用 clip-path |
-| 图元（旋转后的包围盒）超出画布左/上边缘 | **所有图元被整体平移**，构图静默错位；超右/下则画布被撑大 |
+| 图元（旋转后的包围盒）超出画布，且没写 `-miliastra-canvas-fit: lock` | **所有图元被整体平移**，构图静默错位（左/上越界）；超右/下则画布被撑大 |
+| 图元超出画布，但写了 `-miliastra-canvas-fit: lock` | 画布保持不变，越界部分被裁切，不会出现在预览与导出里 |
 | `::before` / `::after` / `box-shadow` / `border` / `filter` | 完全忽略 |
 | `scale(...)` / `skew(...)` / `matrix(...)` / `translateX(...)` | 完全忽略（只读 `rotate(Ndeg)`） |
 | 缺 `left`/`top`/`width`/`height` 任一 | 整条规则被跳过，图元丢失 |
@@ -141,6 +150,6 @@ clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 92%, 50% 71%, 21% 92%,
 
 服务可达时用 `POST /api/import {sourceType:"css",content:...}`，核对数量、尺寸与警告，再用 `/api/export/png {scene:...}` 检查解析后的效果。原始 CSS 预览不能代替导入验证。
 
-完整场景（含素材库、遮罩和文本设置）用 JSON；带画布的元素需 `id/type/x/y/width/height`，文本设置在 `textBox`。SVG 回导会丢失基础图元旋转、星形和圆环。
+完整场景（含素材库、遮罩和文本设置）用 JSON：顶层 `canvas {width,height,background}` + `elements`，元素用扁平的 `id/type/x/y/width/height/rotation`，文本设置在 `textBox`。只有 `elements` 而缺 `canvas` 时，画布会按图元包围盒自动拟合；嵌套的 `center/size` 或对象形式 `rotation` 不被识别，导入会报错，需要先拍平。Primitive Shaper 结果页的 JSON 导出已按此结构输出（`canvas` + 扁平 `elements` + `meta`，原始字段保留在 `shaper` 里），可直接导入。SVG 回导会丢失基础图元旋转、星形和圆环。
 
 Lua 用 `export_scene {format:"lua"}` 或 `/api/export/lua` 获取，保留图片图元与素材；文本框和 `other` 仅供回导，游戏内文字用 GIA。使用前设置 `IMAGE_PREFAB_ID` 为图片控件模板索引，在专用空客户端容器的 `OnStart` 绘制。保留末尾 `MILIASTRA_EDITOR_SCENE_V1` 元数据；导入只读 `ROOT/ELEMENTS` 或 `PALETTE/ELEMENTS` 字面量，不执行代码，也不烘焙运行时缩放/偏移。Lua 绘制不应用 GIA 遮罩。

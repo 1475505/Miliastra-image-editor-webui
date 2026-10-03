@@ -34,8 +34,9 @@ Need to turn a raster image into shapes? Open the [image fitting tool / 图元�
 
 - Paste or upload `css / json / svg / lua` (Lua: editor / primitive-shape drawing formats)
 - Prefer `.shaper-container` width and height as the canvas when importing CSS
+- Honor the CSS canvas options `-miliastra-canvas-size: WxH` (wins over `width` / `height`) and `-miliastra-canvas-fit: lock | expand | fit`
 - Ignore `.shaper-container` background color by design; use a full-canvas rectangle element if a visual background is needed
-- Auto-expand the canvas when positioned CSS elements overflow `.shaper-container`
+- Auto-expand the canvas when positioned CSS elements overflow `.shaper-container`, unless the CSS pins it with `-miliastra-canvas-fit: lock` (then overflow is clipped and reported as a warning)
 - Auto-fit the canvas from parsed elements when `.shaper-container` is missing
 - Parse positioned CSS rules without requiring a fixed `.shaper-element.shaper-eN` naming pattern
 - Auto-fit canvas bounds for simplified JSON when `canvas` is missing
