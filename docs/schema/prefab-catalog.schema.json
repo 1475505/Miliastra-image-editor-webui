@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Miliastra public Prefab catalog v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "dataVersion", "categoryLabelSource", "rendering", "imageData", "category"],
+  "properties": {
+    "schemaVersion": {"const": 2},
+    "dataVersion": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "categoryLabelSource": {"const": "curated", "description": "Display labels are curated from members; category membership uses the source IDs."},
+    "rendering": {
+      "type": "object", "additionalProperties": false,
+      "required": ["formats", "imageSource", "idVariableType"],
+      "properties": {
+        "formats": {"const": ["lua"]},
+        "imageSource": {"const": "Prefab"},
+        "idVariableType": {"const": "PrefabId"}
+      }
+    },
+    "imageData": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[1-9][0-9]{0,9}$"},
+      "additionalProperties": {"$ref": "#/$defs/prefab"}
+    },
+    "category": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[1-9][0-9]{0,9}$"},
+      "additionalProperties": {
+        "type": "object", "additionalProperties": false, "required": ["id", "images"],
+        "properties": {
+          "id": {"$ref": "#/$defs/id"},
+          "images": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+    "prefab": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "img", "width", "height", "names", "entityType", "categoryIds"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "img": {"type": ["string", "null"], "pattern": "^sprite/[1-9][0-9]{0,9}\\.png$"},
+        "width": {"type": ["integer", "null"], "minimum": 1},
+        "height": {"type": ["integer", "null"], "minimum": 1},
+        "names": {
+          "type": "object", "additionalProperties": false,
+          "properties": {"zh-CN": {"type": "string"}, "en-US": {"type": "string"}}
+        },
+        "entityType": {"enum": ["Gadget", "Monster", "Level"]},
+        "categoryIds": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}
+      },
+      "allOf": [{
+        "if": {"properties": {"img": {"type": "null"}}},
+        "then": {"properties": {"width": {"type": "null"}, "height": {"type": "null"}}},
+        "else": {"properties": {"width": {"type": "integer"}, "height": {"type": "integer"}}}
+      }]
+    }
+  }
+}

@@ -1,6 +1,7 @@
 // WebMCP editor tools. Unsupported browsers skip registration.
 // Read-only tools are annotated; imported content is untrusted data.
 
+import { defaultPrefabVariable, getPrefabInfo, validPrefabVariable } from "./prefabLibrary";
 import type { CanvasMask, SceneDocument, SceneElement, ShapeType, SourceType, TextBoxSettings } from "./App";
 import {
   listLibraryAssetCategories, loadLibraryCatalog, queryLibraryAssetIds, scopeLibraryAssetIds, searchLibraryAssets,
@@ -67,6 +68,8 @@ export type AddElementInput = {
   imageAssetId?: number;
   /** 素材 RGB 乘色开关 */
   imageTint?: boolean;
+  prefabId?: number;
+  prefabVariable?: string;
 };
 
 export type ElementPatch = Omit<Partial<SceneElement>, "textBox"> & { textBox?: Partial<TextBoxSettings> };
@@ -120,7 +123,8 @@ const SHAPE_TYPES: ShapeType[] = [
   "five_point_star",
   "ring",
   "textbox",
-  "image"
+  "image",
+  "prefab"
 ];
 
 const shapeEnum = { type: "string", enum: SHAPE_TYPES };
@@ -159,7 +163,9 @@ const elementProperties = {
   text: { type: "string", description: "Textbox text (supports <color>, <i>, <size>)" },
   fontSize: numberProp("Textbox font size (default 20)", 1, 256),
   imageAssetId: { type: "integer", minimum: 100000, maximum: 999999, description: "Required for image: six-digit library sprite id" },
-  imageTint: { type: "boolean", description: "Multiply sprite RGB by color, default false" }
+  imageTint: { type: "boolean", description: "Multiply sprite RGB by color, default false" },
+  prefabId: { type: "integer", minimum: 1, maximum: 4294967295, description: "Required for prefab: exact catalog entity ID; Lua drawing only" },
+  prefabVariable: { type: "string", minLength: 1, maxLength: 128, description: "Name in the script-local PREFAB_IDS configuration table, default prefab_<ID>; no client script parameter is required" }
 };
 const addProperties = {
   ...elementProperties,
@@ -253,21 +259,23 @@ function parseRegion(value: unknown): CanvasRegion | undefined {
 
 function parseElementFields(args: Record<string, unknown>): ElementPatch {
   const patch: ElementPatch = {};
-  for (const key of ["x", "y", "width", "height", "rotation", "opacity", "zIndex", "imageAssetId"] as const) {
+  for (const key of ["x", "y", "width", "height", "rotation", "opacity", "zIndex", "imageAssetId", "prefabId"] as const) {
     if (args[key] === undefined) continue;
     const value = args[key];
     if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${key} must be a finite number`);
     if ((key === "width" || key === "height") && (value < 1 || value > 2048)) throw new Error(`${key} must be 1-2048`);
     if (key === "opacity" && (value < 0 || value > 1)) throw new Error("opacity must be 0-1");
     if (key === "imageAssetId" && (!Number.isInteger(value) || value < 100000 || value > 999999)) throw new Error("imageAssetId must be a six-digit integer");
+    if (key === "prefabId" && (!Number.isInteger(value) || value < 1 || value > 0xffffffff)) throw new Error("prefabId must be a positive uint32 integer");
     patch[key] = value;
   }
-  for (const key of ["name", "color"] as const) {
+  for (const key of ["name", "color", "prefabVariable"] as const) {
     if (args[key] === undefined) continue;
     if (typeof args[key] !== "string") throw new Error(`${key} must be a string`);
     patch[key] = args[key];
   }
   if (patch.color !== undefined && !/^#[0-9a-f]{6}$/i.test(patch.color)) throw new Error("color must be #RRGGBB");
+  if (patch.prefabVariable !== undefined && !validPrefabVariable(patch.prefabVariable)) throw new Error("prefabVariable must be a non-empty configuration name without control characters (max 128)");
   for (const key of ["imageTint", "isBackground"] as const) {
     if (args[key] === undefined) continue;
     if (typeof args[key] !== "boolean") throw new Error(`${key} must be boolean`);
@@ -292,6 +300,8 @@ function parseAddInput(value: unknown): AddElementInput {
   const fields = parseElementFields(args);
   if (type === "image" && fields.imageAssetId === undefined) throw new Error('imageAssetId is required for type "image"');
   if (type !== "image" && (fields.imageAssetId !== undefined || fields.imageTint !== undefined)) throw new Error("imageAssetId/imageTint require type image");
+  if (type === "prefab" && fields.prefabId === undefined) throw new Error('prefabId is required for type "prefab"');
+  if (type !== "prefab" && (fields.prefabId !== undefined || fields.prefabVariable !== undefined)) throw new Error("prefabId/prefabVariable require type prefab");
   if (type !== "textbox" && fields.textBox) throw new Error("text/fontSize require type textbox");
   if (args.id !== undefined && (typeof args.id !== "string" || !args.id.trim())) throw new Error("id must be a non-empty string");
   return { ...fields, type, ...(typeof args.id === "string" ? { id: args.id } : {}) };
@@ -303,6 +313,23 @@ function parseUpdate(value: unknown): ElementUpdate {
   const patch = parseElementFields(args);
   if (!Object.keys(patch).length) throw new Error("No updatable fields provided");
   return { id: args.id, patch };
+}
+
+async function preparePrefabInput(input: AddElementInput): Promise<AddElementInput> {
+  if (input.type !== "prefab") return input;
+  const info = await getPrefabInfo(input.prefabId!);
+  if (!info.imageUrl) throw new Error(`Prefab ${info.id} has no thumbnail`);
+  return { width: info.width ?? 96, height: info.height ?? 96, color: "#ffffff", opacity: 1,
+    ...input, prefabVariable: input.prefabVariable?.trim() ?? defaultPrefabVariable(info.id) };
+}
+
+async function preparePrefabUpdate(update: ElementUpdate): Promise<ElementUpdate> {
+  if (update.patch.prefabId !== undefined) {
+    const info = await getPrefabInfo(update.patch.prefabId);
+    if (!info.imageUrl) throw new Error(`Prefab ${info.id} has no thumbnail`);
+    return { ...update, patch: { ...update.patch, prefabVariable: update.patch.prefabVariable ?? defaultPrefabVariable(info.id) } };
+  }
+  return update;
 }
 
 function arrayArg(value: unknown, label: string): unknown[] {
@@ -378,6 +405,23 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
         })
     );
   }
+
+  register(
+    {
+      name: "get_prefab_info",
+      title: "Look up a Prefab by ID",
+      description: "Look up one official Prefab/entity ID and return its name, category labels/IDs, thumbnail URL and PNG pixel dimensions. Does not list the catalog or edit the canvas. Add a verified result with type:prefab and prefabId; Lua defines its ID in the script-local PREFAB_IDS table and draws with ImageSource.Prefab. Six-digit imageAssetId sprites use a separate catalog. Unlisted IDs never request a PNG; entries without thumbnails cannot be added.",
+      annotations: { readOnlyHint: true, untrustedContentHint: true },
+      inputSchema: { type: "object", required: ["id"], properties: {
+        id: { type: "integer", minimum: 1, maximum: 4294967295, description: "Official Prefab/entity ID, e.g. 20001003" },
+        refresh: { type: "boolean", default: false }
+      } }
+    },
+    async (_bridge, args) => {
+      if (typeof args.id !== "number" || !Number.isInteger(args.id)) return err("id must be an integer Prefab/entity ID");
+      return { ok: true, prefab: await getPrefabInfo(args.id, { refresh: args.refresh === true }) };
+    }
+  );
 
   register(
     {
@@ -569,15 +613,15 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "add_element",
       title: "Add element",
       description:
-        "Add one shape, textbox or sprite (image requires imageAssetId). Prefer add_elements for multiple shapes: one atomic edit/undo step. Returns the new element. " + GEOMETRY + " " + DEFAULTS,
+        "Add one shape, textbox, sprite (image requires imageAssetId) or Lua-only prefab (requires catalog prefabId; exported Lua defines PREFAB_IDS locally). Prefer add_elements for multiple shapes: one atomic edit/undo step. Returns the new element. " + GEOMETRY + " " + DEFAULTS,
       inputSchema: {
         type: "object",
         required: ["type"],
         properties: { ...addProperties, select: selectProperty }
       }
     },
-    (bridge, args) => {
-      const result = bridge.addElements([parseAddInput(args)], false, args.select === true);
+    async (bridge, args) => {
+      const result = bridge.addElements([await preparePrefabInput(parseAddInput(args))], false, args.select === true);
       return result.ok ? { ok: true, element: result.elements?.[0] } : result;
     }
   );
@@ -597,8 +641,8 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
           returnElements: { type: "boolean", default: false }
         } }
       },
-      (bridge, args) => {
-        const inputs = arrayArg(args.elements, "elements").map(parseAddInput);
+      async (bridge, args) => {
+        const inputs = await Promise.all(arrayArg(args.elements, "elements").map(parseAddInput).map(preparePrefabInput));
         const result = bridge.addElements(inputs, replace, args.select === true);
         if (!result.ok) return result;
         return { ok: true, count: result.count, ids: result.elements?.map((element) => element.id),
@@ -622,7 +666,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
         }
       }
     },
-    (bridge, args) => bridge.updateElements([parseUpdate(args)])
+    async (bridge, args) => bridge.updateElements([await preparePrefabUpdate(parseUpdate(args))])
   );
 
   register(
@@ -636,7 +680,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
         } } }
       } }
     },
-    (bridge, args) => bridge.updateElements(arrayArg(args.updates, "updates").map(parseUpdate))
+    async (bridge, args) => bridge.updateElements(await Promise.all(arrayArg(args.updates, "updates").map(parseUpdate).map(preparePrefabUpdate)))
   );
 
   register(

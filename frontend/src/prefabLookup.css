@@ -1,0 +1,74 @@
+.prefab-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 24px;
+  border: 0;
+  border-radius: 24px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 24px 80px rgba(25, 45, 33, 0.2);
+}
+
+.prefab-dialog::backdrop { background: rgba(25, 40, 31, 0.32); backdrop-filter: blur(3px); }
+.prefab-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.prefab-heading h2 { margin: 0; font-size: 20px; font-weight: 600; }
+.prefab-heading .icon-btn { font-size: 24px; }
+.prefab-hint { margin: 10px 0; color: var(--text-2); font-size: 12px; line-height: 1.6; }
+.prefab-form { display: flex; gap: 8px; align-items: flex-end; margin: 20px 0; }
+.prefab-form .field { flex: 1; min-width: 0; }
+.prefab-form .btn { flex-shrink: 0; }
+.prefab-status p { font-size: 12px; line-height: 1.6; color: var(--text-2); }
+.prefab-status .prefab-error { color: var(--danger); }
+.prefab-empty { margin: 30px 0; color: var(--text-3); text-align: center; line-height: 1.6; }
+.prefab-result { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 24px; align-items: start; }
+.prefab-preview {
+  display: grid;
+  place-items: center;
+  min-height: 240px;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 16px;
+  background-color: var(--checker-light);
+  background-image: conic-gradient(var(--checker-dark) 25%, transparent 0 50%, var(--checker-dark) 0 75%, transparent 0);
+  background-size: 20px 20px;
+}
+.prefab-preview img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.prefab-preview p { padding: 20px; text-align: center; line-height: 1.6; color: var(--text-2); }
+.prefab-information { min-width: 0; }
+.prefab-information h3 { margin: 0 0 16px; font-size: 18px; overflow-wrap: anywhere; }
+.prefab-properties { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px 16px; margin: 12px 0; font-size: 12px; }
+.prefab-properties dt { color: var(--text-2); }
+.prefab-properties dd { margin: 0; overflow-wrap: anywhere; }
+.prefab-categories { display: flex; flex-wrap: wrap; gap: 6px; }
+.prefab-categories span { padding: 3px 8px; margin-top: -3px; border-radius: 8px; color: var(--accent-strong); background: var(--accent-soft); }
+.prefab-description { font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.prefab-related { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 12px; }
+.prefab-related summary { cursor: pointer; color: var(--text-2); font-size: 12px; }
+
+@media (max-width: 600px) {
+  .prefab-dialog { padding: 20px; }
+  .prefab-result { grid-template-columns: 1fr; gap: 20px; }
+  .prefab-preview { width: min(240px, 100%); justify-self: center; min-height: 0; }
+  .prefab-form { flex-wrap: wrap; }
+  .prefab-form .field { flex-basis: 100%; }
+}
+.prefab-library-panel { padding: 0 12px 12px; }
+.prefab-library-actions { display: flex; gap: 6px; margin: 8px 0; }
+.prefab-library-result { display: grid; gap: 6px; margin-top: 12px; }
+.prefab-library-result .prefab-preview { width: 100%; height: 180px; cursor: grab; border: 1px solid var(--border); border-radius: 8px; }
+.prefab-library-result .prefab-preview img { width: 100%; height: 100%; object-fit: contain; }
+.prefab-library-result .prefab-hint { margin: 0; }
+.prefab-placeholder { display: grid; width: 100%; height: 100%; place-items: center; font-size: 11px; color: #64748b; }
+.prefab-history { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 12px; }
+.prefab-history .section-head { margin-bottom: 8px; }
+.prefab-history .section-head em { margin-left: 6px; }
+.prefab-history-list { display: grid; gap: 6px; max-height: 264px; overflow-y: auto; }
+.prefab-history-row { display: flex; gap: 2px; align-items: center; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.prefab-history-item { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; padding: 6px; color: inherit; background: transparent; border: 0; cursor: grab; text-align: left; }
+.prefab-history-item:disabled { opacity: .6; cursor: default; }
+.prefab-history-thumb { display: grid; place-items: center; flex: 0 0 38px; height: 38px; }
+.prefab-history-thumb img { width: 100%; height: 100%; object-fit: contain; }
+.prefab-history-label { display: grid; gap: 3px; min-width: 0; }
+.prefab-history-label strong { font-size: 12px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.prefab-history-label code { color: var(--text-2); font-size: 10px; }
+.prefab-history-remove { flex: 0 0 24px; margin-right: 4px; font-size: 18px; }

@@ -12,6 +12,7 @@ function moduleUrl(path) {
 }
 
 const libraryUrl = moduleUrl("../src/imageLibrary.ts");
+const prefabLibraryUrl = moduleUrl("../src/prefabLibrary.ts");
 const library = await import(libraryUrl);
 // 独立的最小测试样例，不读取或复制生产素材字典，也不用于运行时兜底。
 const descriptions = [
@@ -241,7 +242,7 @@ test("catalog refresh and AI tools share the enriched index", async () => {
 
     const toolsSource = readFileSync(new URL("../src/webmcp.ts", import.meta.url), "utf8");
     const transpiled = ts.transpileModule(toolsSource, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 } }).outputText;
-    const toolsUrl = `data:text/javascript;base64,${Buffer.from(transpiled.replace('"./imageLibrary"', JSON.stringify(libraryUrl))).toString("base64")}`;
+    const toolsUrl = `data:text/javascript;base64,${Buffer.from(transpiled.replace('"./imageLibrary"', JSON.stringify(libraryUrl)).replace('"./prefabLibrary"', JSON.stringify(prefabLibraryUrl))).toString("base64")}`;
     const definitions = new Map();
     const originalDocument = globalThis.document;
     globalThis.document = { modelContext: { registerTool: async (definition) => definitions.set(definition.name, definition) } };

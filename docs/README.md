@@ -26,6 +26,8 @@ Lua exports reuse the primitive-shape tool’s client image drawing runtime. Set
 
 Need to turn a raster image into shapes? Open the [image fitting tool / 图元拟合工具](https://qx-img.070077.xyz/), then import the resulting supported data into the editor. The separate [Miliastra knowledge base / 千星知识库](https://ugc.070077.xyz/) documents the game editor, not this application.
 
+【图形库 → 元件】通过 Prefab ID 查找缩略图、名称、分类和像素尺寸，仅展示单条查询结果；下方记录添加到画布过的元件，便于再次使用。数据按 R2 的 `prefabs/` 前缀组织，公开索引候选尚待审查上传，说明见 [Prefab 索引接入](prefab-library-upload.md)。
+
 ## Current Capabilities
 
 ### Import
@@ -51,6 +53,8 @@ Need to turn a raster image into shapes? Open the [image fitting tool / 图元�
   - ring (圆环, fixed inner:outer radius ratio 0.8, GIA asset ref 100006)
   - textbox (文本框: 默认字号 20、白字、透明白底、描边 `#333333` 20%、左/上对齐；支持 `<color>` / `<i>` / `<size>`)
 - Browse the existing image library by original category, 40 purpose filters, tone and keywords; purpose and category stay separate
+- 图形库「元件」按官方 ID 查询单个缩略图，点击/拖动添加；已添加的元件去重保存在浏览器，刷新后可复用，未列入 JSON 的 ID 不访问图片。Lua 在脚本内定义 `PREFAB_IDS` 表并通过 `ImageSource.Prefab` 绘制，无需创建客户端脚本参数；JSON 保存可回导，含元件的场景仅允许 Lua 绘制。
+- 「导出 → 复制Lua绘制脚本」在弹窗中展示当前画布生成的脚本，可直接复制到剪贴板，无需下载文件；生成失败可重试。
 - WebMCP discovers categories and purpose counts, searches assets, previews up to 48 ID-labelled thumbnails, and prepares selected or complete asset ZIPs with original images and a manifest
 - Drag shapes into canvas or double-click to add
 - Canvas supports:

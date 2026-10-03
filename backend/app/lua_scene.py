@@ -182,7 +182,45 @@ def read_drawing(source):
         _rows([root], 13, "ROOT")
         if root[2] <= 0 or root[3] <= 0:
             raise ValueError("ROOT canvas dimensions must be positive")
-        return {"format": "gia", "root": root, "rows": _rows(rows, 18, "ELEMENTS")}
+        drawing = {"format": "gia", "root": root, "rows": _rows(rows, 18, "ELEMENTS")}
+        bindings = _literal(source, "PREFAB_BINDINGS", required=False)
+        if bindings is not None:
+            if not isinstance(bindings, list):
+                raise ValueError("PREFAB_BINDINGS must be an array")
+            seen = set()
+            variables = {}
+            for binding in bindings:
+                if not isinstance(binding, list) or len(binding) != 3:
+                    raise ValueError("Prefab bindings require row index, preview ID and configuration name")
+                index, prefab_id, name = binding
+                if type(index) is not int or not 1 <= index <= len(rows) or index in seen or rows[index - 1][0] != 0:
+                    raise ValueError("Invalid or duplicate Prefab row binding")
+                if type(prefab_id) is not int or not 0 < prefab_id <= 0xFFFFFFFF:
+                    raise ValueError("Invalid Prefab preview ID")
+                if not isinstance(name, str) or not name.strip() or len(name) > 128 or re.search(r"[\x00-\x1f\x7f]", name):
+                    raise ValueError("Invalid Prefab configuration name")
+                if name in variables and variables[name] != prefab_id:
+                    raise ValueError(f"Prefab configuration {name!r} is assigned different IDs")
+                seen.add(index)
+                variables[name] = prefab_id
+            if seen != {i + 1 for i, row in enumerate(rows) if row[0] == 0}:
+                raise ValueError("Every Prefab row requires a configuration binding")
+            drawing["prefabBindings"] = bindings
+        elif any(row[0] == 0 for row in rows):
+            raise ValueError("Prefab rows require PREFAB_BINDINGS")
+        prefab_ids = _literal(source, "PREFAB_IDS", required=False)
+        if prefab_ids is not None:
+            if not isinstance(prefab_ids, dict) or bindings is None:
+                raise ValueError("PREFAB_IDS must be a named ID table with PREFAB_BINDINGS")
+            for name, prefab_id in prefab_ids.items():
+                if not isinstance(name, str) or not name.strip() or len(name) > 128 or re.search(r"[\x00-\x1f\x7f]", name):
+                    raise ValueError("Invalid Prefab configuration name")
+                if type(prefab_id) is not int or not 0 < prefab_id <= 0xFFFFFFFF:
+                    raise ValueError("Prefab configuration IDs must be positive uint32 integers")
+            if any(binding[2] not in prefab_ids for binding in bindings):
+                raise ValueError("Every Prefab binding requires an ID configuration")
+            drawing["prefabIds"] = prefab_ids
+        return drawing
     width, height = (_number(_literal(source, name)) for name in ("IMG_WIDTH", "IMG_HEIGHT"))
     if width <= 0 or height <= 0:
         raise ValueError("Lua image dimensions must be positive")
@@ -204,6 +242,8 @@ def _is_image_element(item):
     if item.get("type") == "image":
         asset = item.get("imageAssetId")
         return isinstance(asset, int) and asset > 0
+    if item.get("type") == "prefab":
+        return type(item.get("prefabId")) is int and 0 < item["prefabId"] <= 0xFFFFFFFF
     return item.get("type") in ASSET_TYPES.values()
 
 
@@ -211,7 +251,9 @@ def dumps(scene, gia_data=None, name=""):
     """Use the unmodified upstream emitter, plus an inert editor-data comment."""
     # Validate all metadata too (json.dumps rejects non-finite numeric fields).
     json.dumps(scene, allow_nan=False)
-    if gia_data is not None:
+    if any(item.get("type") == "prefab" for item in scene["elements"]):
+        script = _prefab_script(scene, gia_data, name)
+    elif gia_data is not None:
         script = gia.build_gia_lua(gia_data, name or "千星图片编辑器")
     else:
         # The upstream GIA format requires at least one image; use its companion
@@ -233,6 +275,68 @@ def dumps(scene, gia_data=None, name=""):
     if len(result.encode("utf-8")) > MAX_CONTENT_SIZE:
         raise ValueError("Lua export exceeds the 10 MiB re-import limit")
     return result
+
+
+def _prefab_script(scene, gia_data, name):
+    """Extend the upstream runtime at its SetImage boundary; leave vendor files intact."""
+    width, height = scene["canvas"]["width"], scene["canvas"]["height"]
+    static = gia.parse_material_gia(gia_data) if gia_data is not None else None
+    # Lua draws the complete canvas without the GIA crop; mixed and Prefab-only
+    # scenes must use the same parent geometry even when the crop was resized.
+    root = [0, 0, width, height, .5, .5, .5, .5, .5, .5, 1, 1, 0]
+    static_rows = iter(static["records"] if static else [])
+    rows, bindings = [], []
+    variables = {}
+    for item in sorted(scene["elements"], key=lambda item: item["zIndex"]):
+        if not _is_image_element(item):
+            continue
+        if item["type"] != "prefab":
+            rows.append(next(static_rows))
+            continue
+        prefab_id = item["prefabId"]
+        configuration = item.get("prefabVariable") or f"prefab_{prefab_id}"
+        if configuration in variables and variables[configuration] != prefab_id:
+            raise ValueError(f"Prefab configuration {configuration!r} is assigned different IDs")
+        variables[configuration] = prefab_id
+        rgb = [int(item["color"][i:i + 2], 16) for i in (1, 3, 5)]
+        rows.append([0, item["x"] - width / 2, height / 2 - item["y"], item["width"], item["height"],
+                     .5, .5, .5, .5, .5, .5, 1, 1, item["rotation"], *rgb, round(item["opacity"] * 255)])
+        bindings.append([len(rows), prefab_id, configuration])
+    title = str(name or "千星图片编辑器").replace("\r", " ").replace("\n", " ")
+    lines = [f"-- {title}：元件图片 Lua 绘制脚本", "-- 1. 将 IMAGE_PREFAB_ID 填为图片控件的「控件模板索引ID」，模板设为仅存为模板。",
+             "-- 2. 元件 ID 在下方 PREFAB_IDS 表中定义，可直接修改；无需创建客户端脚本参数。",
+             "--    SetImage 的 imageId 使用整数；Enum.ImageSource.Prefab 指定图片来源为元件。",
+             "-- 3. 挂到专用空客户端容器，OnStart 绘制；文本框只保留为编辑数据。",
+              "local IMAGE_PREFAB_ID = 0 -- 客户端图片控件模板索引ID", "local BASE_SCALE = 1", "local OFFSET_X = 0", "local OFFSET_Y = 0",
+              "local PREFAB_IDS = {"]
+    lines += [f"    [{json.dumps(configuration, ensure_ascii=False)}] = {prefab_id}," for configuration, prefab_id in variables.items()]
+    lines += ["}", "-- rowIndex,previewPrefabId,configurationName；绘制时读取 PREFAB_IDS。",
+              "local PREFAB_BINDINGS = {"]
+    lines += [f"    {{{index},{prefab_id},{json.dumps(configuration, ensure_ascii=False)}}}," for index, prefab_id, configuration in bindings]
+    lines += ["}", "local ROOT = {" + ",".join(map(repr, root)) + "}", "local ELEMENTS = {"]
+    lines += ["    {" + ",".join(map(repr, row)) + "}," for row in rows]
+    lines.append("}")
+    runtime = gia._RUNTIME
+    before = '        for _, item in ipairs(ELEMENTS) do'
+    after = '''        local prefabValues = {}
+        for _, binding in ipairs(PREFAB_BINDINGS) do
+            local value = PREFAB_IDS[binding[3]]
+            if type(value) ~= "number" or value < 1 or value > 4294967295 or value ~= math.floor(value) then
+                error("无效的元件 ID 配置：" .. binding[3])
+            end
+            prefabValues[binding[1]] = value
+        end
+        for index, item in ipairs(ELEMENTS) do'''
+    setter = '            image:SetImage(Enum.ImageSource.StaticReference, item[1])'
+    replacement = '''            if prefabValues[index] ~= nil then
+                image:SetImage(Enum.ImageSource.Prefab, prefabValues[index])
+            else
+                image:SetImage(Enum.ImageSource.StaticReference, item[1])
+            end'''
+    if runtime.count(before) != 1 or runtime.count(setter) != 1:
+        raise ValueError("Upstream Lua runtime changed; Prefab adapter needs review")
+    lines.append(runtime.replace(before, after).replace(setter, replacement).replace("[GIA绘制]", "[图片绘制]"))
+    return "\n".join(lines)
 
 
 def drawing_to_scene(drawing):
@@ -257,6 +361,7 @@ def drawing_to_scene(drawing):
             rows.append([KIND_ASSETS[kind], cx - width / 2, (cy + height / 2 if negative_y else cy - height / 2),
                          w, h, .5, 1 / 3 if kind == shaper.KIND_TRIANGLE else .5,
                          .5, .5, .5, .5, 1, 1, angle, *color, alpha])
+    prefab_bindings = {binding[0]: binding for binding in drawing.get("prefabBindings", [])}
     for index, row in enumerate(rows):
         asset, x, y, w, h, px, py, aminx, aminy, amaxx, amaxy, sx, sy, angle, r, g, b, alpha = row
         if min(w, h) <= 0 or sx == 0 or sy == 0 or not all(0 <= value <= 255 for value in (r, g, b, alpha)):
@@ -272,6 +377,14 @@ def drawing_to_scene(drawing):
         cx = width * (aminx + (amaxx - aminx) * px) + x + dx * math.cos(radians) - dy * math.sin(radians)
         cy = height * (aminy + (amaxy - aminy) * py) + y + dx * math.sin(radians) + dy * math.cos(radians)
         color = f"#{round(r):02x}{round(g):02x}{round(b):02x}"
+        binding = prefab_bindings.get(index + 1)
+        if binding is not None:
+            prefab_id = drawing.get("prefabIds", {}).get(binding[2], binding[1])
+            elements.append({"id": f"lua-{index + 1}", "name": f"元件 {prefab_id}", "type": "prefab",
+                             "x": cx, "y": height - cy, "width": abs(w * sx), "height": abs(h * sy),
+                             "rotation": angle, "color": color, "opacity": alpha / 255, "zIndex": index,
+                             "isBackground": False, "prefabId": prefab_id, "prefabVariable": binding[2]})
+            continue
         if asset not in ASSET_TYPES:
             # 素材库 sprite：白色代表未染色，其余颜色视为单色素材的染色
             elements.append({"id": f"lua-{index + 1}", "name": f"素材 {asset}", "type": "image",

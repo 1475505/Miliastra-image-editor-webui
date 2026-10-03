@@ -145,6 +145,7 @@ def fetch_document(
     if_none_match: str | None = None,
     accept: str = "application/json, */*",
     max_bytes: int | None = None,
+    base_url: str | None = None,
 ) -> UpstreamDocument:
     """取一份上游资源（索引 JSON 或素材贴图），可选带上条件请求头。"""
     headers = {
@@ -154,7 +155,7 @@ def fetch_document(
     }
     if if_none_match:
         headers["If-None-Match"] = if_none_match
-    request = urllib.request.Request(f"{oss_base()}/{path.lstrip('/')}", headers=headers)
+    request = urllib.request.Request(f"{(base_url or oss_base()).rstrip('/')}/{path.lstrip('/')}", headers=headers)
     timeout = DEFAULT_TIMEOUT_SECONDS
     configured_timeout = os.environ.get("MILIASTRA_LIBRARY_TIMEOUT")
     if configured_timeout:

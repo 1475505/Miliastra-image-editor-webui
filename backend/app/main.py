@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StrictBool, StrictInt
 from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFont, PngImagePlugin
 
-from . import image_library, lua_scene
+from . import image_library, lua_scene, prefab_library
 from .image_library import fetch_sprite_bytes, sprite_url
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -78,6 +78,7 @@ SHAPE_TYPES = {
     "ring",
     "textbox",
     "image",
+    "prefab",
     "other",
 }
 GIA_SHAPE_TYPES = {
@@ -214,6 +215,9 @@ class SceneElementModel(BaseModel):
     # type == "image" 时生效：素材库 sprite id，以及是否用 color 参与染色（所有素材均支持）
     imageAssetId: int | None = None
     imageTint: bool = False
+    # 元件图片仅由 Lua 绘制；prefabId 用于预览及脚本内 ID 配置，图片来源为 ImageSource.Prefab。
+    prefabId: StrictInt | None = Field(default=None, gt=0, le=0xFFFFFFFF)
+    prefabVariable: str | None = Field(default=None, max_length=128, strict=True)
 
 
 class LibraryBaseShapePresetModel(BaseModel):
@@ -293,6 +297,30 @@ def library_proxy_response(
     if result.not_modified or result.payload is None:
         return Response(status_code=304, headers=headers)
     return Response(content=result.payload, media_type=media_type, headers=headers)
+
+
+@app.get("/api/prefabs/catalog")
+def prefab_catalog(request: Request, refresh: bool = False) -> Response:
+    """Prefab information and categories, loaded only when an ID is queried."""
+    try:
+        result = prefab_library.get_catalog_bundle(request.headers.get("if-none-match"), force=refresh)
+    except image_library.LibraryUpstreamError as error:
+        raise HTTPException(status_code=502, detail=f"Prefab 索引不可用：{error}") from error
+    return library_proxy_response(result)
+
+
+@app.get("/api/prefabs/{prefab_id}")
+def prefab_info(prefab_id: str, request: Request, refresh: bool = False) -> Response:
+    """Single Prefab lookup; IDs are never silently converted to sprite IDs."""
+    try:
+        result = prefab_library.get_prefab_bundle(prefab_id, request.headers.get("if-none-match"), force=refresh)
+    except image_library.LibraryIdError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except image_library.LibraryNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except image_library.LibraryUpstreamError as error:
+        raise HTTPException(status_code=502, detail=f"Prefab 索引不可用：{error}") from error
+    return library_proxy_response(result)
 
 
 @app.get("/api/library/catalog")
@@ -584,6 +612,7 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
 
     for index, element in enumerate(sorted_elements):
         shape_type = element.type if element.type in SHAPE_TYPES else "rectangle"
+        prefab_id, prefab_variable = normalize_prefab_binding(element) if shape_type == "prefab" else (None, None)
         image_asset_id: int | None = None
         image_tint = False
         if shape_type == "image":
@@ -613,6 +642,8 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
                 textBox=element.textBox,
                 imageAssetId=image_asset_id,
                 imageTint=image_tint,
+                prefabId=prefab_id,
+                prefabVariable=prefab_variable,
             )
         )
         if shape_type == "textbox" and text_box is not None:
@@ -635,6 +666,8 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
                 textBox=text_box,
                 imageAssetId=image_asset_id,
                 imageTint=image_tint,
+                prefabId=prefab_id,
+                prefabVariable=prefab_variable,
             )
         )
 
@@ -648,6 +681,20 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
         ),
         library=normalize_library(scene.library),
     )
+
+
+def normalize_prefab_binding(element: SceneElementModel) -> tuple[int, str]:
+    if element.prefabId is None:
+        raise HTTPException(status_code=400, detail="Prefab elements require prefabId")
+    name = element.prefabVariable if element.prefabVariable is not None else f"prefab_{element.prefabId}"
+    if not name.strip() or re.search(r"[\x00-\x1f\x7f]", name):
+        raise HTTPException(status_code=400, detail="Prefab variable must be a non-empty parameter name without control characters")
+    return element.prefabId, name.strip()
+
+
+def require_supported_draw_format(scene: SceneDocumentModel, format_name: str) -> None:
+    if any(element.type == "prefab" for element in scene.elements):
+        raise HTTPException(status_code=400, detail=f"Prefab images support Lua drawing only; {format_name} is unavailable. JSON can preserve the scene.")
 
 
 def normalize_canvas_mask(mask: CanvasMaskModel, canvas_width: float, canvas_height: float) -> CanvasMaskModel:
@@ -776,6 +823,7 @@ def normalize_library(library: SceneLibraryModel) -> SceneLibraryModel:
     saved_items: list[LibrarySavedItemModel] = []
     for index, item in enumerate(library.savedItems):
         shape_type = item.element.type if item.element.type in SHAPE_TYPES else "rectangle"
+        prefab_id, prefab_variable = normalize_prefab_binding(item.element) if shape_type == "prefab" else (None, None)
         saved_asset_id = item.element.imageAssetId if shape_type == "image" else None
         if shape_type == "image" and not (isinstance(saved_asset_id, int) and 0 < saved_asset_id < 10_000_000):
             shape_type = "rectangle"
@@ -801,6 +849,8 @@ def normalize_library(library: SceneLibraryModel) -> SceneLibraryModel:
                     textBox=ensure_textbox(item.element) if shape_type == "textbox" else None,
                     imageAssetId=saved_asset_id,
                     imageTint=bool(item.element.imageTint) if shape_type == "image" else False,
+                    prefabId=prefab_id,
+                    prefabVariable=prefab_variable,
                 ),
             )
         )
@@ -859,6 +909,7 @@ def parse_json_scene(content: str) -> SceneDocumentModel:
                 "canvas": payload.get("canvas", {}),
                 "elements": payload.get("elements", []),
                 "meta": payload.get("meta", {"sourceType": "json", "sourceName": "", "warnings": []}),
+                "library": payload.get("library", {}),
             }
         )
         scene.meta.sourceType = "json"
@@ -945,6 +996,8 @@ def convert_basic_json_element(item: dict, index: int) -> SceneElementModel:
         textBox=text_box,
         imageAssetId=image_asset_id,
         imageTint=image_tint,
+        prefabId=item.get("prefabId") if shape_type == "prefab" else None,
+        prefabVariable=item.get("prefabVariable") if shape_type == "prefab" else None,
     )
 
 
@@ -1396,6 +1449,7 @@ def parse_svg_scene(content: str) -> SceneDocumentModel:
 
 
 def scene_to_css(scene: SceneDocumentModel) -> str:
+    require_supported_draw_format(scene, "CSS")
     lines = [
         "/* Miliastra CSS Export */",
         ".shaper-container {",
@@ -1488,6 +1542,7 @@ def scene_to_css(scene: SceneDocumentModel) -> str:
 
 
 def scene_to_svg(scene: SceneDocumentModel) -> str:
+    require_supported_draw_format(scene, "SVG")
     sorted_elements = sorted(scene.elements, key=lambda item: item.zIndex)
     ring_count = sum(1 for element in sorted_elements if element.type == "ring")
     tinted_count = sum(1 for element in sorted_elements if element.type == "image" and element.imageTint)
@@ -1643,6 +1698,7 @@ def paste_sprite(image: Image.Image, element: SceneElementModel, sprite: Image.I
 
 
 def scene_to_png_bytes(scene: SceneDocumentModel) -> bytes:
+    require_supported_draw_format(scene, "PNG")
     canvas_fill = (
         (0, 0, 0, 0)
         if scene.canvas.background == TRANSPARENT_BACKGROUND
@@ -1716,6 +1772,7 @@ def canvas_mask_gia_json(canvas: CanvasModel) -> dict:
 
 
 def scene_to_gia_document(scene: SceneDocumentModel, group_name: str | None = None) -> dict:
+    require_supported_draw_format(scene, "GIA")
     elements = []
     canvas_center_x = scene.canvas.width / 2
     canvas_center_y = scene.canvas.height / 2

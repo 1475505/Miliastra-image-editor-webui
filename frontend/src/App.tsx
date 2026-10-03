@@ -1,6 +1,10 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { registerEditorTools, type EditorBridge, type ElementPatch, type ElementUpdate } from "./webmcp";
 import { useI18n } from "./i18n";
+import { PrefabLibraryPanel } from "./PrefabLibraryPanel";
+import { PrefabSprite } from "./PrefabSprite";
+import { defaultPrefabVariable, getPrefabInfo, PrefabLookupError, validPrefabVariable, type PrefabInfo } from "./prefabLibrary";
+import { recordAddedPrefabs } from "./prefabHistory";
 import {
   assetMaskUrl,
   filterLibraryAssetIds,
@@ -44,6 +48,7 @@ export type ShapeType =
   | "ring"
   | "textbox"
   | "image"
+  | "prefab"
   | "other";
 
 export type AlignH = "left" | "center" | "right";
@@ -99,6 +104,9 @@ export type SceneElement = {
   imageAssetId?: number;
   /** 单色素材可染色，彩色素材忽略 color */
   imageTint?: boolean;
+  /** Catalog Prefab ID used for preview and the script-local Lua ID configuration. */
+  prefabId?: number;
+  prefabVariable?: string;
 };
 
 type LibraryCategory = {
@@ -344,6 +352,7 @@ function App() {
       ring: t("shape.ring"),
       textbox: t("shape.textbox"),
       image: t("shape.image"),
+      prefab: t("shape.prefab"),
       other: t("shape.other")
     }),
     [t]
@@ -387,6 +396,8 @@ function App() {
   const [snapConfig, setSnapConfig] = useState<SnapConfig>(DEFAULT_SNAP_CONFIG);
   const [guideLines, setGuideLines] = useState<GuideLine[]>([]);
   const [exportOpen, setExportOpen] = useState(false);
+  const [luaDialogOpen, setLuaDialogOpen] = useState(false);
+  const exportButtonRef = useRef<HTMLButtonElement>(null);
   const [propsView, setPropsView] = useState<"element" | "canvas">("canvas");
   const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false });
   const [welcomeOpen, setWelcomeOpen] = useState<boolean>(() => {
@@ -415,6 +426,7 @@ function App() {
     () => [...scene.elements].sort((a, b) => a.zIndex - b.zIndex),
     [scene.elements]
   );
+  const hasPrefabs = scene.elements.some((element) => element.type === "prefab");
 
   const selectedElement = useMemo(
     () => orderedElements.find((element) => element.id === selectedId) ?? null,
@@ -433,20 +445,22 @@ function App() {
   const baseShapePresets = scene.library.baseShapePresets ?? defaultBaseShapePresets;
 
   const assetGroups = useMemo<LibraryGroup[]>(() => {
-    if (!assetCatalog) return [];
+    const prefabGroup = { key: "prefab", label: t("shape.prefab"), ids: [], tones: [] };
+    if (!assetCatalog) return [{ key: "basic-shape", label: t("library.basicShape"), ids: [], tones: [] }, prefabGroup];
     const assets = Object.values(assetCatalog.assets);
     const tones: LibraryToneBucket[] = (["mono", "color", null] as const).map((tone) => ({
       tone, label: toneLabel(tone), ids: assets.filter((asset) => asset.tone === tone).map((asset) => asset.id)
     })).filter((bucket) => bucket.ids.length > 0);
     return [{ key: "all", label: t("library.allAssets"), ids: assets.map((asset) => asset.id).sort((a, b) => a - b), tones },
-      ...assetCatalog.groups];
+      ...assetCatalog.groups, prefabGroup];
   }, [assetCatalog, t]);
   const activeAssetGroup = useMemo<LibraryGroup | null>(
     () => assetGroups.find((group) => group.key === assetGroupKey) ?? assetGroups[0] ?? null,
     [assetGroups, assetGroupKey]
   );
   // 基础形状沿用原有的预设卡片链路，只有素材分组才渲染素材网格
-  const isSpriteGroup = Boolean(activeAssetGroup && activeAssetGroup.key !== "basic-shape");
+  const isPrefabGroup = activeAssetGroup?.key === "prefab";
+  const isSpriteGroup = Boolean(activeAssetGroup && activeAssetGroup.key !== "basic-shape" && !isPrefabGroup);
   const toneBuckets = activeAssetGroup?.tones ?? [];
   const hasToneSplit = toneBuckets.length > 1;
 
@@ -538,6 +552,22 @@ function App() {
       setStatus(t("statusbar.assetAdded", { name: element.name }));
     }
     return element;
+  }
+
+  function prefabOverrides(info: PrefabInfo): Partial<SceneElement> {
+    const name = info.names[lang === "zh" ? "zh-CN" : "en-US"] || info.names["zh-CN"] || info.names["en-US"] || t("shape.prefab");
+    return { name: `${name} ${info.id}`, prefabId: info.id, prefabVariable: defaultPrefabVariable(info.id),
+      width: info.width ?? DEFAULT_ASSET_SIZE, height: info.height ?? DEFAULT_ASSET_SIZE, color: "#ffffff", opacity: 1 };
+  }
+
+  async function addPrefabToCanvas(info: PrefabInfo) {
+    try {
+      const checked = await getPrefabInfo(info.id);
+      if (!checked.imageUrl) return;
+      addShapeToCanvas("prefab", undefined, undefined, prefabOverrides(checked));
+    } catch {
+      setStatus(t("prefab.error.unavailable"));
+    }
   }
 
   function selectAssetGroup(key: string) {
@@ -694,10 +724,14 @@ function App() {
     const rawNext = typeof nextSceneOrUpdater === "function" ? nextSceneOrUpdater(current) : nextSceneOrUpdater;
     const next = rawNext.library === current.library ? rawNext : ensureSceneLibrary(rawNext);
     if (sameValue(current, next)) return;
+    const previous = new Map(current.elements.map((element) => [element.id, element]));
+    const addedPrefabs = next.elements.filter((element) => element.type === "prefab" && element.prefabId &&
+      (previous.get(element.id)?.type !== "prefab" || previous.get(element.id)?.prefabId !== element.prefabId));
     // 同步 ref 后再交给 React 渲染，连续工具调用无需等待下一次 render。
     sceneRef.current = next;
     commitHistory(next);
     setScene(next);
+    void recordAddedPrefabs(addedPrefabs.map((element) => element.prefabId!));
   }
 
   function undoScene() {
@@ -987,6 +1021,7 @@ function App() {
 
   useEffect(() => {
     if (rightTab !== "code") return;
+    if (hasPrefabs && previewTab !== "json" && previewTab !== "lua") { setPreviewTab("lua"); return; }
     const controller = new AbortController();
     const setText = (text: string) => {
       if (previewTab === "json") setGeneratedJson(text);
@@ -1020,7 +1055,7 @@ function App() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [scene, rightTab, previewTab, previewRevision]);
+  }, [scene, rightTab, previewTab, previewRevision, hasPrefabs]);
 
   async function handleSaveAndApply() {
     const nextScene = {
@@ -1254,6 +1289,7 @@ function App() {
   }
 
   async function copyCurrentCode() {
+    if (hasPrefabs && previewTab !== "json" && previewTab !== "lua") { setStatus(t("prefab.luaOnly")); return; }
     const label = previewLabels[previewTab];
     const current = sceneRef.current;
     let text: string;
@@ -1314,6 +1350,12 @@ function App() {
       next.imageTint = override?.imageTint ?? false;
       next.opacity = override?.opacity ?? 1;
     }
+    if (type === "prefab") {
+      next.prefabId = override?.prefabId;
+      next.prefabVariable = override?.prefabVariable ?? (next.prefabId ? defaultPrefabVariable(next.prefabId) : "");
+      next.color = override?.color ?? "#ffffff";
+      next.opacity = override?.opacity ?? 1;
+    }
     return next;
   }
 
@@ -1364,6 +1406,9 @@ function App() {
       if (patch.textBox && target.type !== "textbox") return { ok: false, error: `Element is not a textbox: ${id}` };
       if ((patch.imageAssetId !== undefined || patch.imageTint !== undefined) && target.type !== "image") {
         return { ok: false, error: `Element is not an image: ${id}` };
+      }
+      if ((patch.prefabId !== undefined || patch.prefabVariable !== undefined) && target.type !== "prefab") {
+        return { ok: false, error: `Element is not a Prefab: ${id}` };
       }
       patches.set(id, normalizeElementPatch(patch));
     }
@@ -1483,6 +1528,7 @@ function App() {
 
   async function downloadExport(endpoint: string, filename: string) {
     setExportOpen(false);
+    if (hasPrefabs && endpoint !== "/api/export/lua" && endpoint !== "/api/export/json") { setStatus(t("prefab.luaOnly")); return; }
     setStatus(t("statusbar.preparing", { name: filename }));
     const response = await fetch(endpoint, {
       method: "POST",
@@ -1672,6 +1718,12 @@ function App() {
 
     try {
       const data = JSON.parse(payload) as { type: ShapeType; override?: Partial<SceneElement> };
+      if (data.type === "prefab") {
+        if (!data.override?.prefabId) return;
+        const info = await getPrefabInfo(data.override.prefabId);
+        if (!info.imageUrl) return;
+        data.override = { ...prefabOverrides(info), ...data.override, prefabId: info.id };
+      }
       if (data.type === "image" && data.override?.imageAssetId) {
         // 拖入时用素材元数据里的原始尺寸，确保初始宽高不被固定
         let meta: SpriteMeta | null | undefined;
@@ -1681,8 +1733,8 @@ function App() {
           meta = readMetaCache(data.override.imageAssetId);
         }
         const size = defaultAssetSize(data.override.imageAssetId, meta);
-        data.override.width = size.width;
-        data.override.height = size.height;
+        data.override.width ??= size.width;
+        data.override.height ??= size.height;
       }
       const rect = canvasRef.current.getBoundingClientRect();
       const x = clamp((event.clientX - rect.left) / zoom, 0, scene.canvas.width);
@@ -1698,6 +1750,23 @@ function App() {
 
   function startShapeDrag(event: React.DragEvent<HTMLButtonElement>, type: ShapeType, override?: Partial<SceneElement>) {
     event.dataTransfer.setData("application/miliastra-shape", JSON.stringify({ type, override }));
+  }
+
+  function savedElementOverrides(element: SceneElement): Partial<SceneElement> {
+    const { id, type, x, y, zIndex, ...properties } = element;
+    return structuredClone(properties);
+  }
+
+  async function addSavedItem(element: SceneElement) {
+    if (element.type === "prefab") {
+      try {
+        if (!element.prefabId || !(await getPrefabInfo(element.prefabId)).imageUrl) return;
+      } catch (failure) {
+        setStatus(t(`prefab.error.${failure instanceof PrefabLookupError ? failure.kind : "unavailable"}`));
+        return;
+      }
+    }
+    addShapeToCanvas(element.type, undefined, undefined, savedElementOverrides(element));
   }
 
   const savedLibrary = scene.library.savedItems ?? [];
@@ -1744,7 +1813,7 @@ function App() {
             <kbd className="btn-kbd">{saveShortcut}</kbd>
           </button>
           <div className="menu-wrap" data-tour="export">
-            <button
+            <button ref={exportButtonRef}
               className="btn btn-ghost"
               onClick={(event) => {
                 event.stopPropagation();
@@ -1761,6 +1830,8 @@ function App() {
                   <button
                     key={item.ext}
                     className="menu-item"
+                    disabled={hasPrefabs && item.ext !== "lua" && item.ext !== "json"}
+                    title={hasPrefabs && item.ext !== "lua" && item.ext !== "json" ? t("prefab.luaOnly") : undefined}
                     onClick={() => downloadExport(item.endpoint, `${exportFileName}.${item.ext}`)}
                   >
                     <Icon name="download" size={14} />
@@ -1770,6 +1841,14 @@ function App() {
                     </div>
                   </button>
                 ))}
+                <button className="menu-item" aria-haspopup="dialog" aria-label={t("luaDialog.open")}
+                  onClick={() => { setExportOpen(false); setLuaDialogOpen(true); }}>
+                  <Icon name="copy" size={14} />
+                  <div>
+                    <strong>{t("luaDialog.open")}</strong>
+                    <span>{t("luaDialog.openDesc")}</span>
+                  </div>
+                </button>
               </div>
             ) : null}
           </div>
@@ -1835,7 +1914,7 @@ function App() {
                       className={`layer-row-item ${selectedId === element.id ? "selected" : ""}`}
                       onClick={() => setSelectedId(element.id)}
                     >
-                      <ShapeGlyph type={element.type} color={element.color} assetId={element.imageAssetId} tint={element.imageTint} />
+                      <ShapeGlyph type={element.type} color={element.color} assetId={element.imageAssetId} tint={element.imageTint} prefabId={element.prefabId} />
                       <div className="layer-info">
                         <strong>{getElementBaseName(element, shapeLabels)}</strong>
                         <span>
@@ -1853,9 +1932,9 @@ function App() {
               <div className="field">
                 <span className="asset-category-heading">
                   {t("library.category")}
-                  <button type="button" className="asset-retry" disabled={assetLoading} onClick={() => void reloadAssetCatalog(true)}>
+                  {!isPrefabGroup ? <button type="button" className="asset-retry" disabled={assetLoading} onClick={() => void reloadAssetCatalog(true)}>
                     {t("library.refresh")}
-                  </button>
+                  </button> : null}
                 </span>
                 <select
                   aria-label={t("library.category")}
@@ -1865,7 +1944,7 @@ function App() {
                 >
                   {assetGroups.length ? (
                     assetGroups.map((group) => (
-                      <option key={group.key} value={group.key}>{group.label} · {group.ids.length}</option>
+                      <option key={group.key} value={group.key}>{group.label}{group.key === "prefab" ? "" : ` · ${group.ids.length}`}</option>
                     ))
                   ) : (
                     <option value="">{assetLoading ? t("library.loading") : t("library.loadFailed")}</option>
@@ -1873,7 +1952,7 @@ function App() {
                 </select>
               </div>
 
-              {assetError ? (
+              {assetError && !isPrefabGroup ? (
                 <div className="tip-box asset-error">
                   <span>{assetError}</span>
                   <button type="button" onClick={() => void reloadAssetCatalog(true)}>
@@ -1882,6 +1961,7 @@ function App() {
                 </div>
               ) : null}
 
+              {isPrefabGroup ? <PrefabLibraryPanel onAdd={(info) => void addPrefabToCanvas(info)} onDrag={(event, info) => startShapeDrag(event, "prefab", prefabOverrides(info))} /> : null}
               {isSpriteGroup ? (
                 <>
                   {hasToneSplit ? (
@@ -2056,27 +2136,13 @@ function App() {
                       className="saved-item"
                       draggable
                       onDragStart={(event) =>
-                        startShapeDrag(event, item.element.type, {
-                          width: item.element.width,
-                          height: item.element.height,
-                          rotation: item.element.rotation,
-                          color: item.element.color,
-                          opacity: item.element.opacity,
-                          isBackground: item.element.isBackground
-                        })
+                        startShapeDrag(event, item.element.type, savedElementOverrides(item.element))
                       }
                       onDoubleClick={() =>
-                        addShapeToCanvas(item.element.type, undefined, undefined, {
-                          width: item.element.width,
-                          height: item.element.height,
-                          rotation: item.element.rotation,
-                          color: item.element.color,
-                          opacity: item.element.opacity,
-                          isBackground: item.element.isBackground
-                        })
+                        void addSavedItem(item.element)
                       }
                     >
-                      <ShapeGlyph type={item.element.type} color={item.element.color} assetId={item.element.imageAssetId} tint={item.element.imageTint} />
+                      <ShapeGlyph type={item.element.type} color={item.element.color} assetId={item.element.imageAssetId} tint={item.element.imageTint} prefabId={item.element.prefabId} />
                       <div className="layer-info">
                         <strong>{item.name}</strong>
                         <span>
@@ -2284,6 +2350,7 @@ function App() {
                     {element.type === "image" && element.imageAssetId ? (
                       <AssetSprite assetId={element.imageAssetId} tint={element.imageTint} color={element.color} />
                     ) : null}
+                    {element.type === "prefab" && element.prefabId ? <PrefabSprite prefabId={element.prefabId} color={element.color} /> : null}
                     {selectedId === element.id ? (
                       <>
                         <div className="rotate-stem" />
@@ -2525,7 +2592,7 @@ function App() {
               {selectedElement && propsView === "element" ? (
                 <>
                   <div className="inspector-head">
-                    <ShapeGlyph type={selectedElement.type} color={selectedElement.color} assetId={selectedElement.imageAssetId} tint={selectedElement.imageTint} />
+                    <ShapeGlyph type={selectedElement.type} color={selectedElement.color} assetId={selectedElement.imageAssetId} tint={selectedElement.imageTint} prefabId={selectedElement.prefabId} />
                     <div className="layer-info">
                       <strong>{getElementBaseName(selectedElement, shapeLabels)}</strong>
                       <span>{shapeLabels[selectedElement.type]} · {t("props.layer", { n: selectedElement.zIndex + 1 })}</span>
@@ -2572,8 +2639,20 @@ function App() {
                       </div>
                     </div>
                   ) : null}
+                  {selectedElement.type === "prefab" ? (
+                    <>
+                      <div className="field"><span>{t("prefab.id")}</span><code>{selectedElement.prefabId}</code></div>
+                      <label className="field" htmlFor="prefab-variable">
+                        <span>{t("prefab.variable")}</span>
+                        <input id="prefab-variable" value={selectedElement.prefabVariable ?? ""} maxLength={128} spellCheck={false}
+                          aria-invalid={!validPrefabVariable(selectedElement.prefabVariable ?? "")}
+                          onChange={(event) => updateSelected({ prefabVariable: event.target.value })} />
+                      </label>
+                      <div className="tip-box">{t("prefab.variableHint")}</div>
+                    </>
+                  ) : null}
                   <div className="field">
-                    <span>{selectedElement.type === "image" ? t("props.tintColor") : t("props.fillColor")}</span>
+                    <span>{selectedElement.type === "image" || selectedElement.type === "prefab" ? t("props.tintColor") : t("props.fillColor")}</span>
                     <ColorField value={selectedElement.type === "image" && !selectedElement.imageTint ? "#ffffff" : selectedElement.color} onChange={(color) => updateSelected({ color, ...(selectedElement.type === "image" ? { imageTint: true } : {}) })} />
                   </div>
                   <div className="field">
@@ -2625,6 +2704,7 @@ function App() {
                       </button>
                     </div>
                   </div>
+                  {selectedElement.type !== "prefab" ? (
                   <label className="check-row" title={t("props.bgTitle")}>
                     <input
                       type="checkbox"
@@ -2636,6 +2716,7 @@ function App() {
                       <em>{t("props.bgHint")}</em>
                     </span>
                   </label>
+                  ) : null}
 
                   <div className="section-spacer" />
                   <button className="btn btn-danger-ghost btn-block" onClick={removeSelected}>
@@ -2803,6 +2884,7 @@ function App() {
                     <button
                       key={tab}
                       className={previewTab === tab ? "active" : ""}
+                      disabled={hasPrefabs && tab !== "json" && tab !== "lua"}
                       onClick={() => setPreviewTab(tab)}
                     >
                       {previewLabels[tab]}
@@ -2812,6 +2894,7 @@ function App() {
                 {previewTab === "lua" ? (
                   <div className="tip-box">{t("export.lua.setup")}</div>
                 ) : null}
+                {hasPrefabs ? <div className="tip-box">{t("prefab.luaOnly")}</div> : null}
                 {previewTab === "lua" && scene.elements.some((element) => element.type === "textbox" || element.type === "other") ? (
                   <div className="message-box warning">{t("export.lua.preservedOnly")}</div>
                 ) : null}
@@ -2900,7 +2983,7 @@ function App() {
           </div>
         </div>
       ) : null}
-
+      {luaDialogOpen ? <LuaScriptDialog scene={scene} returnFocusTo={exportButtonRef.current} onClose={() => setLuaDialogOpen(false)} /> : null}
       {welcomeOpen ? (
         <WelcomeDialog
           onClose={closeTour}
@@ -2912,6 +2995,92 @@ function App() {
       ) : null}
     </div>
   );
+}
+
+function LuaScriptDialog({ scene, returnFocusTo, onClose }: { scene: SceneDocument; returnFocusTo: HTMLElement | null; onClose: () => void }) {
+  const { t } = useI18n();
+  const titleId = useId();
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const codeRef = useRef<HTMLTextAreaElement>(null);
+  const [revision, setRevision] = useState(0);
+  const [result, setResult] = useState<{ scene: SceneDocument; phase: "loading" | "ready" | "error"; text: string; error: string }>(
+    { scene, phase: "loading", text: "", error: "" }
+  );
+  const [copying, setCopying] = useState(false);
+  const [copyResult, setCopyResult] = useState<{ text: string; ok: boolean } | null>(null);
+  const current = result.scene === scene ? result : { phase: "loading", text: "", error: "" };
+  const ready = current.phase === "ready";
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previousFocus = returnFocusTo ?? document.activeElement;
+    dialog?.showModal();
+    return () => {
+      dialog?.close();
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+    };
+  }, [returnFocusTo]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setResult({ scene, phase: "loading", text: "", error: "" });
+    setCopyResult(null);
+    void fetchTextExport("/api/export/lua", scene, controller.signal).then((text) => {
+      if (!controller.signal.aborted) setResult({ scene, phase: "ready", text, error: "" });
+    }).catch((error) => {
+      if (!controller.signal.aborted) setResult({ scene, phase: "error", text: "", error: error instanceof Error ? error.message : String(error) });
+    });
+    return () => controller.abort();
+  }, [scene, revision]);
+
+  async function copyScript() {
+    if (!ready || copying) return;
+    const text = current.text;
+    setCopying(true);
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    } catch {
+      // Keep fallback selection inside the modal; elements behind it are inert.
+      codeRef.current?.focus();
+      codeRef.current?.select();
+      try { ok = document.execCommand("copy"); } catch { /* Leave the script selected for manual copying. */ }
+    }
+    setCopyResult({ text, ok });
+    setCopying(false);
+  }
+
+  return <dialog ref={dialogRef} className="lua-script-dialog" aria-labelledby={titleId}
+    onCancel={(event) => { event.preventDefault(); onClose(); }}
+    onClick={(event) => {
+      if (event.target !== event.currentTarget) return;
+      const rect = event.currentTarget.getBoundingClientRect();
+      if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onClose();
+    }}>
+    <div className="lua-script-heading">
+      <h2 id={titleId}>{t("luaDialog.title")}</h2>
+      <button className="icon-btn" type="button" onClick={onClose} aria-label={t("luaDialog.close")} title={t("luaDialog.close")}><Icon name="x" size={18} /></button>
+    </div>
+    <p className="lua-script-hint">{t("luaDialog.hint")}</p>
+    {scene.elements.some((element) => element.type === "textbox" || element.type === "other") ? <div className="message-box warning">{t("export.lua.preservedOnly")}</div> : null}
+    <div className={`lua-script-status${current.phase === "error" ? " is-error" : ""}`} role="status" aria-live="polite">
+      {current.phase === "loading" ? t("luaDialog.loading") : current.phase === "error" ? t("statusbar.exportFailed", { msg: current.error }) : ""}
+    </div>
+    <textarea ref={codeRef} readOnly spellCheck={false} wrap="off" value={current.text}
+      aria-label={t("luaDialog.code")} aria-busy={current.phase === "loading"} />
+    <div className="lua-script-footer">
+      <button className="btn btn-ghost" type="button" disabled={current.phase === "loading"} onClick={() => setRevision((value) => value + 1)}>
+        <Icon name="rotateCw" size={13} /><span>{t("code.refresh")}</span>
+      </button>
+      <span className="lua-script-copy-status" role="status" aria-live="polite">
+        {copyResult?.text === current.text ? t(copyResult.ok ? "statusbar.copied" : "statusbar.copyFailed", { label: "Lua" }) : ""}
+      </span>
+      <button className="btn btn-primary" type="button" disabled={!ready || copying} onClick={() => void copyScript()}>
+        <Icon name="copy" size={13} /><span>{t("code.copy", { label: "Lua" })}</span>
+      </button>
+    </div>
+  </dialog>;
 }
 
 function WelcomeDialog({ onClose, onStart }: {
@@ -3403,7 +3572,8 @@ function ensureSceneLibrary(scene: SceneDocument): SceneDocument {
   };
 }
 
-function ShapeGlyph({ type, color, assetId, tint }: { type: ShapeType; color: string; assetId?: number; tint?: boolean }) {
+function ShapeGlyph({ type, color, assetId, tint, prefabId }: { type: ShapeType; color: string; assetId?: number; tint?: boolean; prefabId?: number }) {
+  if (type === "prefab" && prefabId) return <div className="glyph glyph-prefab"><PrefabSprite prefabId={prefabId} color={color} /></div>;
   if (type === "image" && assetId) {
     return <AssetSprite assetId={assetId} tint={tint} color={color} />;
   }
@@ -3701,7 +3871,7 @@ function shapeStyle(element: SceneElement) {
   if (element.type === "textbox") {
     return { ...common, background: "transparent" };
   }
-  if (element.type === "image") {
+  if (element.type === "image" || element.type === "prefab") {
     return { ...common, background: "transparent" };
   }
   return { ...common, background: element.color };
