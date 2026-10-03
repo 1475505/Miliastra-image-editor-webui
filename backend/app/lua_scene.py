@@ -220,6 +220,19 @@ def read_drawing(source):
             if any(binding[2] not in prefab_ids for binding in bindings):
                 raise ValueError("Every Prefab binding requires an ID configuration")
             drawing["prefabIds"] = prefab_ids
+        textboxes = _literal(source, "TEXTBOXES", required=False)
+        order = _literal(source, "DRAW_ORDER", required=False)
+        if textboxes is not None or order is not None:
+            drawing["textboxes"] = _textboxes(textboxes)
+            drawing["order"] = _rows(order, 2, "DRAW_ORDER")
+            expected = {(1, i + 1) for i in range(len(rows))} | {(2, i + 1) for i in range(len(textboxes))}
+            references = []
+            for kind, index in order:
+                if type(kind) is not int or type(index) is not int:
+                    raise ValueError("DRAW_ORDER requires integer control kinds and indices")
+                references.append((kind, index))
+            if len(references) != len(expected) or set(references) != expected:
+                raise ValueError("DRAW_ORDER must reference every image and textbox exactly once")
         return drawing
     width, height = (_number(_literal(source, name)) for name in ("IMG_WIDTH", "IMG_HEIGHT"))
     if width <= 0 or height <= 0:
@@ -238,7 +251,7 @@ def _digest(drawing):
 
 
 def _is_image_element(item):
-    """基础形状与素材图片都会走 GIA 图片导出，其余图元只保留为编辑数据。"""
+    """基础形状、素材图片和元件使用图片控件，文本框使用独立模板。"""
     if item.get("type") == "image":
         asset = item.get("imageAssetId")
         return isinstance(asset, int) and asset > 0
@@ -248,11 +261,11 @@ def _is_image_element(item):
 
 
 def dumps(scene, gia_data=None, name=""):
-    """Use the unmodified upstream emitter, plus an inert editor-data comment."""
+    """Adapt the upstream emitter and preserve the editor scene in an inert comment."""
     # Validate all metadata too (json.dumps rejects non-finite numeric fields).
     json.dumps(scene, allow_nan=False)
-    if any(item.get("type") == "prefab" for item in scene["elements"]):
-        script = _prefab_script(scene, gia_data, name)
+    if any(item.get("type") in ("prefab", "textbox") for item in scene["elements"]):
+        script = _control_script(scene, gia_data, name)
     elif gia_data is not None:
         script = gia.build_gia_lua(gia_data, name or "千星图片编辑器")
     else:
@@ -263,33 +276,99 @@ def dumps(scene, gia_data=None, name=""):
     expected_images = sum(_is_image_element(item) for item in scene["elements"])
     if len(drawing["rows"]) != expected_images:
         raise ValueError("Shared Lua conversion did not preserve every image element")
+    if len(drawing.get("textboxes", [])) != sum(item.get("type") == "textbox" for item in scene["elements"]):
+        raise ValueError("Lua conversion did not preserve every textbox")
     # image_template.gia contains orphan references to deleted template nodes.
     # After verifying every current scene image is present, that upstream warning
     # describes the template, not missing user artwork; omit it from this export.
     script = re.sub(r"(?m)^-- 注意：原 GIA 有 \d+ 个没有图片实体的悬空引用[^\n]*\n", "", script)
     metadata = {"version": 1, "drawingHash": _digest(drawing), "scene": scene}
     payload = base64.b64encode(json.dumps(metadata, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()).decode()
-    preserved_only = sum(not _is_image_element(item) for item in scene["elements"])
-    note = (f"-- 注意：{preserved_only} 个文本框/非图片图元仅保留为编辑数据，不在游戏中绘制。\n" if preserved_only else "")
+    preserved_only = sum(not _is_image_element(item) and item.get("type") != "textbox" for item in scene["elements"])
+    note = (f"-- 注意：{preserved_only} 个不支持的图元仅保留为编辑数据，不在游戏中绘制。\n" if preserved_only else "")
     result = note + script + "\n-- 编辑器回导数据：保留图元名称、文本框与素材库，请勿删除。\n" + METADATA_PREFIX + payload + "\n"
     if len(result.encode("utf-8")) > MAX_CONTENT_SIZE:
         raise ValueError("Lua export exceeds the 10 MiB re-import limit")
     return result
 
 
-def _prefab_script(scene, gia_data, name):
-    """Extend the upstream runtime at its SetImage boundary; leave vendor files intact."""
+def _lua_literal(value):
+    """Encode UTF-8 Lua literals, including NUL/control bytes followed by digits."""
+    if isinstance(value, str):
+        escaped = []
+        for char in value:
+            if char in ('"', "\\"):
+                escaped.append("\\" + char)
+            elif ord(char) < 32 or ord(char) == 127:
+                escaped.append(f"\\{ord(char):03d}")
+            else:
+                escaped.append(char)
+        return '"' + "".join(escaped) + '"'
+    if type(value) is bool:
+        return "true" if value else "false"
+    if isinstance(value, dict):
+        return "{" + ",".join(f"[{_lua_literal(key)}]={_lua_literal(item)}" for key, item in value.items()) + "}"
+    if isinstance(value, list):
+        return "{" + ",".join(map(_lua_literal, value)) + "}"
+    return repr(_number(value))
+
+
+def _textboxes(value):
+    """Validate drawing data even when a saved editor snapshot is available."""
+    if not isinstance(value, list):
+        raise ValueError("TEXTBOXES must be an array")
+    numeric = ("scaleX", "scaleY", "anchorMinX", "anchorMinY", "anchorMaxX", "anchorMaxY", "pivotX", "pivotY")
+    booleans = ("autoSize", "outlineEnabled", "visible")
+    settings = {"text", "fontSize", "minFontSize", "alignH", "alignV", "anchorType", *numeric, *booleans}
+    settings.update(f"{prefix}{suffix}" for prefix in ("text", "bg", "outline") for suffix in ("Color", "Opacity"))
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {"name", "x", "y", "width", "height", "rotation", "textBox"}:
+            raise ValueError("Invalid TEXTBOXES record fields")
+        if not isinstance(item["name"], str):
+            raise ValueError("Textbox names must be strings")
+        for field in ("x", "y", "width", "height", "rotation"):
+            _number(item[field])
+        if min(item["width"], item["height"]) < 1:
+            raise ValueError("Textbox dimensions must be positive")
+        box = item["textBox"]
+        if not isinstance(box, dict) or set(box) != settings or not isinstance(box["text"], str):
+            raise ValueError("Invalid TEXTBOXES text settings")
+        for field in numeric:
+            _number(box[field])
+        for field in ("fontSize", "minFontSize"):
+            if type(box[field]) is not int or box[field] < 1:
+                raise ValueError("Textbox font sizes must be positive integers")
+        if any(type(box[field]) is not bool for field in booleans):
+            raise ValueError("Textbox switches must be booleans")
+        if box["alignH"] not in ("left", "center", "right") or box["alignV"] not in ("top", "middle", "bottom") or box["anchorType"] not in ("center", "custom"):
+            raise ValueError("Invalid textbox alignment or anchor type")
+        for prefix in ("text", "bg", "outline"):
+            color = box[f"{prefix}Color"]
+            if not isinstance(color, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+                raise ValueError("Textbox colors must be six-digit hex strings")
+            if not 0 <= _number(box[f"{prefix}Opacity"]) <= 1:
+                raise ValueError("Textbox opacity must be between zero and one")
+    return value
+
+
+def _control_script(scene, gia_data, name):
+    """Extend the upstream runtime for Prefabs and text; leave vendor files intact."""
     width, height = scene["canvas"]["width"], scene["canvas"]["height"]
     static = gia.parse_material_gia(gia_data) if gia_data is not None else None
     # Lua draws the complete canvas without the GIA crop; mixed and Prefab-only
     # scenes must use the same parent geometry even when the crop was resized.
     root = [0, 0, width, height, .5, .5, .5, .5, .5, .5, 1, 1, 0]
     static_rows = iter(static["records"] if static else [])
-    rows, bindings = [], []
+    rows, bindings, textboxes, order = [], [], [], []
     variables = {}
-    for item in sorted(scene["elements"], key=lambda item: item["zIndex"]):
+    for item in sorted(scene["elements"], key=lambda item: (0 if item["isBackground"] else 1, item["zIndex"])):
+        if item["type"] == "textbox":
+            textboxes.append({key: item[key] for key in ("name", "x", "y", "width", "height", "rotation", "textBox")})
+            order.append([2, len(textboxes)])
+            continue
         if not _is_image_element(item):
             continue
+        order.append([1, len(rows) + 1])
         if item["type"] != "prefab":
             rows.append(next(static_rows))
             continue
@@ -303,22 +382,37 @@ def _prefab_script(scene, gia_data, name):
                      .5, .5, .5, .5, .5, .5, 1, 1, item["rotation"], *rgb, round(item["opacity"] * 255)])
         bindings.append([len(rows), prefab_id, configuration])
     title = str(name or "千星图片编辑器").replace("\r", " ").replace("\n", " ")
-    lines = [f"-- {title}：元件图片 Lua 绘制脚本", "-- 1. 将 IMAGE_PREFAB_ID 填为图片控件的「控件模板索引ID」，模板设为仅存为模板。",
-             "-- 2. 元件 ID 在下方 PREFAB_IDS 表中定义，可直接修改；无需创建客户端脚本参数。",
-             "--    SetImage 的 imageId 使用整数；Enum.ImageSource.Prefab 指定图片来源为元件。",
-             "-- 3. 挂到专用空客户端容器，OnStart 绘制；文本框只保留为编辑数据。",
-              "local IMAGE_PREFAB_ID = 0 -- 客户端图片控件模板索引ID", "local BASE_SCALE = 1", "local OFFSET_X = 0", "local OFFSET_Y = 0",
-              "local PREFAB_IDS = {"]
-    lines += [f"    [{json.dumps(configuration, ensure_ascii=False)}] = {prefab_id}," for configuration, prefab_id in variables.items()]
-    lines += ["}", "-- rowIndex,previewPrefabId,configurationName；绘制时读取 PREFAB_IDS。",
-              "local PREFAB_BINDINGS = {"]
-    lines += [f"    {{{index},{prefab_id},{json.dumps(configuration, ensure_ascii=False)}}}," for index, prefab_id, configuration in bindings]
-    lines += ["}", "local ROOT = {" + ",".join(map(repr, root)) + "}", "local ELEMENTS = {"]
+    lines = [f"-- {title}：图片与文本 Lua 绘制脚本",
+             "-- 挂到专用空客户端容器，OnStart 绘制；模板设为仅存为模板。",
+             "local IMAGE_PREFAB_ID = 0 -- 图片控件模板索引ID；没有图片时无需填写"]
+    if textboxes:
+        lines += ["local TEXTBOX_PREFAB_ID = 0 -- 必填：文本框控件模板索引ID",
+                  "-- 字号自适应由每个文本框的 autoSize 显式设置，默认开启；minFontSize 为最小字号。"]
+    lines += ["local BASE_SCALE = 1", "local OFFSET_X = 0", "local OFFSET_Y = 0"]
+    if bindings:
+        lines += ["-- 元件 ID 在 PREFAB_IDS 中定义，无需创建客户端脚本参数。", "local PREFAB_IDS = {"]
+        lines += [f"    [{_lua_literal(configuration)}] = {prefab_id}," for configuration, prefab_id in variables.items()]
+        lines += ["}", "-- rowIndex,previewPrefabId,configurationName；绘制时读取 PREFAB_IDS。", "local PREFAB_BINDINGS = {"]
+        lines += [f"    {{{index},{prefab_id},{_lua_literal(configuration)}}}," for index, prefab_id, configuration in bindings]
+        lines.append("}")
+    lines += ["local ROOT = {" + ",".join(map(repr, root)) + "}", "local ELEMENTS = {"]
     lines += ["    {" + ",".join(map(repr, row)) + "}," for row in rows]
     lines.append("}")
     runtime = gia._RUNTIME
-    before = '        for _, item in ipairs(ELEMENTS) do'
-    after = '''        local prefabValues = {}
+    if textboxes:
+        lines += ["-- 文本框数据：位置使用编辑器画布坐标，textBox 保存完整文字与样式。", "local TEXTBOXES = {"]
+        lines += ["    " + _lua_literal(item) + "," for item in textboxes]
+        lines += ["}", "-- {1,图片序号} / {2,文本框序号}，从背景到前景绘制。", "local DRAW_ORDER = {"]
+        lines += ["    " + _lua_literal(entry) + "," for entry in order]
+        lines.append("}")
+    before = '        for _, item in ipairs(ELEMENTS) do\n'
+    end = '            image:SetAsLastSibling()\n        end'
+    if runtime.count(before) != 1 or runtime.count(end) != 1:
+        raise ValueError("Upstream Lua runtime changed; control adapter needs review")
+    body_start = runtime.index(before) + len(before)
+    body_end = runtime.index(end) + len('            image:SetAsLastSibling()')
+    image_body = runtime[body_start:body_end]
+    prefix = '''        local prefabValues = {}
         for _, binding in ipairs(PREFAB_BINDINGS) do
             local value = PREFAB_IDS[binding[3]]
             if type(value) ~= "number" or value < 1 or value > 4294967295 or value ~= math.floor(value) then
@@ -326,17 +420,76 @@ def _prefab_script(scene, gia_data, name):
             end
             prefabValues[binding[1]] = value
         end
-        for index, item in ipairs(ELEMENTS) do'''
+'''
     setter = '            image:SetImage(Enum.ImageSource.StaticReference, item[1])'
     replacement = '''            if prefabValues[index] ~= nil then
                 image:SetImage(Enum.ImageSource.Prefab, prefabValues[index])
             else
                 image:SetImage(Enum.ImageSource.StaticReference, item[1])
             end'''
-    if runtime.count(before) != 1 or runtime.count(setter) != 1:
-        raise ValueError("Upstream Lua runtime changed; Prefab adapter needs review")
-    lines.append(runtime.replace(before, after).replace(setter, replacement).replace("[GIA绘制]", "[图片绘制]"))
+    if bindings:
+        if image_body.count(setter) != 1:
+            raise ValueError("Upstream Lua runtime changed; Prefab adapter needs review")
+        image_body = image_body.replace(setter, replacement)
+    if textboxes:
+        image_body = "\n".join("    " + line for line in image_body.splitlines())
+        loop = '''        for _, entry in ipairs(DRAW_ORDER) do
+            local index = entry[2]
+            if entry[1] == 2 then
+''' + _TEXTBOX_RUNTIME + '''
+            else
+                local item = ELEMENTS[index]
+''' + image_body + '''
+            end
+        end'''
+    else:
+        loop = '        for index, item in ipairs(ELEMENTS) do\n' + image_body + '\n        end'
+    runtime = runtime[:runtime.index(before)] + (prefix if bindings else "") + loop + runtime[body_end + len('\n        end'):]
+    if textboxes:
+        check = 'if type(IMAGE_PREFAB_ID) ~= "number" or IMAGE_PREFAB_ID <= 0 or IMAGE_PREFAB_ID % 1 ~= 0 then'
+        runtime = runtime.replace(check, 'if #ELEMENTS > 0 and (type(IMAGE_PREFAB_ID) ~= "number" or IMAGE_PREFAB_ID <= 0 or IMAGE_PREFAB_ID % 1 ~= 0) then')
+        runtime = runtime.replace('    local parent = script.object', '''    if type(TEXTBOX_PREFAB_ID) ~= "number" or TEXTBOX_PREFAB_ID <= 0 or TEXTBOX_PREFAB_ID % 1 ~= 0 then
+        printerr("[GIA绘制] 请填写 TEXTBOX_PREFAB_ID：客户端文本框控件模板索引ID")
+        return
+    end
+    local parent = script.object''')
+        # Alignment names come from the documented client UI API, not GIA codes.
+        runtime = '''local ALIGN_H = {left=Enum.TextHorizontalAlignment.Left, center=Enum.TextHorizontalAlignment.Middle, right=Enum.TextHorizontalAlignment.Right}
+local ALIGN_V = {top=Enum.TextVerticalAlignment.Top, middle=Enum.TextVerticalAlignment.Middle, bottom=Enum.TextVerticalAlignment.Bottom}
+local function TextColor(hex, opacity)
+    return Color.FromRGBA(tonumber(string.sub(hex, 2, 3), 16), tonumber(string.sub(hex, 4, 5), 16), tonumber(string.sub(hex, 6, 7), 16), math.floor(opacity * 255))
+end
+''' + runtime
+    lines.append(runtime.replace("[GIA绘制]", "[图片绘制]"))
     return "\n".join(lines)
+
+
+_TEXTBOX_RUNTIME = '''                local item = TEXTBOXES[index]
+                local box = item.textBox
+                local text = game.InstantiateClientUIControl(TEXTBOX_PREFAB_ID, parent)
+                if text == nil then error("文本框模板无法实例化，请确认已设为仅存为模板") end
+                table.insert(created, text)
+                text.name = item.name
+                text:SetAnchorMin(box.anchorMinX, box.anchorMinY)
+                text:SetAnchorMax(box.anchorMaxX, box.anchorMaxY)
+                text:SetPivot(box.pivotX, box.pivotY)
+                text:SetSizeDelta(item.width, item.height)
+                text:SetLocalScale(box.scaleX, box.scaleY, 1)
+                text:SetLocalRotation(0, 0, item.rotation)
+                text:SetAnchoredPosition(item.x - ROOT[3] / 2, ROOT[4] / 2 - item.y)
+                text.fontSize = box.fontSize
+                text.minimumFontSize = box.minFontSize
+                text.adaptiveFontSize = box.autoSize
+                text.fontColor = TextColor(box.textColor, box.textOpacity)
+                text.bgColor = TextColor(box.bgColor, box.bgOpacity)
+                text.enableOutline = box.outlineEnabled
+                text.outlineColor = TextColor(box.outlineColor, box.outlineOpacity)
+                text.horizontalAlignment = ALIGN_H[box.alignH]
+                text.verticalAlignment = ALIGN_V[box.alignV]
+                text.text = box.text
+                text:SetActive(true)
+                text:SetVisible(box.visible)
+                text:SetAsLastSibling()'''
 
 
 def drawing_to_scene(drawing):
@@ -402,6 +555,17 @@ def drawing_to_scene(drawing):
                          "rotation": angle, "color": color,
                          "opacity": alpha / 255, "zIndex": index,
                          "isBackground": drawing["format"] == "shaper" and index < drawing["backgrounds"]})
+    if "textboxes" in drawing:
+        text_elements = []
+        for index, item in enumerate(drawing["textboxes"]):
+            box = item["textBox"]
+            text_elements.append({**item, "id": f"lua-text-{index + 1}", "type": "textbox",
+                                  "color": box["textColor"], "opacity": box["textOpacity"],
+                                  "zIndex": index, "isBackground": False})
+        controls = {1: elements, 2: text_elements}
+        elements = [controls[kind][index - 1] for kind, index in drawing["order"]]
+        for index, item in enumerate(elements):
+            item["zIndex"] = index
     warnings.append("Imported drawing data only; runtime template IDs, auto-fit, scale and offsets are not applied to the canvas.")
     return {"canvas": {"width": width, "height": height, "background": "#ffffff"}, "elements": elements,
             "meta": {"sourceType": "lua", "warnings": warnings}}

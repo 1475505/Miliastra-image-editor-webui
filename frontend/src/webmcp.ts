@@ -845,7 +845,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "export_scene",
       title: "Export scene",
       description:
-        "Export the current scene as text and return its content: css (web styles) / svg (vector; unsupported rings are dropped automatically) / json (scene source data) / lua (client image drawing script using one image prefab; textboxes are preserved only for re-import). For the binary GIA format use the in-app export button.",
+        "Export the current scene as text and return its content: css (web styles) / svg (vector; unsupported rings are dropped automatically) / json (scene source data) / lua (client drawing script; configure IMAGE_PREFAB_ID for images and TEXTBOX_PREFAB_ID for textboxes. Textbox styles and adaptive font sizing follow the editor settings). For the binary GIA format use the in-app export button.",
       annotations: { readOnlyHint: true, untrustedContentHint: true },
       inputSchema: {
         type: "object",

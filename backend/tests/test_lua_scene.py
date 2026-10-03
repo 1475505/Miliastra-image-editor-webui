@@ -2,6 +2,7 @@ import unittest
 import base64
 import json
 from pathlib import Path
+import re
 
 from fastapi import HTTPException
 
@@ -73,7 +74,9 @@ class LuaSceneTests(unittest.TestCase):
         scene = self.scene()
         value = ''.join(chr(i) for i in range(128)) + '中文🌟\\123'
         scene.elements[-1].textBox.text = value
-        self.assertEqual(parse_lua_scene(self.export(scene)).elements[-1].textBox.text, value)
+        content = self.export(scene)
+        self.assertEqual(lua_scene.read_drawing(content)["textboxes"][0]["textBox"]["text"], value)
+        self.assertEqual(parse_lua_scene(content).elements[-1].textBox.text, value)
 
     def test_upstream_fixtures(self):
         expected = {'single-template-fit.lua': 3, 'lua_test_fill.lua': 61,
@@ -96,12 +99,100 @@ class LuaSceneTests(unittest.TestCase):
         original = self.scene()
         source = self.export(original).split(lua_scene.METADATA_PREFIX)[0]
         result = parse_lua_scene(source)
-        self.assertEqual(len(result.elements), 6)
+        self.assertEqual(len(result.elements), 7)
         for want, got in zip(original.elements[:6], result.elements):
             self.assertEqual(want.type, got.type)
             for key in ('x', 'y', 'width', 'height', 'rotation'):
                 self.assertAlmostEqual(getattr(want,key),getattr(got,key),places=4)
             self.assertAlmostEqual(want.opacity,got.opacity,delta=1/255)
+        self.assertEqual(result.elements[-1].name, original.elements[-1].name)
+        self.assertEqual(result.elements[-1].textBox, original.elements[-1].textBox)
+        for key in ('x', 'y', 'width', 'height', 'rotation'):
+            self.assertEqual(getattr(result.elements[-1], key), getattr(original.elements[-1], key))
+
+    def test_textbox_only_defaults_and_no_image_template_requirement(self):
+        scene = normalize_scene(SceneDocumentModel.model_validate({"elements": [dict(
+            id="text", type="textbox", x=150, y=100, width=180, height=40,
+        )]}))
+        content = self.export(scene)
+        drawing = lua_scene.read_drawing(content)
+        self.assertEqual(drawing["rows"], [])
+        self.assertEqual(drawing["order"], [[2, 1]])
+        box = drawing["textboxes"][0]["textBox"]
+        self.assertIs(box["autoSize"], True)
+        self.assertEqual((box["fontSize"], box["minFontSize"]), (20, 12))
+        self.assertIn('local TEXTBOX_PREFAB_ID = 0', content)
+        self.assertIn('if #ELEMENTS > 0 and (type(IMAGE_PREFAB_ID)', content)
+        self.assertNotIn('仅保留为编辑数据', content)
+        self.assertEqual(parse_lua_scene(content).elements, scene.elements)
+
+    def test_textbox_settings_and_interleaved_prefab_order(self):
+        text = self.scene().elements[-1].model_dump()
+        text["zIndex"] = 1
+        scene = normalize_scene(SceneDocumentModel.model_validate({
+            "canvas": {"width": 720, "height": 480, "mask": {"width": 225, "height": 207}},
+            "elements": [
+                dict(id="rect", type="rectangle", x=10, y=20, width=30, height=40, zIndex=0),
+                text,
+                dict(id="prefab", type="prefab", prefabId=20001003, x=50, y=60, width=70, height=80, zIndex=2),
+                dict(id="bg", type="ellipse", x=90, y=100, width=110, height=120, zIndex=3, isBackground=True),
+            ],
+        }))
+        content = self.export(scene)
+        drawing = lua_scene.read_drawing(content)
+        self.assertEqual(drawing["root"][2:4], [720, 480])
+        self.assertEqual([row[0] for row in drawing["rows"]], [100002, 100001, 0])
+        self.assertEqual(drawing["order"], [[1, 1], [1, 2], [2, 1], [1, 3]])
+        self.assertEqual(drawing["textboxes"][0]["textBox"], scene.elements[1].textBox.model_dump())
+        restored = parse_lua_scene(content.split(lua_scene.METADATA_PREFIX)[0])
+        self.assertEqual([item.type for item in restored.elements], ["ellipse", "rectangle", "textbox", "prefab"])
+        self.assertEqual(restored.elements[2].textBox, scene.elements[1].textBox)
+
+    def test_textbox_drawing_edits_invalidate_editor_snapshot(self):
+        content = self.export()
+        old_text = self.scene().elements[-1].textBox.text
+        changed = content.replace(lua_scene._lua_literal(old_text), lua_scene._lua_literal("新的文字\n第二行"))
+        restored = parse_lua_scene(changed)
+        self.assertEqual(restored.elements[-1].textBox.text, "新的文字\n第二行")
+        self.assertTrue(any("edited" in warning for warning in restored.meta.warnings))
+        changed = content.replace('["autoSize"]=false', '["autoSize"]=true')
+        self.assertIs(parse_lua_scene(changed).elements[-1].textBox.autoSize, True)
+
+    def test_reject_invalid_textbox_data_and_layer_references(self):
+        content = self.export()
+        replacements = (
+            ('["fontSize"]=26', '["fontSize"]=26.5'),
+            ('["fontSize"]=26', '["fontSize"]=true'),
+            ('["minFontSize"]=13', '["minFontSize"]=0'),
+            ('["autoSize"]=false', '["autoSize"]=1'),
+            ('["autoSize"]=false', '["autoSize"]=os.execute("ignored")'),
+            ('["textColor"]="#123456"', '["textColor"]="#xyzxyz"'),
+            ('["textOpacity"]=0.6', '["textOpacity"]=2'),
+            ('["alignH"]="right"', '["alignH"]="unknown"'),
+            ('["width"]=75.5', '["width"]=0'),
+            ('["x"]=137.75', '["x"]=1e999'),
+            ('    {2,1},', '    {2,2},'),
+            ('    {2,1},', '    {1,1},'),
+            ('    {2,1},', '    {2,1.0},'),
+            ('    {2,1},', ''),
+        )
+        for before, after in replacements:
+            self.assertIn(before, content)
+            with self.subTest(replacement=after), self.assertRaises(HTTPException) as caught:
+                parse_lua_scene(content.replace(before, after))
+            self.assertEqual(caught.exception.status_code, 400)
+        for extra in ('local TEXTBOXES = {}', 'local DRAW_ORDER = {}'):
+            with self.subTest(extra=extra), self.assertRaises(HTTPException):
+                parse_lua_scene(content + "\n" + extra)
+
+    def test_legacy_textbox_snapshot_is_still_restored(self):
+        content = self.export()
+        before, data = content.split(lua_scene.METADATA_PREFIX)
+        before = re.sub(r'(?ms)^local (TEXTBOXES|DRAW_ORDER) = \{\n.*?\n\}\n', '', before)
+        metadata = json.loads(base64.b64decode(data))
+        metadata["drawingHash"] = lua_scene._digest(lua_scene.read_drawing(before))
+        data = base64.b64encode(json.dumps(metadata, ensure_ascii=False).encode()).decode()
+        self.assertEqual(parse_lua_scene(before + lua_scene.METADATA_PREFIX + data).elements, self.scene().elements)
 
     def test_reject_expressions_invalid_shapes_and_malformed_data(self):
         valid = (Path(__file__).parent / 'fixtures' / 'single-template-fit.lua').read_text(encoding='utf-8')

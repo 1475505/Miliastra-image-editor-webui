@@ -1558,7 +1558,7 @@ function App() {
     link.download = filename;
     link.click();
     URL.revokeObjectURL(url);
-    if (endpoint === "/api/export/lua" && scene.elements.some((element) => element.type === "textbox" || element.type === "other")) {
+    if (endpoint === "/api/export/lua" && scene.elements.some((element) => element.type === "other")) {
       setStatus(t("export.lua.preservedOnly"));
       setRightTab("code");
       setPreviewTab("lua");
@@ -2895,7 +2895,7 @@ function App() {
                   <div className="tip-box">{t("export.lua.setup")}</div>
                 ) : null}
                 {hasPrefabs ? <div className="tip-box">{t("prefab.luaOnly")}</div> : null}
-                {previewTab === "lua" && scene.elements.some((element) => element.type === "textbox" || element.type === "other") ? (
+                {previewTab === "lua" && scene.elements.some((element) => element.type === "other") ? (
                   <div className="message-box warning">{t("export.lua.preservedOnly")}</div>
                 ) : null}
                 {previewTab === "svg" && svgExportWarning ? (
@@ -3063,7 +3063,7 @@ function LuaScriptDialog({ scene, returnFocusTo, onClose }: { scene: SceneDocume
       <button className="icon-btn" type="button" onClick={onClose} aria-label={t("luaDialog.close")} title={t("luaDialog.close")}><Icon name="x" size={18} /></button>
     </div>
     <p className="lua-script-hint">{t("luaDialog.hint")}</p>
-    {scene.elements.some((element) => element.type === "textbox" || element.type === "other") ? <div className="message-box warning">{t("export.lua.preservedOnly")}</div> : null}
+    {scene.elements.some((element) => element.type === "other") ? <div className="message-box warning">{t("export.lua.preservedOnly")}</div> : null}
     <div className={`lua-script-status${current.phase === "error" ? " is-error" : ""}`} role="status" aria-live="polite">
       {current.phase === "loading" ? t("luaDialog.loading") : current.phase === "error" ? t("statusbar.exportFailed", { msg: current.error }) : ""}
     </div>

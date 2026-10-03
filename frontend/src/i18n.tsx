@@ -337,8 +337,8 @@ export const translations: Record<Lang, TranslationDict> = {
     "export.svg.desc": "矢量图形",
     "export.json.desc": "场景源数据",
     "export.lua.desc": "客户端绘制脚本 · 可再次导入",
-    "export.lua.setup": "填写脚本中的 IMAGE_PREFAB_ID（图片控件模板索引），挂到专用空客户端容器节点。",
-    "export.lua.preservedOnly": "Lua 仅绘制图片图元。文本框与其他图元保留在回导数据中；要在游戏中显示文字，请使用 GIA。",
+    "export.lua.setup": "含图片时填写 IMAGE_PREFAB_ID，含文本框时填写 TEXTBOX_PREFAB_ID（对应控件模板索引），挂到专用空客户端容器节点。文本字号自适应按编辑器设置导出，默认开启。",
+    "export.lua.preservedOnly": "Lua 支持图片与文本框。其他不支持的图元仅保留在回导数据中。",
     "import.luaHint": "支持图元拟合工具及本编辑器导出的 Lua。仅读取图元数据，不运行脚本。",
 
     // 快捷编辑
@@ -660,8 +660,8 @@ export const translations: Record<Lang, TranslationDict> = {
     "export.svg.desc": "Vector graphics",
     "export.json.desc": "Scene source data",
     "export.lua.desc": "Client drawing script · re-importable",
-    "export.lua.setup": "Set IMAGE_PREFAB_ID to your image control template index, then attach the script to a dedicated empty client container.",
-    "export.lua.preservedOnly": "Lua draws image shapes only. Textboxes and other elements are kept for re-import; use GIA to display text in-game.",
+    "export.lua.setup": "Set IMAGE_PREFAB_ID for images and TEXTBOX_PREFAB_ID for textboxes to their control template indices, then attach the script to a dedicated empty client container. Adaptive font sizing follows the editor setting and is enabled by default.",
+    "export.lua.preservedOnly": "Lua draws images and textboxes. Other unsupported elements are kept only for re-import.",
     "import.luaHint": "Accepts Lua exported by the image fitting tool or this editor. Reads drawing data without running the script.",
 
     // Quick edit
