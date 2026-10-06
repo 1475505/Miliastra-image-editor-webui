@@ -7,6 +7,7 @@ import { defaultPrefabVariable, getPrefabInfo, PrefabLookupError, validPrefabVar
 import { recordAddedPrefabs } from "./prefabHistory";
 import {
   assetMaskUrl,
+  DEFAULT_BACKDROP_URL,
   filterLibraryAssetIds,
   getCachedLibraryCatalog,
   imageUrl,
@@ -57,13 +58,18 @@ export type CanvasViewBackground =
 
 const CANVAS_VIEW_BG_KEY = "miliastra-canvas-view-bg";
 /**
- * 默认灰绿（取自界面主题中间色调 --text-3）：黑白图元都可见的最大公约数，
- * 且与编辑器整体绿灰风格同色系；纯黑会吞黑色图元，浅色会吞白色蒙版素材
+ * 默认浅绿（取自界面主题 --accent-soft，与绿灰风格同色系）：
+ * 比工作面 --canvas-bg 更绿、和白色图元也能分开，不会像深绿那样压住画面
  */
-const DEFAULT_VIEW_BG_COLOR = "#65766b";
+const DEFAULT_VIEW_BG_COLOR = "#ccebdc";
 
 function isColorHex(value: unknown): value is string {
   return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value);
+}
+
+/** 背景图 src 允许内嵌 dataURL（用户上传）或远端地址（默认背景图） */
+function isImageSrc(value: unknown): value is string {
+  return typeof value === "string" && (value.startsWith("data:image/") || /^https?:\/\//i.test(value));
 }
 
 function loadCanvasViewBackground(): CanvasViewBackground {
@@ -74,7 +80,7 @@ function loadCanvasViewBackground(): CanvasViewBackground {
       if (parsed.kind === "color" && isColorHex(parsed.color)) {
         return { kind: "color", color: parsed.color.toLowerCase() };
       }
-      if (parsed.kind === "image" && typeof parsed.src === "string" && parsed.src.startsWith("data:image/")) {
+      if (parsed.kind === "image" && isImageSrc(parsed.src)) {
         return { kind: "image", src: parsed.src };
       }
     }
@@ -588,8 +594,7 @@ function App() {
       height: size.height,
       imageAssetId: assetId,
       imageTint: true,
-      // 单色/彩色素材统一默认染白：默认灰绿查看背景上白色蒙版天然可见；
-      // 想看其他底色在「画布背景（仅查看）」里切换即可，无需给素材拍保底染色
+      // 单色/彩色素材统一默认染白（导出中性色）；查看背景偏浅时白蒙版对比会变弱，需要时自行改色或换深色查看背景
       color: "#ffffff",
       opacity: 1
     };
@@ -2835,6 +2840,7 @@ function App() {
                     <div className="view-bg-row">
                       {([
                         { color: DEFAULT_VIEW_BG_COLOR, label: t("props.viewBgDefault") },
+                        { color: "#e5e7eb", label: t("props.viewBgLight") },
                         { color: "#ffffff", label: t("props.viewBgWhite") },
                         { color: "#000000", label: t("props.viewBgBlack") }
                       ] as const).map((preset) => (
@@ -2852,6 +2858,13 @@ function App() {
                         title={t("props.viewBgChecker")}
                         aria-label={t("props.viewBgChecker")}
                         onClick={() => updateViewBackground({ kind: "checker" })}
+                      />
+                      <button
+                        className="view-bg-swatch"
+                        style={viewBackgroundCss({ kind: "image", src: DEFAULT_BACKDROP_URL }, 1)}
+                        title={t("props.viewBgPresetImage")}
+                        aria-label={t("props.viewBgPresetImage")}
+                        onClick={() => updateViewBackground({ kind: "image", src: DEFAULT_BACKDROP_URL })}
                       />
                     </div>
                     <div className="row">

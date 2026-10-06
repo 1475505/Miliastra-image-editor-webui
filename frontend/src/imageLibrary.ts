@@ -602,6 +602,9 @@ export function borderPath(imageId: number): string {
   return `${OSS_IMAGE_BASE}/border/${imageId}.json`;
 }
 
+/** 编辑器「默认背景图」：千星 UIPage 参考图，仅作画布查看背景，不进场景也不导出 */
+export const DEFAULT_BACKDROP_URL = `${OSS_IMAGE_BASE}/UIPage.png`;
+
 /**
  * 同源贴图地址，专供 CSS 遮罩（染色）使用。
  * CSS mask 要求资源 CORS-same-origin —— 直接用 OSS 地址会让元素整块消失
