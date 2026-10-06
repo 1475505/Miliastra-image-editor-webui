@@ -19,8 +19,9 @@
   --checker-dark: #e3e8ea;
   --danger: #dc2626;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Courier New", monospace;
-  --ui-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-  --textbox-font: "HYWenHei-85W", var(--ui-font);
+  /* 原神 / 千星同款字体：系统装了就用，没装自动回落 system-ui（@font-face 见 textboxFont.ts） */
+  --ui-font: "HYWenHei-85W", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --textbox-font: var(--ui-font);
 
   font-family: var(--ui-font);
   font-size: 13px;

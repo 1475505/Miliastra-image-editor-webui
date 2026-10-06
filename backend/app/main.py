@@ -8,6 +8,7 @@ import re
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -2236,21 +2237,49 @@ def parse_rich_text(source: str) -> list[dict]:
     return spans or [{"text": source or "", "color": None, "italic": False, "size": None}]
 
 
+# 原神 / 千星同款字体：系统装了就用，没装才回落下列通用 CJK 字体（与编辑器查看端一致）
+GAME_FONT_HINTS = ("hywenhei", "汉仪文黑")
+GAME_FONT_DIRS = (
+    Path.home() / "Library/Fonts",
+    Path("/Library/Fonts"),
+    Path.home() / ".local/share/fonts",
+    Path("/usr/local/share/fonts"),
+    Path("/usr/share/fonts"),
+    Path("C:/Windows/Fonts"),
+)
+FALLBACK_FONT_PATHS = (
+    Path(r"C:\Windows\Fonts\msyh.ttc"),
+    Path(r"C:\Windows\Fonts\msyh.ttf"),
+    Path(r"C:\Windows\Fonts\simhei.ttf"),
+    Path(r"C:\Windows\Fonts\simsun.ttc"),
+    Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
+    Path("/System/Library/Fonts/PingFang.ttc"),
+)
+
+
+@lru_cache(maxsize=1)
+def find_game_fonts() -> tuple[Path, ...]:
+    """扫描常见字体目录，找出本机安装的汉仪文黑-85W。"""
+    found: list[Path] = []
+    for directory in GAME_FONT_DIRS:
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.rglob("*")):
+            if path.suffix.lower() in {".ttf", ".otf", ".ttc"} and any(
+                hint in path.name.lower() for hint in GAME_FONT_HINTS
+            ):
+                found.append(path)
+    return tuple(found)
+
+
 def load_textbox_font(size: int):
-    candidates = [
-        Path(r"C:\Windows\Fonts\msyh.ttc"),
-        Path(r"C:\Windows\Fonts\msyh.ttf"),
-        Path(r"C:\Windows\Fonts\simhei.ttf"),
-        Path(r"C:\Windows\Fonts\simsun.ttc"),
-        Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
-        Path("/System/Library/Fonts/PingFang.ttc"),
-    ]
-    for path in candidates:
-        if path.exists():
-            try:
-                return ImageFont.truetype(str(path), size)
-            except OSError:
-                continue
+    for path in (*find_game_fonts(), *FALLBACK_FONT_PATHS):
+        if not path.exists():
+            continue
+        try:
+            return ImageFont.truetype(str(path), size)
+        except OSError:
+            continue
     return ImageFont.load_default()
 
 
