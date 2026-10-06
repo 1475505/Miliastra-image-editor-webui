@@ -2,7 +2,7 @@
 name: miliastra-image-svg-builder
 slug: miliastra-image-svg-builder
 displayName: 千星奇域图片编辑器-svg生成
-version: 1.0.7
+version: 1.0.8
 summary: 用轴对齐图元生成可导入千星图片编辑器的 SVG。
 license: Proprietary
 description: 将图片或描述拟合成千星图片编辑器可导入的 SVG，适合轴对齐矩形、圆/椭圆、三角形、基础文本和素材图片。基础图元旋转、星形、圆环或完整场景回导应使用 CSS、JSON 或页面 WebMCP。

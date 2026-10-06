@@ -56,8 +56,11 @@ export type CanvasViewBackground =
   | { kind: "checker" };
 
 const CANVAS_VIEW_BG_KEY = "miliastra-canvas-view-bg";
-/** 默认中性深灰：黑/白图元都可见的最大公约数（纯黑会吞黑色图元，浅色会吞白色蒙版素材） */
-const DEFAULT_VIEW_BG_COLOR = "#2b2b2b";
+/**
+ * 默认灰绿（取自界面主题中间色调 --text-3）：黑白图元都可见的最大公约数，
+ * 且与编辑器整体绿灰风格同色系；纯黑会吞黑色图元，浅色会吞白色蒙版素材
+ */
+const DEFAULT_VIEW_BG_COLOR = "#65766b";
 
 function isColorHex(value: unknown): value is string {
   return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value);
@@ -585,7 +588,7 @@ function App() {
       height: size.height,
       imageAssetId: assetId,
       imageTint: true,
-      // 单色/彩色素材统一默认染白：画布查看背景默认中性深灰，白色蒙版天然可见；
+      // 单色/彩色素材统一默认染白：默认灰绿查看背景上白色蒙版天然可见；
       // 想看其他底色在「画布背景（仅查看）」里切换即可，无需给素材拍保底染色
       color: "#ffffff",
       opacity: 1
@@ -2831,10 +2834,9 @@ function App() {
                     <span>{t("props.viewBg")}</span>
                     <div className="view-bg-row">
                       {([
-                        { color: "#2b2b2b", label: t("props.viewBgDark") },
-                        { color: "#e5e7eb", label: t("props.viewBgLight") },
-                        { color: "#000000", label: t("props.viewBgBlack") },
-                        { color: "#ffffff", label: t("props.viewBgWhite") }
+                        { color: DEFAULT_VIEW_BG_COLOR, label: t("props.viewBgDefault") },
+                        { color: "#ffffff", label: t("props.viewBgWhite") },
+                        { color: "#000000", label: t("props.viewBgBlack") }
                       ] as const).map((preset) => (
                         <button
                           key={preset.color}
