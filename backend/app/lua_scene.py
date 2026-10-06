@@ -567,7 +567,7 @@ def drawing_to_scene(drawing):
         for index, item in enumerate(elements):
             item["zIndex"] = index
     warnings.append("Imported drawing data only; runtime template IDs, auto-fit, scale and offsets are not applied to the canvas.")
-    return {"canvas": {"width": width, "height": height, "background": "#ffffff"}, "elements": elements,
+    return {"canvas": {"width": width, "height": height, "background": "transparent"}, "elements": elements,
             "meta": {"sourceType": "lua", "warnings": warnings}}
 
 

@@ -227,7 +227,10 @@ class PngTests(unittest.TestCase):
                         )])
                         with mock.patch("app.main.fetch_sprite_bytes", return_value=make_sprite_bytes(color=(200, 100, 50, 255))):
                             response = export_png(ExportRequest(scene=source))
-                        image = Image.open(io.BytesIO(response.body)).convert("RGB")
+                        # 画布恒透明：先垫白底再量外接框
+                        rendered = Image.open(io.BytesIO(response.body)).convert("RGBA")
+                        flattened = Image.alpha_composite(Image.new("RGBA", rendered.size, (255, 255, 255, 255)), rendered)
+                        image = flattened.convert("RGB")
                         bounds = ImageChops.difference(image, Image.new("RGB", image.size, "white")).getbbox()
                         rendered_width, rendered_height = (height, width) if rotation else (width, height)
                         self.assertEqual(bounds, (
@@ -258,7 +261,8 @@ class PngTests(unittest.TestCase):
             response = export_png(ExportRequest(scene=source))
 
         image = Image.open(io.BytesIO(response.body))
-        self.assertEqual(image.getpixel((120, 90)), (255, 255, 255, 255))
+        # 画布恒透明：下载失败的素材不绘制，画布保持透明，仅打 Warning 元数据
+        self.assertEqual(image.convert("RGBA").getpixel((120, 90)), (0, 0, 0, 0))
         self.assertIn("106001", image.text.get("Warning", ""))
 
     def test_repeated_asset_is_downloaded_once_and_pasted_twice(self):

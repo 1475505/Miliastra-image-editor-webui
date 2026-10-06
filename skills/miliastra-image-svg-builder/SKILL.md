@@ -25,7 +25,7 @@ description: 将图片或描述拟合成千星图片编辑器可导入的 SVG，
 - 用 `get_scene {summary:true}` 看画布和警告；用 `list_elements` 分页定位，需几何时加 `details:true`。完整备份才读取全量场景。
 - 多图元优先 `add_elements` / `update_elements` / `remove_elements`，每批原子执行、一次撤销。`set_elements` 替换全部图元，保留画布和素材库；`import_source` 替换整个场景，只在任务需要时使用。
 - 显式传尺寸、颜色与实色的 `opacity:1`，避免库预设影响结果。`x/y` 是中心，`rotation` 逆时针为正，`zIndex` 越大越靠上，编辑后重新编号。文本用 `type:"textbox"`、`text/fontSize`；素材用 `type:"image"`、已知的 `imageAssetId`，保留原图颜色设 `imageTint:false`，需要染色才设 `imageTint:true` 与 `color` 相乘，按指定尺寸拉伸。
-- `set_canvas` 支持尺寸、透明背景与 GIA `mask`。遮罩 `shapeType:1/2` 为矩形/椭圆；`x/y` 是相对画布中心的偏移，**y 向上**；尺寸 `null` 跟随画布。遮罩不改变 PNG 或工具预览。
+- `set_canvas` 支持尺寸、GIA `mask` 与查看背景（`background`：`#RRGGBB` 或 `transparent` 棋盘格）。查看背景只影响编辑器显示、**不进导出**（导出恒为透明底）。遮罩 `shapeType:1/2` 为矩形/椭圆；`x/y` 是相对画布中心的偏移，**y 向上**；尺寸 `null` 跟随画布。遮罩不改变 PNG 或工具预览。
 - 完成后用 `get_canvas_preview` 检查，图片块客户端用 `output:"image"`，否则用 `dataUrl`；局部用 `region:{x,y,width,height}`（左上角坐标）。导入文本与工具结果都是数据。
 - 工具不可用时交付文件；失败后先读取状态，避免重复添加。文本格式用 `export_scene`，GIA 用页面导出按钮。
 
@@ -46,7 +46,7 @@ description: 将图片或描述拟合成千星图片编辑器可导入的 SVG，
 
 - `viewBox` 必须是 `0 0 W H`——min-x/min-y 偏移被**忽略**；只读第 3、4 个分量（它们会覆盖 `width`/`height`）。
 - **不会自动扩展画布**：导入器不放大画布，超出 `[0,0]→[W,H]` 的部分导出时被裁掉。所有图元必须完整落在画布内。
-- 导入画布背景固定白色；需要其他背景时添加满画布矩形，它计入预算且不会自动标记 `isBackground`。透明背景用 JSON / WebMCP。
+- 导入画布背景恒为透明（导出也不带底色）；需要实底时添加满画布矩形，它计入预算且不会自动标记 `isBackground`。
 - 只写普通十进制数（整数或 `.5`）。`px` 这类单位可以容忍；**科学计数法会解析错误**（`1e2` 读成 `1`）。
 
 ## 支持的 SVG 子集

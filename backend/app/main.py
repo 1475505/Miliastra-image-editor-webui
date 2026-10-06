@@ -33,8 +33,11 @@ GIA_TEMPLATE_PATH = GIA_DIR / "image_template.gia"
 
 DEFAULT_CANVAS_WIDTH = 300
 DEFAULT_CANVAS_HEIGHT = 300
+# 图元默认填充色（解析 CSS/SVG 时图元缺色用的兜底白）
 DEFAULT_CANVAS_BACKGROUND = "#ffffff"
-# 画布透明哨兵值：前端画棋盘格、PNG 导出留 alpha、SVG 不画底、CSS 用 transparent
+# 画布透明哨兵值。
+# 画布背景已与场景数据解耦：背景仅是编辑器的查看偏好（不进场景、不导出），
+# 场景 canvas.background 恒为 transparent；导出想要实底请用满画布矩形图元。
 TRANSPARENT_BACKGROUND = "transparent"
 # CSS 画布适配策略（-miliastra-canvas-fit）：
 #   expand（默认）图元溢出时按图元包围盒放大画布，保持旧行为；
@@ -168,7 +171,7 @@ class CanvasMaskModel(BaseModel):
 class CanvasModel(BaseModel):
     width: float = DEFAULT_CANVAS_WIDTH
     height: float = DEFAULT_CANVAS_HEIGHT
-    background: str = DEFAULT_CANVAS_BACKGROUND
+    background: str = TRANSPARENT_BACKGROUND
     mask: CanvasMaskModel = Field(default_factory=CanvasMaskModel)
 
 
@@ -600,23 +603,14 @@ def copy_element(element: SceneElementModel, **overrides) -> SceneElementModel:
     return SceneElementModel.model_validate(payload)
 
 
-def normalize_canvas_background(value: str | None) -> str:
-    """画布背景允许透明；其余按颜色归一化，空值回落默认白。"""
-    lowered = (value or "").strip().lower()
-    if lowered in {"transparent", "none"}:
-        return TRANSPARENT_BACKGROUND
-    if not lowered:
-        return DEFAULT_CANVAS_BACKGROUND
-    return normalize_color(value or DEFAULT_CANVAS_BACKGROUND)
-
-
 def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
     canvas_width = max(1, scene.canvas.width)
     canvas_height = max(1, scene.canvas.height)
     canvas = CanvasModel(
         width=canvas_width,
         height=canvas_height,
-        background=normalize_canvas_background(scene.canvas.background),
+        # 画布背景与场景数据解耦：恒透明（见 TRANSPARENT_BACKGROUND 注释）
+        background=TRANSPARENT_BACKGROUND,
         mask=normalize_canvas_mask(scene.canvas.mask, canvas_width, canvas_height),
     )
     elements: list[SceneElementModel] = []
@@ -1038,7 +1032,6 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
     canvas_match = re.search(r"\.shaper-container\s*\{(?P<body>.*?)\}", content, re.S)
     width = DEFAULT_CANVAS_WIDTH
     height = DEFAULT_CANVAS_HEIGHT
-    background = DEFAULT_CANVAS_BACKGROUND
     canvas_fit = CANVAS_FIT_EXPAND
     if canvas_match:
         body = canvas_match.group("body")
@@ -1051,11 +1044,11 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
             height = parse_px(find_css_value(body, "height"), DEFAULT_CANVAS_HEIGHT)
         canvas_fit = parse_css_canvas_fit(find_css_value(body, "-miliastra-canvas-fit"))
         container_background = find_css_value(body, "background") or find_css_value(body, "background-color")
-        if container_background is not None:
-            if container_background.strip().lower() in {"transparent", "none"}:
-                background = TRANSPARENT_BACKGROUND
-            else:
-                warnings.append("Ignored the .shaper-container background color; use a canvas-filling rectangle element for backgrounds.")
+        if container_background is not None and container_background.strip().lower() not in {"transparent", "none"}:
+            warnings.append(
+                "Canvas backgrounds are editor-view-only and never exported; "
+                "use a canvas-filling rectangle element for a solid backdrop."
+            )
     pattern = re.compile(r"(?P<selector>[^{}]+)\{(?P<body>.*?)\}", re.S)
     elements: list[SceneElementModel] = []
     for match in pattern.finditer(content):
@@ -1236,7 +1229,7 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
         raise HTTPException(status_code=400, detail="No positionable elements could be parsed from the CSS")
 
     scene = SceneDocumentModel(
-        canvas=CanvasModel(width=width, height=height, background=background),
+        canvas=CanvasModel(width=width, height=height),
         elements=elements,
         meta=MetaModel(sourceType="css", sourceName="", warnings=warnings),
     )
@@ -1283,20 +1276,6 @@ def parse_svg_rotation(value: str | None, default_x: float, default_y: float) ->
         return 0.0, default_x, default_y
     angle = -parse_float(match.group(1), 0.0)
     return angle, parse_float(match.group(2), default_x), parse_float(match.group(3), default_y)
-
-
-def svg_has_background_rect(root, width: float, height: float) -> bool:
-    """SVG 顶层若有一张铺满画布的 rect，就认为它带了底色；否则画布视为透明。"""
-    for node in root:
-        if strip_ns(node.tag) != "rect":
-            continue
-        if parse_svg_number(node.attrib.get("x"), 0.0) != 0 or parse_svg_number(node.attrib.get("y"), 0.0) != 0:
-            continue
-        rect_width = parse_svg_number(node.attrib.get("width"), 0.0)
-        rect_height = parse_svg_number(node.attrib.get("height"), 0.0)
-        if abs(rect_width - width) < 0.5 and abs(rect_height - height) < 0.5:
-            return True
-    return False
 
 
 def parse_svg_scene(content: str) -> SceneDocumentModel:
@@ -1483,15 +1462,7 @@ def parse_svg_scene(content: str) -> SceneDocumentModel:
         raise HTTPException(status_code=400, detail="No importable basic shapes found in the SVG")
 
     scene = SceneDocumentModel(
-        canvas=CanvasModel(
-            width=width,
-            height=height,
-            background=(
-                DEFAULT_CANVAS_BACKGROUND
-                if svg_has_background_rect(root, width, height)
-                else TRANSPARENT_BACKGROUND
-            ),
-        ),
+        canvas=CanvasModel(width=width, height=height),
         elements=elements,
         meta=MetaModel(sourceType="svg", sourceName="", warnings=warnings),
     )
@@ -1506,7 +1477,7 @@ def scene_to_css(scene: SceneDocumentModel) -> str:
         "  position: relative;",
         f"  width: {scene.canvas.width:.0f}px;",
         f"  height: {scene.canvas.height:.0f}px;",
-        f"  background: {scene.canvas.background};",
+        f"  background: {TRANSPARENT_BACKGROUND};",
         "  overflow: hidden;",
         f"  -miliastra-canvas-size: {scene.canvas.width:.0f}x{scene.canvas.height:.0f};",
         "  -miliastra-canvas-fit: lock;",
@@ -1601,10 +1572,6 @@ def scene_to_svg(scene: SceneDocumentModel) -> str:
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{scene.canvas.width:.0f}" height="{scene.canvas.height:.0f}" viewBox="0 0 {scene.canvas.width:.0f} {scene.canvas.height:.0f}">',
     ]
-    if scene.canvas.background != TRANSPARENT_BACKGROUND:
-        parts.append(
-            f'<rect x="0" y="0" width="{scene.canvas.width:.0f}" height="{scene.canvas.height:.0f}" fill="{scene.canvas.background}" />'
-        )
     if ring_count:
         parts.append(
             f'<!-- Miliastra-Warning: SVG 导出已忽略 {ring_count} 个圆环图元；如需圆环，请改用 CSS 或 JSON 导出。 -->'
@@ -1751,11 +1718,8 @@ def paste_sprite(image: Image.Image, element: SceneElementModel, sprite: Image.I
 
 def scene_to_png_bytes(scene: SceneDocumentModel) -> bytes:
     require_supported_draw_format(scene, "PNG")
-    canvas_fill = (
-        (0, 0, 0, 0)
-        if scene.canvas.background == TRANSPARENT_BACKGROUND
-        else ImageColor.getrgb(scene.canvas.background) + (255,)
-    )
+    # 画布背景仅是编辑器查看偏好：PNG 导出恒为透明底
+    canvas_fill = (0, 0, 0, 0)
     image = Image.new("RGBA", (int(scene.canvas.width), int(scene.canvas.height)), canvas_fill)
     skipped_assets: list[int] = []
 

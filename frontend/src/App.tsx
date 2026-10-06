@@ -39,6 +39,56 @@ function checkerBackground(zoom: number) {
   };
 }
 
+/** 查看背景 → 画布的 background CSS（棋盘格沿用透明指示样式） */
+function viewBackgroundCss(background: CanvasViewBackground, zoom: number): React.CSSProperties {
+  if (background.kind === "checker") return checkerBackground(zoom);
+  if (background.kind === "image") return { background: `url("${background.src}") center / cover no-repeat` };
+  return { background: background.color };
+}
+
+/**
+ * 画布查看背景：仅是编辑器的渲染偏好（localStorage 持久化，不进场景文档）。
+ * 导出恒为透明底；需要实底请用满画布矩形图元。
+ */
+export type CanvasViewBackground =
+  | { kind: "color"; color: string }
+  | { kind: "image"; src: string }
+  | { kind: "checker" };
+
+const CANVAS_VIEW_BG_KEY = "miliastra-canvas-view-bg";
+/** 默认中性深灰：黑/白图元都可见的最大公约数（纯黑会吞黑色图元，浅色会吞白色蒙版素材） */
+const DEFAULT_VIEW_BG_COLOR = "#2b2b2b";
+
+function isColorHex(value: unknown): value is string {
+  return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value);
+}
+
+function loadCanvasViewBackground(): CanvasViewBackground {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CANVAS_VIEW_BG_KEY) || "");
+    if (parsed && typeof parsed === "object") {
+      if (parsed.kind === "checker") return { kind: "checker" };
+      if (parsed.kind === "color" && isColorHex(parsed.color)) {
+        return { kind: "color", color: parsed.color.toLowerCase() };
+      }
+      if (parsed.kind === "image" && typeof parsed.src === "string" && parsed.src.startsWith("data:image/")) {
+        return { kind: "image", src: parsed.src };
+      }
+    }
+  } catch {
+    // 存储不可用或数据损坏时回落默认
+  }
+  return { kind: "color", color: DEFAULT_VIEW_BG_COLOR };
+}
+
+function persistCanvasViewBackground(background: CanvasViewBackground) {
+  try {
+    localStorage.setItem(CANVAS_VIEW_BG_KEY, JSON.stringify(background));
+  } catch {
+    // dataURL 图片超出 localStorage 配额时仅会话内生效
+  }
+}
+
 export type ShapeType =
   | "ellipse"
   | "rectangle"
@@ -272,7 +322,7 @@ const EMPTY_SCENE = (): SceneDocument => ({
   canvas: {
     width: 300,
     height: 300,
-    background: "#ffffff",
+    background: TRANSPARENT_BACKGROUND,
     mask: { ...DEFAULT_CANVAS_MASK }
   },
   elements: [],
@@ -364,12 +414,12 @@ function App() {
   // 图形分类与单色/彩色筛选属于「浏览位置」，不做持久化：每次打开都从基础形状开始
   const [assetGroupKey, setAssetGroupKey] = useState<string>("basic-shape");
   const [assetTone, setAssetTone] = useState<string>("all");
-  const isCanvasTransparent = scene.canvas.background === TRANSPARENT_BACKGROUND;
   const [assetQuery, setAssetQuery] = useState("");
   const [assetUse, setAssetUse] = useState("all");
   const [assetLimit, setAssetLimit] = useState(ASSET_PAGE_SIZE);
   const [assetLoading, setAssetLoading] = useState(false);
   const [assetError, setAssetError] = useState("");
+  const [viewBackground, setViewBackground] = useState<CanvasViewBackground>(loadCanvasViewBackground);
   const [selectedAssetId, setSelectedAssetId] = useState<number | null>(null);
   const [assetMeta, setAssetMeta] = useState<{
     id: number;
@@ -410,6 +460,7 @@ function App() {
 
   const stageRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const viewBgFileRef = useRef<HTMLInputElement | null>(null);
   const interactionRef = useRef<InteractionState>(null);
   const zoomRef = useRef(zoom);
   const sceneRef = useRef(scene);
@@ -526,7 +577,7 @@ function App() {
     return { width: Math.round(width), height: Math.round(height) };
   }
 
-  function assetOverrides(assetId: number, tint: boolean, label?: string, meta?: SpriteMeta | null): Partial<SceneElement> {
+  function assetOverrides(assetId: number, label?: string, meta?: SpriteMeta | null): Partial<SceneElement> {
     const size = defaultAssetSize(assetId, meta);
     return {
       name: `${label ? `${label} ` : ""}${assetId}`,
@@ -534,20 +585,21 @@ function App() {
       height: size.height,
       imageAssetId: assetId,
       imageTint: true,
-      // 彩色素材用白色中性色；单色素材给一个在浅色画布上可见的默认染色
-      color: tint ? "#4f46e5" : "#ffffff",
+      // 单色/彩色素材统一默认染白：画布查看背景默认中性深灰，白色蒙版天然可见；
+      // 想看其他底色在「画布背景（仅查看）」里切换即可，无需给素材拍保底染色
+      color: "#ffffff",
       opacity: 1
     };
   }
 
-  async function addAssetToCanvas(assetId: number, tint: boolean, label?: string, x?: number, y?: number) {
+  async function addAssetToCanvas(assetId: number, label?: string, x?: number, y?: number) {
     let meta: SpriteMeta | null | undefined;
     try {
       meta = await loadSpriteMeta(assetId);
     } catch {
       meta = readMetaCache(assetId);
     }
-    const element = addShapeToCanvas("image", x, y, assetOverrides(assetId, tint, label, meta));
+    const element = addShapeToCanvas("image", x, y, assetOverrides(assetId, label, meta));
     if (element) {
       setStatus(t("statusbar.assetAdded", { name: element.name }));
     }
@@ -1132,6 +1184,14 @@ function App() {
     },
     setCanvas: (patch) => {
       const current = sceneRef.current;
+      if (patch.background !== undefined) {
+        // 背景是纯查看偏好（不进场景、不导出）：transparent → 棋盘格，其余按颜色
+        updateViewBackground(
+          patch.background === TRANSPARENT_BACKGROUND
+            ? { kind: "checker" }
+            : { kind: "color", color: patch.background }
+        );
+      }
       const next = {
         ...current,
         canvas: {
@@ -1142,7 +1202,6 @@ function App() {
           ...(patch.height !== undefined
             ? { height: clamp(Math.round(patch.height) || 1, 1, 2048) }
             : {}),
-          ...(patch.background !== undefined ? { background: patch.background } : {}),
           ...(patch.mask !== undefined ? { mask: { ...canvasMaskOf(current.canvas), ...patch.mask } } : {})
         }
       };
@@ -1348,6 +1407,8 @@ function App() {
     if (type === "image") {
       next.imageAssetId = override?.imageAssetId;
       next.imageTint = override?.imageTint ?? false;
+      // 图元默认中性白：白色蒙版在默认深灰查看背景上直接可见，导出也是白色中性色
+      next.color = override?.color ?? "#ffffff";
       next.opacity = override?.opacity ?? 1;
     }
     if (type === "prefab") {
@@ -1602,11 +1663,22 @@ function App() {
     });
   }
 
-  function updateCanvasBackground(color: string) {
-    commitScene((current) => ({
-      ...current,
-      canvas: { ...current.canvas, background: color }
-    }));
+  function updateViewBackground(background: CanvasViewBackground) {
+    setViewBackground(background);
+    persistCanvasViewBackground(background);
+  }
+
+  function handleViewBackgroundFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !file.type.startsWith("image/")) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        updateViewBackground({ kind: "image", src: reader.result });
+      }
+    };
+    reader.readAsDataURL(file);
   }
 
   function updateCanvasMask(patch: Partial<CanvasMask>) {
@@ -2035,10 +2107,10 @@ function App() {
                             startShapeDrag(
                               event,
                               "image",
-                              assetOverrides(id, isMono, activeAssetGroup?.label)
+                              assetOverrides(id, activeAssetGroup?.label)
                             )
                           }
-                          onDoubleClick={() => addAssetToCanvas(id, isMono, activeAssetGroup?.label)}
+                          onDoubleClick={() => addAssetToCanvas(id, activeAssetGroup?.label)}
                           title={`${id} · ${assetCatalog?.assets[id]?.description || t("library.dragHint")}`}
                         >
                           <span className="asset-thumb">
@@ -2278,13 +2350,11 @@ function App() {
             >
               <div
                 ref={canvasRef}
-                className={`canvas${isCanvasTransparent ? " is-transparent" : ""}`}
+                className={`canvas${viewBackground.kind === "checker" ? " is-transparent" : ""}`}
                 style={{
                   width: scene.canvas.width,
                   height: scene.canvas.height,
-                  ...(isCanvasTransparent
-                    ? checkerBackground(zoom)
-                    : { background: scene.canvas.background }),
+                  ...viewBackgroundCss(viewBackground, zoom),
                   transform: `scale(${zoom})`,
                   transformOrigin: "center center"
                 }}
@@ -2758,27 +2828,52 @@ function App() {
                     </div>
                   </div>
                   <div className="field">
-                    <span>{t("props.bgColor")}</span>
-                    <div className="row">
-                      <ColorField
-                        value={scene.canvas.background === TRANSPARENT_BACKGROUND ? "#ffffff" : scene.canvas.background}
-                        onChange={updateCanvasBackground}
+                    <span>{t("props.viewBg")}</span>
+                    <div className="view-bg-row">
+                      {([
+                        { color: "#2b2b2b", label: t("props.viewBgDark") },
+                        { color: "#e5e7eb", label: t("props.viewBgLight") },
+                        { color: "#000000", label: t("props.viewBgBlack") },
+                        { color: "#ffffff", label: t("props.viewBgWhite") }
+                      ] as const).map((preset) => (
+                        <button
+                          key={preset.color}
+                          className="view-bg-swatch"
+                          style={{ background: preset.color }}
+                          title={preset.label}
+                          aria-label={preset.label}
+                          onClick={() => updateViewBackground({ kind: "color", color: preset.color })}
+                        />
+                      ))}
+                      <button
+                        className="view-bg-swatch view-bg-checker"
+                        title={t("props.viewBgChecker")}
+                        aria-label={t("props.viewBgChecker")}
+                        onClick={() => updateViewBackground({ kind: "checker" })}
                       />
                     </div>
+                    <div className="row">
+                      <ColorField
+                        value={viewBackground.kind === "color" ? viewBackground.color : DEFAULT_VIEW_BG_COLOR}
+                        onChange={(color) => updateViewBackground({ kind: "color", color })}
+                      />
+                      <button
+                        className="btn btn-ghost"
+                        onClick={() => viewBgFileRef.current?.click()}
+                        title={t("props.viewBgImageHint")}
+                      >
+                        {t("props.viewBgImage")}
+                      </button>
+                      <input
+                        ref={viewBgFileRef}
+                        type="file"
+                        accept="image/*"
+                        hidden
+                        onChange={handleViewBackgroundFile}
+                      />
+                    </div>
+                    <p className="field-hint">{t("props.viewBgHint")}</p>
                   </div>
-                  <label className="check-row" title={t("props.transparentHint")}>
-                    <input
-                      type="checkbox"
-                      checked={scene.canvas.background === TRANSPARENT_BACKGROUND}
-                      onChange={(event) =>
-                        updateCanvasBackground(event.target.checked ? TRANSPARENT_BACKGROUND : "#ffffff")
-                      }
-                    />
-                    <span>
-                      {t("props.transparent")}
-                      <em>{t("props.transparentHint")}</em>
-                    </span>
-                  </label>
 
                   <div className="section-head"><span>{t("props.maskSettings")}</span></div>
                   <label className="check-row" title={t("props.maskEnabledTitle")}>
@@ -3553,7 +3648,7 @@ function buildSampleScene(shapeLabels: Record<ShapeType, string>, sourceName: st
 
   return {
     ...base,
-    canvas: { width: 300, height: 300, background: "#ffffff", mask: { ...DEFAULT_CANVAS_MASK } },
+    canvas: { width: 300, height: 300, background: TRANSPARENT_BACKGROUND, mask: { ...DEFAULT_CANVAS_MASK } },
     elements,
     meta: { sourceType: "editor", sourceName, warnings: [] }
   };

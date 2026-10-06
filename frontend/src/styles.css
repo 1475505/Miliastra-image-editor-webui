@@ -1732,6 +1732,35 @@ input[type="range"]::-moz-range-thumb {
   line-height: 1.4;
 }
 
+.view-bg-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.view-bg-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  cursor: pointer;
+  padding: 0;
+}
+
+.view-bg-swatch:hover {
+  border-color: var(--accent, #4f46e5);
+}
+
+.view-bg-checker {
+  background-color: var(--checker-light);
+  background-image:
+    linear-gradient(45deg, var(--checker-dark) 25%, transparent 25%, transparent 75%, var(--checker-dark) 75%),
+    linear-gradient(45deg, var(--checker-dark) 25%, transparent 25%, transparent 75%, var(--checker-dark) 75%);
+  background-size: 8px 8px;
+  background-position: 0 0, 4px 4px;
+}
+
 .color-opacity-field {
   display: flex;
   align-items: center;

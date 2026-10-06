@@ -736,13 +736,13 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
     {
       name: "set_canvas",
       title: "Set canvas",
-      description: "Patch canvas size/background and GIA mask in one undo step. Mask offsets are relative to canvas center, y UP; mask does not affect PNG or get_canvas_preview.",
+      description: "Patch canvas size, view-only backdrop and GIA mask in one undo step. The backdrop is an editor viewing preference only and never exports; scenes are always transparent, so use a canvas-filling rectangle element for a solid backdrop. Mask offsets are relative to canvas center, y UP; mask does not affect PNG or get_canvas_preview.",
       inputSchema: {
         type: "object",
         properties: {
           width: numberProp("Canvas width in pixels (1-2048)", 1, 2048),
           height: numberProp("Canvas height in pixels (1-2048)", 1, 2048),
-          background: { type: "string", description: "#RRGGBB or transparent" },
+          background: { type: "string", description: "View-only backdrop: #RRGGBB color or 'transparent' for checkerboard. Never exported." },
           mask: {
             type: "object",
             additionalProperties: false,

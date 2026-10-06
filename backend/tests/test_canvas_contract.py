@@ -113,7 +113,10 @@ class LockedCanvasTests(unittest.TestCase):
         self.assertEqual((scene.canvas.width, scene.canvas.height), (200.0, 160.0))
         self.assertEqual(
             scene.meta.warnings,
-            ["Ignored the .shaper-container background color; use a canvas-filling rectangle element for backgrounds."],
+            [
+                "Canvas backgrounds are editor-view-only and never exported; "
+                "use a canvas-filling rectangle element for a solid backdrop."
+            ],
         )
 
     def test_explicit_size_wins_over_width_height(self):

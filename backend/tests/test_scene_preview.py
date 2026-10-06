@@ -63,7 +63,12 @@ class PreviewGeometryTests(unittest.TestCase):
                 image = render(scene)
                 expected = Image.new("L", image.size)
                 ImageDraw.Draw(expected).polygon([(100 + x, 100 + y) for x, y in vertices], fill=255)
-                self.assertIsNone(ImageChops.difference(image.getchannel("A"), expected).getbbox())
+                actual = image.getchannel("A")
+                # 透明画布下抗锯齿边缘保留部分 alpha，与硬边多边形栅格化有亚像素级差异
+                changed = sum(value != 0 for value in ImageChops.difference(actual, expected).getdata())
+                self.assertLess(changed, 120)
+                for actual_edge, expected_edge in zip(actual.getbbox(), expected.getbbox()):
+                    self.assertLessEqual(abs(actual_edge - expected_edge), 1)
                 css = scene_to_css(scene)
                 self.assertIn("polygon(" + ", ".join(f"{x}% {y}%" for x, y in vertices) + ")", css)
                 self.assertEqual(parse_css_scene(css).elements[0].type, kind)
@@ -76,9 +81,10 @@ class PreviewGeometryTests(unittest.TestCase):
         scene.elements[0].color = "#0000ff"
         self.assertEqual(render(scene).getpixel((150, 150)), (128, 0, 127, 255))
 
-    def test_opacity_on_white_canvas_does_not_replace_background_alpha(self):
+    def test_opacity_keeps_background_alpha_even_with_legacy_color_scene_background(self):
+        """旧场景里残留的画布颜色背景不进导出：半透明图元保持自身 alpha。"""
         image = render(scene_with({"opacity": 0.5}, background="#ffffff"))
-        self.assertEqual(image.getpixel((150, 150)), (255, 127, 127, 255))
+        self.assertEqual(image.getpixel((150, 150)), (255, 0, 0, 128))
 
     def test_ring_alpha_is_not_applied_twice_and_hole_preserves_lower_layer(self):
         scene = scene_with({}, {"opacity": 0.5})
