@@ -55,3 +55,23 @@ export function sliceRegions(meta: SpriteMeta, width: number, height: number): S
   }
   return regions;
 }
+
+/** Shared integer boundaries avoid both transparent gaps and alpha overlap between slices. */
+export function rasterSliceRegions(meta: SpriteMeta, width: number, height: number,
+  textureWidth = meta.width, textureHeight = meta.height): SliceRegion[] {
+  if (!(textureWidth > 0 && textureHeight > 0)) return [];
+  const sample = (position: number, span: number, scale: number, extent: number) => {
+    if (span > 0) return [position * scale, span * scale];
+    // A zero-width center repeats the bilinear seam sample; edge seams clamp to the texture.
+    const band = Math.min(scale / 256, extent);
+    return [Math.max(0, Math.min(extent - band, position * scale - band / 2)), band];
+  };
+  return sliceRegions(meta, width, height).flatMap(({ source: [sx, sy, sw, sh], target: [x, y, w, h] }) => {
+    const left = Math.round(x), top = Math.round(y);
+    const right = Math.round(x + w), bottom = Math.round(y + h);
+    if (right <= left || bottom <= top) return [];
+    const [sourceX, sourceWidth] = sample(sx, sw, textureWidth / meta.width, textureWidth);
+    const [sourceY, sourceHeight] = sample(sy, sh, textureHeight / meta.height, textureHeight);
+    return [{ source: [sourceX, sourceY, sourceWidth, sourceHeight], target: [left, top, right - left, bottom - top] }];
+  });
+}

@@ -6,6 +6,8 @@
 
 ### Lua 绘制与回导
 
+X/Y 旋转的模型、配置、导出适配与证据范围见 [三轴旋转](rotation-xy.md)。`rotation` 保持 Z，新增 `rotationX/rotationY`，缺省为 0。
+
 - `POST /api/export/lua` 生成千星客户端图片与文本框绘制脚本。图片链路：规范化场景 → 本项目 GIA 编码器 → 拟合工具的 `gia_lua.parse_material_gia` / `build_gia_lua`；使用同一份 ROOT/ELEMENTS 布局及运行时。应用适配层增加元件、TEXTBOXES 和 DRAW_ORDER，不修改上游文件。纯文本场景使用完整画布 ROOT 与空 ELEMENTS；空画布使用同项目 `lua_export.build_lua_export_text`。
 - 上游 `lua_export.py`、`gia_lua.py` 原样收录在 `backend/vendor/primitive_shape/`，无本机目录运行依赖。来源、MIT 许可、SHA-256 见该目录 `PROVENANCE.md`；复制时源文件尚未提交，故没有来源 commit。
 - `POST /api/import` 的 `sourceType: "lua"` 同时接受拟合工具的 PALETTE/ELEMENTS（8 字段）、GIA 转 Lua 的 ROOT/ELEMENTS（18 字段）和本编辑器的 TEXTBOXES / DRAW_ORDER。只读取字面量数据，不执行脚本或运行时函数。支持旧版负 Y 坐标、三角形质心、图片锚点、轴心与镜像，以及文本内容、样式和混合层序；不导入任意游戏逻辑。
@@ -110,6 +112,8 @@ type SceneElement = {
   width: number;
   height: number;
   rotation: number;
+  rotationX?: number;
+  rotationY?: number;
   color: string;
   opacity: number;
   zIndex: number;

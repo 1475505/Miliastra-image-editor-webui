@@ -2,7 +2,7 @@
 name: miliastra-image-css-builder
 slug: miliastra-image-css-builder
 displayName: 千星奇域图片编辑器-css生成
-version: 1.0.12
+version: 1.0.13
 summary: 用有限图元生成可导入的 CSS，或通过 WebMCP 编辑千星图片编辑器画布。
 license: Proprietary
 description: 将图片或描述拟合成千星图片编辑器可导入的 CSS 图元场景，支持旋转、星形、圆环、文本框和素材图片；也用于通过页面 WebMCP 创建或修改画布。不用于任意 CSS 网页或 SVG 路径绘制。
@@ -25,6 +25,7 @@ description: 将图片或描述拟合成千星图片编辑器可导入的 CSS �
 - 用 `get_scene {summary:true}` 看画布和警告；用 `list_elements` 分页定位，需几何时加 `details:true`。完整备份才读取全量场景。
 - 多图元优先 `add_elements` / `update_elements` / `remove_elements`，每批原子执行、一次撤销。`set_elements` 替换全部图元，保留画布和素材库；`import_source` 替换整个场景，只在任务需要时使用。
 - 显式传尺寸、颜色与实色的 `opacity:1`，避免库预设影响结果。`x/y` 是中心，`rotation` 逆时针为正，`zIndex` 越大越靠上，编辑后重新编号。文本用 `type:"textbox"`、`text/fontSize`；素材用 `type:"image"`、已知的 `imageAssetId`，保留原图颜色设 `imageTint:false`，需要染色才设 `imageTint:true` 与 `color` 相乘。
+- 三轴旋转使用 `rotation`（Z，逆时针为正）、`rotationX/rotationY`（缺省为 0）。X 上下倾转，Y 左右倾转；90° 侧立，180° 翻面。尺寸保留原始平面大小，区域查询按投影外接框计算；侧立元素从图层列表选中。见 [三轴旋转](../../docs/rotation-xy.md)。
 - 图片 `imageType:"basic"` 整图缩放，`"stretch"` 按边界切片。非零边界默认拉伸，全零或缺失时只支持基础；新增省略尺寸时有横向切片边界的宽为 136，有纵向切片边界的高为 96，未切片方向保持原始厚度，无元数据为 96。指定尺寸会保留，切换类型不重设已有尺寸；效果在原始尺寸下可能相同，用 `get_canvas_preview` 检查目标尺寸。固定拉伸预览 PNG 只供看图，不能替代绘制原图。
 - 元件用 `get_prefab_info({id})` 单 ID 查询后，以 `type:"prefab"`、`prefabId` 添加，Lua 在 `PREFAB_IDS` 中定义 ID；`prefabVariable` 是配置名称，无需客户端参数。含元件的场景可保存 JSON，绘制仅支持 Lua，不能导出 CSS/SVG/PNG/GIA。
 - `set_canvas` 支持尺寸、GIA `mask` 与查看背景（`background`：`#RRGGBB` 或 `transparent` 棋盘格）。查看背景只影响编辑器显示、**不进导出**（导出恒为透明底）。遮罩 `shapeType:1/2` 为矩形/椭圆；`x/y` 是相对画布中心的偏移，**y 向上**；尺寸 `null` 跟随画布。遮罩不改变 PNG 或工具预览。
@@ -77,9 +78,11 @@ description: 将图片或描述拟合成千星图片编辑器可导入的 CSS �
 }
 ```
 
-- `left`/`top` 是图元**中心**坐标，单位 px。`translate(-50%, -50%)` 是让浏览器中"left/top 即中心"成立的关键——必须永远保留；导入器只提取其中的 `rotate(...)` 部分。
+- `left`/`top` 是图元**中心**坐标，单位 px。`translate(-50%, -50%)` 是让浏览器中"left/top 即中心"成立的关键——必须永远保留；导入器读取 `rotate(...)` 及显式三轴元数据。
 - `z-index`：从 0 连续编号，且与文档顺序一致。导入时场景会按 `z-index` 重排，编号混乱会导致图层错乱。
 - 填充统一用 `background`（不要 `background-color`），只写纯色 hex。CSS 旋转顺时针为正，与 scene 符号相反。
+
+非零 X/Y 优先通过 JSON 或 WebMCP 编辑，再用 `export_scene({format:"css"})` 获取可直接显示的投影 `matrix`。导出的 `-miliastra-rotation-x/y/z` 保留场景角度，回导优先读取它们。单轴手写 `rotateX/rotateY(Ndeg)` 可导入；任意三维变换组合不等价于编辑器的 Z-X-Y 投影策略。
 
 ## 支持的图元
 
@@ -147,13 +150,15 @@ clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 92%, 50% 71%, 21% 92%,
 | 图元（旋转后的包围盒）超出画布，且没写 `-miliastra-canvas-fit: lock` | **所有图元被整体平移**，构图静默错位（左/上越界）；超右/下则画布被撑大 |
 | 图元超出画布，但写了 `-miliastra-canvas-fit: lock` | 画布保持不变，越界部分被裁切，不会出现在预览与导出里 |
 | `::before` / `::after` / `box-shadow` / `border` / `filter` | 完全忽略 |
-| `scale(...)` / `skew(...)` / `matrix(...)` / `translateX(...)` | 完全忽略（只读 `rotate(Ndeg)`） |
+| `scale(...)` / `skew(...)` / `translateX(...)` 或不带三轴元数据的 `matrix(...)` | 忽略变换；编辑器导出的 matrix 依靠 `-miliastra-rotation-x/y/z` 回导 |
 | 缺 `left`/`top`/`width`/`height` 任一 | 整条规则被跳过，图元丢失 |
 
 ## 验证与其他格式
 
 服务可达时用 `POST /api/import {sourceType:"css",content:...}`，核对数量、尺寸与警告，再用 `/api/export/png {scene:...}` 检查解析后的效果。原始 CSS 预览不能代替导入验证。
 
-完整场景（含素材库、遮罩和文本设置）用 JSON：顶层 `canvas {width,height,background}` + `elements`，元素用扁平的 `id/type/x/y/width/height/rotation`，文本设置在 `textBox`。只有 `elements` 而缺 `canvas` 时，画布会按图元包围盒自动拟合；嵌套的 `center/size` 或对象形式 `rotation` 不被识别，导入会报错，需要先拍平。Primitive Shaper 结果页的 JSON 导出已按此结构输出（`canvas` + 扁平 `elements` + `meta`，原始字段保留在 `shaper` 里），可直接导入。SVG 回导会丢失基础图元旋转、星形和圆环。
+完整场景（含素材库、遮罩和文本设置）用 JSON：顶层 `canvas {width,height,background}` + `elements`，元素用扁平的 `id/type/x/y/width/height/rotation`，可选 `rotationX/rotationY`，文本设置在 `textBox`。只有 `elements` 而缺 `canvas` 时，画布会按图元包围盒自动拟合；嵌套的 `center/size` 或对象形式 `rotation` 不被识别，导入会报错，需要先拍平。Primitive Shaper 结果页的 JSON 导出已按此结构输出（`canvas` + 扁平 `elements` + `meta`，原始字段保留在 `shaper` 里），可直接导入。普通 SVG 回导会丢失基础图元旋转与星形；编辑器导出的非零 X/Y 投影组通过 `data-miliastra-element` 恢复原始几何和三轴。圆环仍沿用 SVG 导出的省略规则。
 
 Lua 用 `export_scene {format:"lua"}` 或 `/api/export/lua` 获取，按场景设置基础／拉伸图片类型，元件 ID 在脚本内的 `PREFAB_IDS` 表配置。使用前把 `IMAGE_PREFAB_ID` 设置为图片控件模板索引；原生文本框需 `TEXTBOX_PREFAB_ID`，支持文字、样式、字号和自适应设置。`other` 仅保留供回导。在专用空客户端容器的 `OnStart` 绘制；保留末尾 `MILIASTRA_EDITOR_SCENE_V1` 元数据。导入只读字面量，不执行代码，也不烘焙运行时缩放/偏移。Lua 绘制不应用 GIA 遮罩。
+
+Lua 非零 X/Y 旋转保存在与图片行对齐的 `ROTATIONS` 表，文本框保存在 `TEXTBOXES`，绘制调用 `SetLocalRotation(x,y,z)`。JSON 与收藏保留三轴；不要将倾转烘焙成缩小的宽高。

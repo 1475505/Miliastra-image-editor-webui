@@ -3,9 +3,11 @@ import { registerEditorTools, type EditorBridge, type ElementPatch, type Element
 import { useI18n } from "./i18n";
 import { PrefabLibraryPanel } from "./PrefabLibraryPanel";
 import { PrefabSprite } from "./PrefabSprite";
-import { defaultLibraryImageSize, normalizeImageElement, resolveImageType, sliceRegions, supportsImageStretch, type ImageType } from "./imageStretch";
+import { SlicedSprite } from "./SlicedSprite";
+import { defaultLibraryImageSize, normalizeImageElement, resolveImageType, supportsImageStretch, type ImageType } from "./imageStretch";
 import { defaultPrefabVariable, getPrefabInfo, PrefabLookupError, validPrefabVariable, type PrefabInfo } from "./prefabLibrary";
 import { recordAddedPrefabs } from "./prefabHistory";
+import { rotationCss, unprojectVector } from "./rotation";
 import {
   assetMaskUrl,
   DEFAULT_BACKDROP_URL,
@@ -155,6 +157,8 @@ export type SceneElement = {
   width: number;
   height: number;
   rotation: number;
+  rotationX?: number;
+  rotationY?: number;
   color: string;
   opacity: number;
   zIndex: number;
@@ -280,6 +284,8 @@ type InteractionState =
       centerX: number;
       centerY: number;
       rotation: number;
+      rotationX: number;
+      rotationY: number;
     }
   | {
       kind: "rotate";
@@ -287,6 +293,8 @@ type InteractionState =
       centerX: number;
       centerY: number;
       baseRotation: number;
+      rotationX: number;
+      rotationY: number;
       startAngle: number;
     }
   | null;
@@ -992,11 +1000,12 @@ function App() {
         if (!pointer) {
           return;
         }
-        const local = rotateVector(
+        const local = unprojectVector(
           pointer.x - action.centerX,
           pointer.y - action.centerY,
-          action.rotation
+          action
         );
+        if (!local) return;
         replaceScene((current) => ({
           ...current,
           elements: current.elements.map((element) =>
@@ -1017,7 +1026,9 @@ function App() {
         if (!pointer) {
           return;
         }
-        const angle = Math.atan2(pointer.y - action.centerY, pointer.x - action.centerX);
+        const local = unprojectVector(pointer.x - action.centerX, pointer.y - action.centerY, { ...action, rotation: 0 });
+        if (!local) return;
+        const angle = Math.atan2(local.y, local.x);
         let rotation = normalizeRotation(action.baseRotation - radiansToDegrees(angle - action.startAngle));
         const cfg = snapConfigRef.current;
         if (cfg.enabled && !event.ctrlKey && !event.metaKey) {
@@ -1424,6 +1435,8 @@ function App() {
       width: override?.width ?? libraryItem?.width ?? 90,
       height: override?.height ?? libraryItem?.height ?? 90,
       rotation: normalizeRotation(override?.rotation ?? 0),
+      rotationX: normalizeRotation(override?.rotationX ?? 0),
+      rotationY: normalizeRotation(override?.rotationY ?? 0),
       color,
       opacity: override?.opacity ?? (type === "textbox" ? DEFAULT_TEXTBOX.textOpacity : 0.85),
       zIndex: override?.zIndex ?? current.elements.length,
@@ -2479,13 +2492,17 @@ function App() {
                             if (!pointer) {
                               return;
                             }
+                            const local = unprojectVector(pointer.x - element.x, pointer.y - element.y, { ...element, rotation: 0 });
+                            if (!local) return;
                             interactionRef.current = {
                               kind: "rotate",
                               id: element.id,
                               centerX: element.x,
                               centerY: element.y,
                               baseRotation: element.rotation,
-                              startAngle: Math.atan2(pointer.y - element.y, pointer.x - element.x)
+                              rotationX: element.rotationX ?? 0,
+                              rotationY: element.rotationY ?? 0,
+                              startAngle: Math.atan2(local.y, local.x)
                             };
                           }}
                         />
@@ -2500,7 +2517,9 @@ function App() {
                               id: element.id,
                               centerX: element.x,
                               centerY: element.y,
-                              rotation: element.rotation
+                              rotation: element.rotation,
+                              rotationX: element.rotationX ?? 0,
+                              rotationY: element.rotationY ?? 0
                             };
                           }}
                         />
@@ -2728,19 +2747,25 @@ function App() {
                     <NumField label={t("props.height")} value={selectedElement.type === "image" ? Math.round(selectedElement.height * 100) / 100 : Math.round(selectedElement.height)} min={1} step={selectedElement.type === "image" ? 0.01 : undefined} onChange={(value) => updateSelected({ height: Math.max(1, value) })} />
                   </div>
                   <div className="field">
-                    <span>{t("props.rotation")}</span>
+                    <span>{t("props.rotation")} Z</span>
                     <div className="row">
                       <input
                         type="number"
                         min="-180"
                         max="180"
-                        value={Math.round(selectedElement.rotation)}
+                        step="0.1"
+                        value={selectedElement.rotation}
                         onChange={(event) => updateSelected({ rotation: Number(event.target.value) })}
                       />
-                      <button className="icon-btn" onClick={() => updateSelected({ rotation: 0 })} title={t("props.rotationReset")}>
+                      <button className="icon-btn" onClick={() => updateSelected({ rotation: 0, rotationX: 0, rotationY: 0 })} title={t("props.rotationReset")}>
                         <Icon name="rotateCw" size={13} />
                       </button>
                     </div>
+                  </div>
+
+                  <div className="grid-2">
+                    <NumField label={`${t("props.rotation")} X`} value={selectedElement.rotationX ?? 0} step={0.1} onChange={(value) => updateSelected({ rotationX: value })} />
+                    <NumField label={`${t("props.rotation")} Y`} value={selectedElement.rotationY ?? 0} step={0.1} onChange={(value) => updateSelected({ rotationY: value })} />
                   </div>
 
                   {selectedElement.type === "textbox" ? (
@@ -3795,23 +3820,7 @@ function AssetSprite({ assetId, tint, color, imageType = "basic", width, height 
     return () => { active = false; };
   }, [assetId, imageType]);
   if (imageType === "stretch" && metadata?.id === assetId && metadata.stretchable && width && height) {
-    const channels = [1, 3, 5].map((offset) => parseInt(color.slice(offset, offset + 2), 16) / 255);
-    // SVG requires a positive viewBox span; a narrow band repeats the zero-span UV seam.
-    const seamSpan = 1 / 256;
-    return <svg className="asset-sprite" width="100%" height="100%" viewBox={`0 0 ${width} ${height}`}
-      preserveAspectRatio="none" data-image-type="stretch" aria-hidden="true">
-      <defs><filter id={filterId} x="0" y="0" width="100%" height="100%" colorInterpolationFilters="sRGB">
-        <feComponentTransfer><feFuncR type="linear" slope={channels[0]} /><feFuncG type="linear" slope={channels[1]} /><feFuncB type="linear" slope={channels[2]} /></feComponentTransfer>
-      </filter></defs>
-      <g filter={tint && color.toLowerCase() !== "#ffffff" ? `url(#${filterId})` : undefined}>
-        {sliceRegions(metadata, width, height).map(({ source: [sx, sy, sw, sh], target: [x, y, w, h] }, index) => (
-          <svg key={index} x={x} y={y} width={w} height={h} overflow="hidden" preserveAspectRatio="none"
-            viewBox={`${sw ? sx : sx - seamSpan / 2} ${sh ? sy : sy - seamSpan / 2} ${sw || seamSpan} ${sh || seamSpan}`}>
-            <image href={imageUrl(assetId)} width={metadata.width} height={metadata.height} />
-          </svg>
-        ))}
-      </g>
-    </svg>;
+    return <SlicedSprite assetId={assetId} metadata={metadata} width={width} height={height} tint={tint} color={color} />;
   }
   if (tint && color.toLowerCase() !== "#ffffff") {
     const channels = [1, 3, 5].map((offset) => parseInt(color.slice(offset, offset + 2), 16) / 255);
@@ -3898,23 +3907,11 @@ function normalizeRotation(value: number) {
 }
 
 function normalizeElementPatch(patch: ElementPatch) {
-  if (patch.rotation === undefined) {
-    return patch;
+  const result = { ...patch };
+  for (const key of ["rotation", "rotationX", "rotationY"] as const) {
+    if (patch[key] !== undefined) result[key] = normalizeRotation(patch[key]);
   }
-  return {
-    ...patch,
-    rotation: normalizeRotation(patch.rotation)
-  };
-}
-
-function rotateVector(x: number, y: number, degrees: number) {
-  const radians = (degrees * Math.PI) / 180;
-  const cos = Math.cos(radians);
-  const sin = Math.sin(radians);
-  return {
-    x: x * cos - y * sin,
-    y: x * sin + y * cos
-  };
+  return result;
 }
 
 function radiansToDegrees(radians: number) {
@@ -4088,7 +4085,7 @@ function shapeStyle(element: SceneElement) {
     width: `${element.width}px`,
     height: `${element.height}px`,
     // Scene rotation is CCW-positive; CSS rotate() appears clockwise on screen.
-    transform: `translate(-50%, -50%) rotate(${-element.rotation}deg)`,
+    transform: `translate(-50%, -50%) ${rotationCss(element)}`,
     opacity: element.opacity,
     zIndex: element.zIndex
   } as const;

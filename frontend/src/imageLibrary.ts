@@ -504,9 +504,10 @@ async function requestCatalog(options: { refresh: boolean; etag?: string | null 
   return { notModified: false, payload, etag: response.headers.get("ETag") };
 }
 
-function needsAnnotationRefresh(payload: CatalogPayload): boolean {
+function needsCatalogRefresh(payload: CatalogPayload): boolean {
   return !Object.keys(payload.useTaxonomy?.filters ?? {}).length
-    || !Object.values(payload.descriptions ?? {}).some((description) => description.uses?.length);
+    || !Object.values(payload.descriptions ?? {}).some((description) => description.uses?.length)
+    || !Object.keys(payload.stretchPreviews ?? {}).length;
 }
 
 async function revalidate(force = false): Promise<void> {
@@ -515,7 +516,7 @@ async function revalidate(force = false): Promise<void> {
     return;
   }
   try {
-    const bypass = force || needsAnnotationRefresh(cached.payload);
+    const bypass = force || needsCatalogRefresh(cached.payload);
     const result = await requestCatalog({ refresh: bypass, etag: cached.etag });
     if (result.notModified) {
       writeJson(CATALOG_CACHE_KEY, { ...cached, etag: result.etag ?? cached.etag, fetchedAt: Date.now() / 1000 });
@@ -529,7 +530,7 @@ async function revalidate(force = false): Promise<void> {
       payload: result.payload,
     });
     emit(toCatalogState(result.payload, "network", false));
-    if (!bypass && needsAnnotationRefresh(result.payload)) {
+    if (!bypass && needsCatalogRefresh(result.payload)) {
       // 暂时降级的索引立即自动重取一次，持续失败时不循环重试。
       void revalidate(true);
     }
@@ -560,7 +561,7 @@ export async function loadLibraryCatalog(options: { refresh?: boolean } = {}): P
 
   inflight = (async () => {
     try {
-      const bypass = refresh || Boolean(cached && needsAnnotationRefresh(cached.payload));
+      const bypass = refresh || Boolean(cached && needsCatalogRefresh(cached.payload));
       const result = await requestCatalog({ refresh: bypass, etag: bypass ? null : cached?.etag });
       if (result.notModified && cached) {
         writeJson(CATALOG_CACHE_KEY, { ...cached, etag: result.etag ?? cached.etag, fetchedAt: Date.now() / 1000 });
@@ -577,8 +578,8 @@ export async function loadLibraryCatalog(options: { refresh?: boolean } = {}): P
         });
         const state = toCatalogState(result.payload, "network", false);
         emit(state);
-        if (!bypass && needsAnnotationRefresh(result.payload)) {
-          // 先提供基础素材和编辑能力，再后台补齐用途，无需用户点击刷新。
+        if (!bypass && needsCatalogRefresh(result.payload)) {
+          // 先提供基础素材和编辑能力，再后台补齐用途及拉伸预览。
           void revalidate(true);
         }
         return state;

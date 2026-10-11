@@ -25,6 +25,7 @@ from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFont, PngImagePlu
 
 from . import image_library, image_stretch, lua_scene, prefab_library
 from .image_library import fetch_sprite_bytes, sprite_url
+from .rotation import rotation_matrix
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 STATIC_DIR = ROOT_DIR / "backend" / "app" / "static"
@@ -224,6 +225,8 @@ class SceneElementModel(BaseModel):
     width: float
     height: float
     rotation: float = 0.0
+    rotationX: float = 0.0
+    rotationY: float = 0.0
     color: str = "#4f46e5"
     opacity: float = 1.0
     zIndex: int = 0
@@ -492,7 +495,11 @@ def export_css(request: ExportRequest) -> Response:
 def export_lua(request: ExportRequest) -> Response:
     scene, _ = resolve_scene_image_types(normalize_scene(request.scene))
     image_scene = scene.model_copy(update={
-        "elements": [element for element in scene.elements if element_asset_id(element) is not None]
+        # The unchanged upstream GIA-to-Lua parser handles Z-only records.
+        # XY are carried separately by our ROTATIONS adapter, never discarded
+        # from the user scene, GIA download or final Lua draw calls.
+        "elements": [element.model_copy(update={"rotationX": 0.0, "rotationY": 0.0})
+                     for element in scene.elements if element_asset_id(element) is not None]
     })
     try:
         gia_bytes = None
@@ -656,6 +663,8 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
                 width=max(1.0, element.width),
                 height=max(1.0, element.height),
                 rotation=normalize_rotation(element.rotation),
+                rotationX=normalize_rotation(element.rotationX),
+                rotationY=normalize_rotation(element.rotationY),
                 color=color,
                 opacity=opacity,
                 zIndex=index,
@@ -681,6 +690,8 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
                 width=max(1.0, element.width),
                 height=max(1.0, element.height),
                 rotation=normalize_rotation(element.rotation),
+                rotationX=normalize_rotation(element.rotationX),
+                rotationY=normalize_rotation(element.rotationY),
                 color=color,
                 opacity=opacity,
                 zIndex=index,
@@ -749,17 +760,42 @@ def normalize_rotation(value: float) -> float:
 
 
 def get_element_bounds(element: SceneElementModel) -> tuple[float, float, float, float]:
-    radians = math.radians(element.rotation)
-    cos_v = abs(math.cos(radians))
-    sin_v = abs(math.sin(radians))
-    bbox_width = element.width * cos_v + element.height * sin_v
-    bbox_height = element.width * sin_v + element.height * cos_v
+    a, b, c, d = element_rotation_matrix(element)
+    bbox_width = element.width * abs(a) + element.height * abs(c)
+    bbox_height = element.width * abs(b) + element.height * abs(d)
     return (
         element.x - bbox_width / 2,
         element.y - bbox_height / 2,
         element.x + bbox_width / 2,
         element.y + bbox_height / 2,
     )
+
+
+def element_rotation_matrix(element: SceneElementModel):
+    return rotation_matrix(element.rotation, element.rotationX, element.rotationY)
+
+
+def css_rotation_transform(element: SceneElementModel) -> str:
+    if not element.rotationX and not element.rotationY:
+        return f"rotate({-element.rotation:.2f}deg)"
+    a, b, c, d = element_rotation_matrix(element)
+    return f"matrix({a:.12g},{b:.12g},{c:.12g},{d:.12g},0,0)"
+
+
+def parse_css_rotations(body: str, z: float) -> dict:
+    # Explicit metadata preserves Euler values, including singular 90° views.
+    # Basic rotateX/rotateY imports are supported for single-axis CSS as well.
+    transform = find_css_value(body, "transform") or ""
+    result = {"rotation": z, "rotationX": 0.0, "rotationY": 0.0}
+    for axis, key in (("x", "rotationX"), ("y", "rotationY"), ("z", "rotation")):
+        value = find_css_value(body, f"-miliastra-rotation-{axis}")
+        if value is not None:
+            result[key] = parse_float(value, 0.0)
+        elif axis != "z":
+            match = re.search(rf"rotate{axis}\(\s*([-+\d.eE]+)deg\s*\)", transform, re.I)
+            if match:
+                result[key] = parse_float(match.group(1), 0.0)
+    return result
 
 
 def fit_scene_canvas_to_elements(
@@ -865,6 +901,8 @@ def normalize_library(library: SceneLibraryModel) -> SceneLibraryModel:
                     width=max(1.0, item.element.width),
                     height=max(1.0, item.element.height),
                     rotation=item.element.rotation,
+                    rotationX=normalize_rotation(item.element.rotationX),
+                    rotationY=normalize_rotation(item.element.rotationY),
                     color=normalize_color(item.element.color),
                     opacity=max(0.0, min(1.0, item.element.opacity)),
                     zIndex=max(0, item.element.zIndex),
@@ -1013,6 +1051,8 @@ def convert_basic_json_element(item: dict, index: int) -> SceneElementModel:
         width=float(item.get("width", item.get("w", DEFAULT_SHAPE_SIZE))),
         height=float(item.get("height", item.get("h", DEFAULT_SHAPE_SIZE))),
         rotation=float(item.get("rotation", 0)),
+        rotationX=float(item.get("rotationX", item.get("rot_x", 0))),
+        rotationY=float(item.get("rotationY", item.get("rot_y", 0))),
         color=color,
         opacity=opacity,
         zIndex=int(item.get("zIndex", index)),
@@ -1092,6 +1132,7 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
         color = normalize_color(resolve_css_fill_color(body, DEFAULT_CANVAS_BACKGROUND))
         opacity = parse_float(find_css_value(body, "opacity"), 1.0)
         rotation = parse_rotation(find_css_value(body, "transform") or "")
+        rotations = parse_css_rotations(body, rotation)
         border_radius = (find_css_value(body, "border-radius") or "").strip()
         clip_path = normalize_clip_path(find_css_value(body, "clip-path"))
         declared_type = (find_css_value(body, "-miliastra-type") or "").strip().lower()
@@ -1121,7 +1162,7 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
                     y=shape_y,
                     width=shape_width,
                     height=shape_height,
-                    rotation=rotation,
+                    **rotations,
                     color=color,
                     opacity=opacity,
                     zIndex=int(parse_float(find_css_value(body, "z-index"), index)),
@@ -1182,7 +1223,7 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
                     y=shape_y,
                     width=shape_width,
                     height=shape_height,
-                    rotation=rotation,
+                    **rotations,
                     color=color,
                     opacity=opacity,
                     zIndex=int(parse_float(find_css_value(body, "z-index"), index)),
@@ -1236,7 +1277,7 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
                 y=shape_y,
                 width=shape_width,
                 height=shape_height,
-                rotation=rotation,
+                **rotations,
                 color=color,
                 opacity=opacity,
                 zIndex=int(parse_float(find_css_value(body, "z-index"), index)),
@@ -1317,9 +1358,21 @@ def parse_svg_scene(content: str) -> SceneDocumentModel:
 
     elements: list[SceneElementModel] = []
     unsupported_tags: list[str] = []
+    projected_children: set[int] = set()
     for index, node in enumerate(root.iter()):
+        if id(node) in projected_children:
+            continue
         tag = strip_ns(node.tag)
         if tag == "svg":
+            continue
+        if tag == "g" and "data-miliastra-element" in node.attrib:
+            try:
+                value = json.loads(base64.b64decode(node.attrib["data-miliastra-element"], validate=True))
+                item = SceneElementModel.model_validate(value)
+            except (ValueError, TypeError) as exc:
+                raise HTTPException(status_code=400, detail="Invalid projected SVG element metadata") from exc
+            elements.append(item.model_copy(update={"zIndex": len(elements)}))
+            projected_children.update(id(child) for child in node.iter() if child is not node)
             continue
 
         fill = node.attrib.get("fill", "#4f46e5")
@@ -1574,7 +1627,10 @@ def scene_to_css(scene: SceneDocumentModel, image_metas: dict[int, dict] | None 
         lines.extend(
             [
                 f"  opacity: {element.opacity:.4f};",
-                f"  transform: translate(-50%, -50%) rotate({-element.rotation:.2f}deg);",
+                f"  transform: translate(-50%, -50%) {css_rotation_transform(element)};",
+                f"  -miliastra-rotation-x: {element.rotationX:.6f};",
+                f"  -miliastra-rotation-y: {element.rotationY:.6f};",
+                f"  -miliastra-rotation-z: {element.rotation:.6f};",
                 "  transform-origin: 50% 50%;",
                 f"  z-index: {element.zIndex};",
             ]
@@ -1589,9 +1645,9 @@ def scene_to_css(scene: SceneDocumentModel, image_metas: dict[int, dict] | None 
     return "\n".join(lines)
 
 
-def scene_to_svg(scene: SceneDocumentModel, image_metas: dict[int, dict] | None = None) -> str:
+def scene_to_svg(scene: SceneDocumentModel, image_metas: dict[int, dict] | None = None, *, _stretch_urls: dict[str, str] | None = None) -> str:
     require_supported_draw_format(scene, "SVG")
-    stretch_urls = stretched_data_urls(scene, image_metas)
+    stretch_urls = stretched_data_urls(scene, image_metas) if _stretch_urls is None else _stretch_urls
     sorted_elements = sorted(scene.elements, key=lambda item: item.zIndex)
     ring_count = sum(1 for element in sorted_elements if element.type == "ring")
     tinted_count = sum(1 for element in sorted_elements
@@ -1610,6 +1666,20 @@ def scene_to_svg(scene: SceneDocumentModel, image_metas: dict[int, dict] | None 
 
     for element in sorted_elements:
         if element.type == "ring":
+            continue
+        if element.rotationX or element.rotationY:
+            # Render actual affine SVG geometry and carry the original editable
+            # Euler data, which cannot be recovered uniquely from a 2D matrix.
+            a, b, c, d = element_rotation_matrix(element)
+            tx = element.x - a * element.x - c * element.y
+            ty = element.y - b * element.x - d * element.y
+            flat = element.model_copy(update={"rotation": 0.0, "rotationX": 0.0, "rotationY": 0.0})
+            single = scene.model_copy(update={"elements": [flat]})
+            inner = scene_to_svg(single, image_metas, _stretch_urls=stretch_urls).split("\n")[1:-1]
+            metadata = base64.b64encode(json.dumps(element.model_dump(), ensure_ascii=False, allow_nan=False).encode()).decode()
+            parts.append(f'<g data-miliastra-element="{metadata}" transform="matrix({a:.12g} {b:.12g} {c:.12g} {d:.12g} {tx:.12g} {ty:.12g})">')
+            parts.extend(inner)
+            parts.append('</g>')
             continue
         transform = f'rotate({-element.rotation:.2f} {element.x:.2f} {element.y:.2f})'
         opacity = f'{element.opacity:.4f}'
@@ -1799,6 +1869,9 @@ def paste_sprite(image: Image.Image, element: SceneElementModel, sprite: Image.I
     sprite 是本请求内共享的解码缓存，先拷贝再改，避免染色/透明度污染原贴图。
     """
     sprite = render_sprite(element, sprite, meta)
+    if element.rotationX or element.rotationY:
+        paste_projected_layer(image, element, sprite)
+        return
     if abs(element.rotation) > 0.001:
         # 场景旋转为逆时针正方向，与 Pillow rotate() 的方向一致
         sprite = sprite.rotate(element.rotation, expand=True, resample=Image.BICUBIC)
@@ -1806,6 +1879,24 @@ def paste_sprite(image: Image.Image, element: SceneElementModel, sprite: Image.I
     left = int(round(element.x - sprite.width / 2))
     top = int(round(element.y - sprite.height / 2))
     image.alpha_composite(sprite, (left, top))
+
+
+def paste_projected_layer(image: Image.Image, element: SceneElementModel, layer: Image.Image) -> None:
+    a, b, c, d = element_rotation_matrix(element)
+    det = a * d - b * c
+    if abs(det) < 1e-10:
+        return  # edge-on; do not invert a singular transform or draw a 1px face
+    left, top, right, bottom = get_element_bounds(element)
+    x0, y0 = max(0, math.floor(left) - 1), max(0, math.floor(top) - 1)
+    x1, y1 = min(image.width, math.ceil(right) + 1), min(image.height, math.ceil(bottom) + 1)
+    if x1 <= x0 or y1 <= y0:
+        return
+    ia, ic, ib, id_ = d / det, -c / det, -b / det, a / det
+    dx, dy = x0 - element.x, y0 - element.y
+    transformed = layer.transform((x1 - x0, y1 - y0), Image.Transform.AFFINE,
+        (ia, ic, layer.width / 2 + ia * dx + ic * dy,
+         ib, id_, layer.height / 2 + ib * dx + id_ * dy), resample=Image.Resampling.BICUBIC)
+    image.alpha_composite(transformed, (x0, y0))
 
 
 def scene_to_png_bytes(scene: SceneDocumentModel, image_metas: dict[int, dict] | None = None) -> bytes:
@@ -1829,6 +1920,13 @@ def scene_to_png_bytes(scene: SceneDocumentModel, image_metas: dict[int, dict] |
                 paste_sprite(image, element, sprite, metas.get(element.imageAssetId))
             continue
         if element.type == "textbox":
+            if element.rotationX or element.rotationY:
+                w, h = max(1, math.ceil(element.width)), max(1, math.ceil(element.height))
+                layer = Image.new("RGBA", (w, h))
+                local = element.model_copy(update={"x": w / 2, "y": h / 2, "rotation": 0.0, "rotationX": 0.0, "rotationY": 0.0})
+                draw_textbox(layer, ImageDraw.Draw(layer, "RGBA"), local)
+                paste_projected_layer(image, element, layer)
+                continue
             layer = Image.new("RGBA", image.size)
             draw_textbox(layer, ImageDraw.Draw(layer, "RGBA"), element)
             image.alpha_composite(layer)
@@ -1836,6 +1934,9 @@ def scene_to_png_bytes(scene: SceneDocumentModel, image_metas: dict[int, dict] |
 
         # ImageDraw 在 RGBA 画布上直接写入 alpha，不会执行 source-over。
         # 仅为当前图元的可见外接框分配透明层，再正确叠加到已有内容上。
+        a, b, c, d = element_rotation_matrix(element)
+        if abs(a * d - b * c) < 1e-10:
+            continue
         left, top, right, bottom = get_element_bounds(element)
         x0, y0 = max(0, math.floor(left)), max(0, math.floor(top))
         x1, y1 = min(image.width, math.ceil(right) + 1), min(image.height, math.ceil(bottom) + 1)
@@ -1904,7 +2005,7 @@ def scene_to_gia_document(scene: SceneDocumentModel, group_name: str | None = No
                 "y": round(canvas_center_y - element.y, 4),
             },
             "size": size,
-            "rotation": {"x": 0, "y": 0, "z": round(element.rotation, 4)},
+            "rotation": {"x": round(element.rotationX, 4), "y": round(element.rotationY, 4), "z": round(element.rotation, 4)},
             "name": (element.name if element.type == "textbox" else str(element.zIndex + 1)),
             "is_background": element.isBackground,
         }
@@ -2206,7 +2307,9 @@ def rotate_points(points: list[tuple[float, float]], cx: float, cy: float, degre
 def draw_polygon(draw: ImageDraw.ImageDraw, points: list[tuple[float, float]], fill: tuple[int, int, int, int], element: SceneElementModel) -> None:
     # 使用尺寸盒中心；顶点均值是三角形的重心，旋转 180° 会错位 height/3。
     # PIL drawing happens in screen coordinates, so invert CCW-positive scene rotation.
-    draw.polygon(rotate_points(points, element.x, element.y, -element.rotation), fill=fill)
+    a, b, c, d = element_rotation_matrix(element)
+    draw.polygon([(element.x + a * (x - element.x) + c * (y - element.y),
+                   element.y + b * (x - element.x) + d * (y - element.y)) for x, y in points], fill=fill)
 
 
 def draw_rect(draw: ImageDraw.ImageDraw, element: SceneElementModel, fill: tuple[int, int, int, int]) -> None:
@@ -2224,7 +2327,7 @@ def draw_ellipse(draw: ImageDraw.ImageDraw, element: SceneElementModel, fill: tu
     top = element.y - element.height / 2
     right = element.x + element.width / 2
     bottom = element.y + element.height / 2
-    if abs(element.rotation) < 0.001:
+    if abs(element.rotation) < 0.001 and not element.rotationX and not element.rotationY:
         draw.ellipse([left, top, right, bottom], fill=fill)
         return
     draw_polygon(draw, ellipse_points(element.x, element.y, element.width, element.height), fill, element)

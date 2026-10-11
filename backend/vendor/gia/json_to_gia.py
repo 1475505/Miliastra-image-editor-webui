@@ -456,17 +456,17 @@ def _build_vector2(x, y):
     w.write_float(502, y)
     return w
 
-def _build_rotation(z_angle):
-    """Build a rotation message: field 3=z (float32). Empty if z≈0."""
-    if abs(z_angle) < 1e-6:
-        return ProtoWriter()  # empty message
+def _build_rotation(z_angle, x_angle=0.0, y_angle=0.0):
+    """RectTransform float fields 1/2/3 = X/Y/Z (ROTXY2 device evidence)."""
     w = ProtoWriter()
-    w.write_float(3, z_angle)
+    for field, angle in ((1, x_angle), (2, y_angle), (3, z_angle)):
+        if abs(angle) >= 1e-6:
+            w.write_float(field, angle)
     return w
 
 def _build_rect_transform(offset_x, offset_y, size_x, size_y, pivot_x=0.5, pivot_y=0.5, rot_z=0.0,
                            scale_x=1.0, scale_y=1.0, anchor_min_x=0.5, anchor_min_y=0.5,
-                           anchor_max_x=0.5, anchor_max_y=0.5):
+                           anchor_max_x=0.5, anchor_max_y=0.5, rot_x=0.0, rot_y=0.0):
     """Build a single platform's rect_transform sub-message."""
     w = ProtoWriter()
     w.write_message(501, _build_vector3(scale_x, scale_y, 1.0))   # scale
@@ -475,14 +475,15 @@ def _build_rect_transform(offset_x, offset_y, size_x, size_y, pivot_x=0.5, pivot
     w.write_message(504, _build_vector2(offset_x, offset_y)) # offset
     w.write_message(505, _build_vector2(size_x, size_y))    # size
     w.write_message(506, _build_vector2(pivot_x, pivot_y))  # pivot
-    w.write_message(508, _build_rotation(rot_z))            # rotation
+    w.write_message(508, _build_rotation(rot_z, rot_x, rot_y))  # rotation
     return w
 
 def _transform_kwargs(offset_x, offset_y, size_x, size_y, pivot_x, pivot_y, rot_z,
-                      scale_x, scale_y, anchor_min_x, anchor_min_y, anchor_max_x, anchor_max_y):
+                      scale_x, scale_y, anchor_min_x, anchor_min_y, anchor_max_x, anchor_max_y, rot_x=0.0, rot_y=0.0):
     return dict(
         offset_x=offset_x, offset_y=offset_y, size_x=size_x, size_y=size_y,
         pivot_x=pivot_x, pivot_y=pivot_y, rot_z=rot_z,
+        rot_x=rot_x, rot_y=rot_y,
         scale_x=scale_x, scale_y=scale_y,
         anchor_min_x=anchor_min_x, anchor_min_y=anchor_min_y,
         anchor_max_x=anchor_max_x, anchor_max_y=anchor_max_y,
@@ -490,7 +491,7 @@ def _transform_kwargs(offset_x, offset_y, size_x, size_y, pivot_x, pivot_y, rot_
 
 def _build_platform(platform_type, offset_x, offset_y, size_x, size_y, pivot_x=0.5, pivot_y=0.5, rot_z=0.0,
                     scale_x=1.0, scale_y=1.0, anchor_min_x=0.5, anchor_min_y=0.5,
-                    anchor_max_x=0.5, anchor_max_y=0.5):
+                    anchor_max_x=0.5, anchor_max_y=0.5, rot_x=0.0, rot_y=0.0):
     """Build a single platform entry: field 501=platform_type(varint), 502=transform(message)."""
     w = ProtoWriter()
     w.write_int32(501, platform_type)
@@ -498,13 +499,14 @@ def _build_platform(platform_type, offset_x, offset_y, size_x, size_y, pivot_x=0
         **_transform_kwargs(
             offset_x, offset_y, size_x, size_y, pivot_x, pivot_y, rot_z,
             scale_x, scale_y, anchor_min_x, anchor_min_y, anchor_max_x, anchor_max_y,
+            rot_x, rot_y,
         )
     ))
     return w
 
 def _build_multi_platform(offset_x, offset_y, size_x, size_y, pivot_x=0.5, pivot_y=0.5, rot_z=0.0,
                           scale_x=1.0, scale_y=1.0, anchor_min_x=0.5, anchor_min_y=0.5,
-                          anchor_max_x=0.5, anchor_max_y=0.5, mp_field502=9):
+                          anchor_max_x=0.5, anchor_max_y=0.5, mp_field502=9, rot_x=0.0, rot_y=0.0):
     """Build the multi_platform message with 4 identical platform entries.
     Platform types: 0=KEYBOARD, 1=TOUCHSCREEN, 2=CONTROLLER_CONSOLE, 3=CONTROLLER_MOBILE
     All 4 platforms get identical transform values.
@@ -513,6 +515,7 @@ def _build_multi_platform(offset_x, offset_y, size_x, size_y, pivot_x=0.5, pivot
     kwargs = _transform_kwargs(
         offset_x, offset_y, size_x, size_y, pivot_x, pivot_y, rot_z,
         scale_x, scale_y, anchor_min_x, anchor_min_y, anchor_max_x, anchor_max_y,
+        rot_x, rot_y,
     )
     w = ProtoWriter()
     # Platform 0 (KEYBOARD) - no platform_type field (defaults to 0 or omitted)
@@ -529,7 +532,7 @@ def _build_multi_platform(offset_x, offset_y, size_x, size_y, pivot_x=0.5, pivot
 
 def _build_transform_data(offset_x, offset_y, size_x, size_y, guid, pivot_x=0.5, pivot_y=0.5, rot_z=0.0,
                           scale_x=1.0, scale_y=1.0, anchor_min_x=0.5, anchor_min_y=0.5,
-                          anchor_max_x=0.5, anchor_max_y=0.5, mp_field502=9):
+                          anchor_max_x=0.5, anchor_max_y=0.5, mp_field502=9, rot_x=0.0, rot_y=0.0):
     """Build the outer transform data message (field 505 in ui.content).
     Structure:
       field 11 = builtin transform stub (multi_platform{} empty, type:2)
@@ -549,7 +552,7 @@ def _build_transform_data(offset_x, offset_y, size_x, size_y, guid, pivot_x=0.5,
     details_transform.write_message(12, _build_multi_platform(
         offset_x, offset_y, size_x, size_y, pivot_x, pivot_y, rot_z,
         scale_x, scale_y, anchor_min_x, anchor_min_y, anchor_max_x, anchor_max_y,
-        mp_field502,
+        mp_field502, rot_x, rot_y,
     ))
     details_transform.write_int32(501, 2)  # type: 2
     details.write_message(13, details_transform)
@@ -796,7 +799,7 @@ def create_ui_image_payload(guid, index, parent_guid, offset_x, offset_y, size_x
                              scale_x=1.0, scale_y=1.0,
                              anchor_min_x=0.5, anchor_min_y=0.5,
                              anchor_max_x=0.5, anchor_max_y=0.5,
-                             mp_field502=9, textbox=None, image_type=0):
+                             mp_field502=9, textbox=None, image_type=0, rot_x=0.0, rot_y=0.0):
     """Create a UI image/textbox node payload (kind=8, resource_class=15).
     
     This constructs the ui.content message for a dependency node in the image template format.
@@ -850,7 +853,7 @@ def create_ui_image_payload(guid, index, parent_guid, offset_x, offset_y, size_x
     content.write_message(505, _build_transform_data(
         offset_x, offset_y, size_x, size_y, guid, pivot_x, pivot_y, rot_z,
         scale_x, scale_y, anchor_min_x, anchor_min_y, anchor_max_x, anchor_max_y,
-        mp_field502,
+        mp_field502, rot_x, rot_y,
     ))
     
     # data[3]: image_settings or textbox (field 505)
@@ -1554,6 +1557,8 @@ def _convert_image_mode(json_data, header, content_len, root_fields, tail, verbo
             image_type=int(element.get('image_type', 0)),
             packed_color=packed_color,
             rot_z=rot_z,
+            rot_x=float(rot.get('x', 0.0)) if isinstance(rot, dict) else 0.0,
+            rot_y=float(rot.get('y', 0.0)) if isinstance(rot, dict) else 0.0,
             pivot_x=pivot_x,
             pivot_y=pivot_y,
             name=name,

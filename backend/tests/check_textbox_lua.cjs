@@ -96,6 +96,8 @@ run(`OnStart(); assert(#controls == ${elements.length} and #errors == 0)`);
 for (const [i, element] of elements.entries()) {
   const c = `controls[${i + 1}]`;
   run(`assert(${c}.top and ${c}.alive)`);
+  [element.rotationX ?? 0, element.rotationY ?? 0, element.rotation].forEach((value, j) =>
+    run(`assert(math.abs(${c}.SetLocalRotationValue[${j + 1}] - (${value})) < 0.0001, "rotation axis ${j}")`));
   if (element.type !== 'textbox') {
     run(`assert(${c}.id == 1234 and ${c}.asset == ${element.prefabId ?? element.imageAssetId ?? assets[element.type]})`);
     run(`assert(${c}.source == ${quote(element.type === 'prefab' ? 'prefab' : 'static')})`);
@@ -113,7 +115,7 @@ for (const [i, element] of elements.entries()) {
     SetAnchoredPositionValue:[element.x - scene.canvas.width / 2, scene.canvas.height / 2 - element.y],
     SetSizeDeltaValue:[element.width, element.height], SetPivotValue:[box.pivotX, box.pivotY],
     SetAnchorMinValue:[box.anchorMinX, box.anchorMinY], SetAnchorMaxValue:[box.anchorMaxX, box.anchorMaxY],
-    SetLocalScaleValue:[box.scaleX, box.scaleY, 1], SetLocalRotationValue:[0, 0, element.rotation],
+    SetLocalScaleValue:[box.scaleX, box.scaleY, 1], SetLocalRotationValue:[element.rotationX ?? 0, element.rotationY ?? 0, element.rotation],
   };
   for (const [field, color, opacity] of [['fontColor',box.textColor,box.textOpacity],
     ['bgColor',box.bgColor,box.bgOpacity], ['outlineColor',box.outlineColor,box.outlineOpacity]]) {

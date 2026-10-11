@@ -2,7 +2,7 @@
 name: miliastra-image-svg-builder
 slug: miliastra-image-svg-builder
 displayName: 千星奇域图片编辑器-svg生成
-version: 1.0.9
+version: 1.0.10
 summary: 用轴对齐图元生成可导入千星图片编辑器的 SVG。
 license: Proprietary
 description: 将图片或描述拟合成千星图片编辑器可导入的 SVG，适合轴对齐矩形、圆/椭圆、三角形、基础文本和素材图片。基础图元旋转、星形、圆环或完整场景回导应使用 CSS、JSON 或页面 WebMCP。
@@ -25,6 +25,7 @@ description: 将图片或描述拟合成千星图片编辑器可导入的 SVG，
 - 用 `get_scene {summary:true}` 看画布和警告；用 `list_elements` 分页定位，需几何时加 `details:true`。完整备份才读取全量场景。
 - 多图元优先 `add_elements` / `update_elements` / `remove_elements`，每批原子执行、一次撤销。`set_elements` 替换全部图元，保留画布和素材库；`import_source` 替换整个场景，只在任务需要时使用。
 - 显式传尺寸、颜色与实色的 `opacity:1`，避免库预设影响结果。`x/y` 是中心，`rotation` 逆时针为正，`zIndex` 越大越靠上，编辑后重新编号。文本用 `type:"textbox"`、`text/fontSize`；素材用 `type:"image"`、已知的 `imageAssetId`，保留原图颜色设 `imageTint:false`，需要染色才设 `imageTint:true` 与 `color` 相乘。
+- 三轴旋转使用 `rotation`（Z，逆时针为正）、`rotationX/rotationY`（缺省为 0）。X 上下倾转，Y 左右倾转；90° 侧立，180° 翻面。尺寸保留原始平面大小，区域查询按投影外接框计算；侧立元素从图层列表选中。见 [三轴旋转](../../docs/rotation-xy.md)。
 - 图片 `imageType:"basic"` 整图缩放，`"stretch"` 按边界切片。非零边界默认拉伸，全零或缺失时只支持基础；新增省略尺寸时有横向切片边界的宽为 136，有纵向切片边界的高为 96，未切片方向保持原始厚度，无元数据为 96。指定尺寸会保留，切换类型不重设已有尺寸；效果在原始尺寸下可能相同，用 `get_canvas_preview` 检查目标尺寸。固定拉伸预览 PNG 只供看图，不能替代绘制原图。
 - 元件用 `get_prefab_info({id})` 单 ID 查询后，以 `type:"prefab"`、`prefabId` 添加，Lua 在 `PREFAB_IDS` 中定义 ID；`prefabVariable` 是配置名称，无需客户端参数。含元件的场景可保存 JSON，绘制仅支持 Lua，不能导出 CSS/SVG/PNG/GIA。
 - `set_canvas` 支持尺寸、GIA `mask` 与查看背景（`background`：`#RRGGBB` 或 `transparent` 棋盘格）。查看背景只影响编辑器显示、**不进导出**（导出恒为透明底）。遮罩 `shapeType:1/2` 为矩形/椭圆；`x/y` 是相对画布中心的偏移，**y 向上**；尺寸 `null` 跟随画布。遮罩不改变 PNG 或工具预览。
@@ -33,7 +34,7 @@ description: 将图片或描述拟合成千星图片编辑器可导入的 SVG，
 
 ## 格式选择
 
-基础图元的 SVG `transform` 不会导入；需要旋转、星形或圆环时简短说明限制，建议 CSS / JSON。用户指定 SVG 时遵守格式。素材 `<image>` 是唯一支持旋转的 SVG 标签。
+普通 SVG 基础图元的 `transform` 不会导入；手写旋转、星形或圆环优先使用 CSS / JSON。用户指定 SVG 时遵守格式。素材 `<image>` 支持 Z 旋转；编辑器导出的非零 X/Y 投影组是元数据回导的例外。
 
 ## 输出目标
 
@@ -66,6 +67,8 @@ description: 将图片或描述拟合成千星图片编辑器可导入的 SVG，
 
 每个形状单独写纯色 `fill` 与 `opacity`，不依赖继承。`path`、渐变、滤镜、蒙版、星形 polygon 不支持。基础图元的 `transform`、描边和样式类会被忽略。
 
+非零 X/Y 使用 JSON 或 WebMCP 创建，再用 `export_scene({format:"svg"})` 获取投影结果；保留 `<g>` 的 `data-miliastra-element`，它保存原始几何与三轴，回导不从投影矩阵猜角度。普通 `<g>` / `transform` 不具备这项能力。
+
 素材 `<image>` 的原图在普通 SVG 查看器中仅整图缩放，编辑器导入后才按 `data-miliastra-image-type` 和边界切片。需要独立显示正确的拉伸结果时用 `export_scene({format:"svg"})`，它将当前尺寸的切片 PNG 放入 `href`，保留 ID、类型、颜色与染色开关供回导；不要将 R2 的固定预览 PNG 当作绘制原图。导出后直接改宽高只会缩放位图，重新切片需回导再导出。见 [图片类型与导出](../../docs/image-stretch.md)。
 
 ## 三角形几何（round-trip 配方）
@@ -95,6 +98,8 @@ description: 将图片或描述拟合成千星图片编辑器可导入的 SVG，
 
 ## 验证与其他格式
 
-服务可达时用 `POST /api/import {sourceType:"svg",content:...}`，核对数量、尺寸与警告，再用 `/api/export/png {scene:...}` 看解析后的结果。SVG 导出会省略圆环；基础素材的 SVG 查看效果仍是原图，拉伸素材会内嵌已切片及染色的 PNG，回导依靠素材元数据恢复染色与类型。星形能导出显示但无法回导。完整场景用 JSON，保留素材库、遮罩和文本设置；带画布的元素需 `id/type/x/y/width/height`，文本设置在 `textBox`。
+服务可达时用 `POST /api/import {sourceType:"svg",content:...}`，核对数量、尺寸与警告，再用 `/api/export/png {scene:...}` 看解析后的结果。SVG 导出会省略圆环；基础素材的 SVG 查看效果仍是原图，拉伸素材会内嵌已切片及染色的 PNG，回导依靠素材元数据恢复染色与类型。普通星形 polygon 无法回导；非零 X/Y 的编辑器投影组依靠元数据恢复星形。完整场景用 JSON，保留素材库、遮罩和文本设置；带画布的元素需 `id/type/x/y/width/height`，可选 `rotation/rotationX/rotationY`，文本设置在 `textBox`。
 
 Lua 用 `export_scene {format:"lua"}` 或 `/api/export/lua` 获取，按场景设置基础／拉伸图片类型，元件 ID 在脚本内的 `PREFAB_IDS` 表配置。使用前把 `IMAGE_PREFAB_ID` 设置为图片控件模板索引；原生文本框需 `TEXTBOX_PREFAB_ID`，支持文字、样式、字号和自适应设置。`other` 仅保留供回导。在专用空客户端容器的 `OnStart` 绘制；保留末尾 `MILIASTRA_EDITOR_SCENE_V1` 元数据。导入只读字面量，不执行代码，也不烘焙运行时缩放/偏移。Lua 绘制不应用 GIA 遮罩。
+
+Lua 非零 X/Y 旋转保存在与图片行对齐的 `ROTATIONS` 表，文本框保存在 `TEXTBOXES`，绘制调用 `SetLocalRotation(x,y,z)`。JSON 与收藏保留三轴；不要将倾转烘焙成缩小的宽高。

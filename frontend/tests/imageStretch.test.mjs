@@ -9,7 +9,7 @@ function moduleUrl(path) {
   });
   return `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`;
 }
-const { defaultLibraryImageSize, sliceRegions, resolveImageType, supportsImageStretch, normalizeImageElement } = await import(moduleUrl("../src/imageStretch.ts"));
+const { defaultLibraryImageSize, sliceRegions, rasterSliceRegions, resolveImageType, supportsImageStretch, normalizeImageElement } = await import(moduleUrl("../src/imageStretch.ts"));
 const library = await import(moduleUrl("../src/imageLibrary.ts"));
 const meta = { id: 106030, width: 90, height: 90, stretchable: true,
   border: { left: 45, right: 45, top: 45, bottom: 45 } };
@@ -82,6 +82,20 @@ test("oversized source borders normalize before fitting the target", () => {
     { source: [40, 0, 20, 90], target: [20, 0, 10, 90] }
   ]);
   assert.deepEqual(sliceRegions(meta, 0, 10), []);
+});
+
+test("raster slices cover each pixel once at fractional borders and keep zero-span samples inside the source", () => {
+  const fractional = { ...meta, border: { left: 44.4, right: 45.6, top: 44.7, bottom: 45.3 } };
+  const edge = { ...meta, border: { left: 90, right: 0, top: 90, bottom: 0 } };
+  for (const [metadata, width, height] of [[meta, 136, 96], [fractional, 407, 265],
+                                          [fractional, 40, 31], [edge, 136, 96]]) {
+    const coverage = new Uint8Array(width * height);
+    for (const { source: [sx, sy, sw, sh], target: [x, y, w, h] } of rasterSliceRegions(metadata, width, height, 180, 180)) {
+      assert.ok(sw > 0 && sh > 0 && sx >= 0 && sy >= 0 && sx + sw <= 180 && sy + sh <= 180);
+      for (let row = y; row < y + h; row++) for (let column = x; column < x + w; column++) coverage[row * width + column]++;
+    }
+    assert.ok(coverage.every(count => count === 1), "no pixel may be empty or composited twice");
+  }
 });
 
 test("repeated sprites share metadata requests and failed requests can retry", async () => {

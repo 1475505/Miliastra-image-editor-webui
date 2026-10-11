@@ -42,7 +42,8 @@ const payload = {
   categories: { 8: { images: [100006] }, 2: { images: [107083] }, 9: { images: [111001] }, 12: { images: [112001, 119999] } },
   names: { "zh-CN": { 8: "基本形状", 2: "底板-彩色", 9: "物品-彩色", 12: "造物-彩色" } },
   descriptions: Object.fromEntries(descriptions.filter((row) => ids.includes(row.assetID)).map((row) => [row.assetID, row])),
-  useTaxonomy: taxonomy
+  useTaxonomy: taxonomy,
+  stretchPreviews: { 107083: { id: 107083, img: "107083.png" } }
 };
 const state = library.toCatalogState(payload, "network", false);
 
@@ -59,7 +60,8 @@ test("stretch thumbnails require matching indexed IDs while drawing keeps the or
   for (const id of [100006, 111001, 112001]) assert.equal(previews.assets[id].stretchPreviewUrl, undefined);
   assert.equal(previews.assets[119999], undefined);
   assert.equal(previews.assets[119998], undefined);
-  assert.equal(state.assets[107083].stretchPreviewUrl, undefined);
+  const { stretchPreviews: _previews, ...withoutPreviews } = payload;
+  assert.equal(library.toCatalogState(withoutPreviews, "network", false).assets[107083].stretchPreviewUrl, undefined);
   assert.equal(library.searchLibraryAssets(previews, { query: "107083" }).assets[0].imageUrl,
     "https://oss.070077.xyz/images/sprite/107083.png");
   const stretched = library.searchLibraryAssets(previews, { query: "107083" }).assets[0];
@@ -204,6 +206,59 @@ test("missing purposes update automatically from old caches and cold loads witho
   }
 });
 
+test("missing stretch previews refresh once from cached or cold catalogs without guessing PNG URLs", async () => {
+  const originalWindow = globalThis.window, originalFetch = globalThis.fetch;
+  const storage = new Map();
+  const bare = { ...payload, stretchPreviews: {} };
+  globalThis.window = { localStorage: {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key)
+  } };
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify(payload));
+    library.clearLibraryCache();
+    await library.loadLibraryCatalog();
+    const saved = [...storage.entries()];
+    for (const mode of ["cached", "cold", "failure"]) {
+      library.clearLibraryCache();
+      if (mode === "cached") for (const [key, value] of saved) {
+        storage.set(key, JSON.stringify({ ...JSON.parse(value), payload: bare }));
+      }
+      const calls = [];
+      let finishRetry;
+      const retry = new Promise(resolve => { finishRetry = resolve; });
+      globalThis.fetch = async (url, options) => {
+        calls.push([url, options]);
+        return url.endsWith("?refresh=1") ? retry : new Response(JSON.stringify(bare));
+      };
+      let finishUpdate;
+      const update = new Promise(resolve => { finishUpdate = resolve; });
+      const unsubscribe = library.subscribeLibraryCatalog(next => {
+        if (next.source === "network" && calls.at(-1)[0].endsWith("?refresh=1")) finishUpdate(next);
+      });
+      try {
+        const initial = await library.loadLibraryCatalog();
+        assert.equal(library.searchLibraryAssets(initial, { query: "107083" }).matched, 1);
+        assert.equal(initial.assets[107083].stretchPreviewUrl, undefined);
+        assert.equal(calls.at(-1)[0], "/api/library/catalog?refresh=1");
+        assert.equal(calls.at(-1)[1].headers["If-None-Match"], undefined);
+        finishRetry(new Response(JSON.stringify(mode === "failure" ? bare : payload)));
+        const next = await update;
+        assert.equal(next.assets[107083].stretchPreviewUrl, mode === "failure" ? undefined
+          : "https://oss.070077.xyz/images/stretch/107083.png");
+        await new Promise(setImmediate);
+        assert.equal(calls.length, mode === "cached" ? 1 : 2);
+        assert.ok(calls.every(([url]) => url.startsWith("/api/library/catalog")));
+      } finally { unsubscribe(); }
+    }
+  } finally {
+    library.clearLibraryCache();
+    globalThis.window = originalWindow;
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("failed refresh keeps the last catalog in memory or browser storage", async () => {
   const originalWindow = globalThis.window;
   const originalFetch = globalThis.fetch;
@@ -274,7 +329,7 @@ test("catalog refresh and AI tools share the enriched index", async () => {
 
     const toolsSource = readFileSync(new URL("../src/webmcp.ts", import.meta.url), "utf8");
     const transpiled = ts.transpileModule(toolsSource, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 } }).outputText;
-    const toolsUrl = `data:text/javascript;base64,${Buffer.from(transpiled.replace('"./imageLibrary"', JSON.stringify(libraryUrl)).replace('"./prefabLibrary"', JSON.stringify(prefabLibraryUrl)).replace('"./imageStretch"', JSON.stringify(moduleUrl("../src/imageStretch.ts")))).toString("base64")}`;
+    const toolsUrl = `data:text/javascript;base64,${Buffer.from(transpiled.replace('"./imageLibrary"', JSON.stringify(libraryUrl)).replace('"./prefabLibrary"', JSON.stringify(prefabLibraryUrl)).replace('"./imageStretch"', JSON.stringify(moduleUrl("../src/imageStretch.ts"))).replace('"./rotation"', JSON.stringify(moduleUrl("../src/rotation.ts")))).toString("base64")}`;
     const definitions = new Map();
     const originalDocument = globalThis.document;
     globalThis.document = { modelContext: { registerTool: async (definition) => definitions.set(definition.name, definition) } };

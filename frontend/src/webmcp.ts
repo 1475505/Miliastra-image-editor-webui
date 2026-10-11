@@ -3,6 +3,7 @@
 
 import { defaultPrefabVariable, getPrefabInfo, validPrefabVariable } from "./prefabLibrary";
 import { defaultLibraryImageSize, resolveImageType, supportsImageStretch } from "./imageStretch";
+import { rotationMatrix } from "./rotation";
 import type { CanvasMask, SceneDocument, SceneElement, ShapeType, SourceType, TextBoxSettings } from "./App";
 import {
   imageUrl, listLibraryAssetCategories, loadLibraryCatalog, loadSpriteMeta, queryLibraryAssetIds, scopeLibraryAssetIds, searchLibraryAssets,
@@ -59,6 +60,8 @@ export type AddElementInput = {
   width?: number;
   height?: number;
   rotation?: number;
+  rotationX?: number;
+  rotationY?: number;
   color?: string;
   opacity?: number;
   name?: string;
@@ -158,6 +161,8 @@ const elementProperties = {
   width: numberProp("Box width (1-2048): omitted on add uses 136 for horizontally sliced images, native width for other images, thumbnail width for prefabs, library preset for shapes. Omitted on update preserves width.", 1, 2048),
   height: numberProp("Box height (1-2048): omitted on add uses 96 for vertically sliced images, native height for other images, thumbnail height for prefabs, library preset for shapes. Omitted on update preserves height.", 1, 2048),
   rotation: numberProp("Degrees, counter-clockwise about the box center; default 0"),
+  rotationX: numberProp("X-axis tilt in degrees, default 0; 90 edge-on, 180 vertical flip"),
+  rotationY: numberProp("Y-axis tilt in degrees, default 0; 90 edge-on, 180 horizontal flip"),
   color: { type: "string", pattern: "^#[0-9a-fA-F]{6}$", description: "RGB hex color, e.g. #0f766e; default: current library preset" },
   opacity: numberProp("Opacity; default 0.85 for basic shapes, 1 for textbox/image", 0, 1),
   zIndex: numberProp("Stacking sort key: larger is above; ties retain existing/input order. Reindexed after editing."),
@@ -262,7 +267,7 @@ function parseRegion(value: unknown): CanvasRegion | undefined {
 
 function parseElementFields(args: Record<string, unknown>): ElementPatch {
   const patch: ElementPatch = {};
-  for (const key of ["x", "y", "width", "height", "rotation", "opacity", "zIndex", "imageAssetId", "prefabId"] as const) {
+  for (const key of ["x", "y", "width", "height", "rotation", "rotationX", "rotationY", "opacity", "zIndex", "imageAssetId", "prefabId"] as const) {
     if (args[key] === undefined) continue;
     const value = args[key];
     if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${key} must be a finite number`);
@@ -366,9 +371,9 @@ function queryElements(scene: SceneDocument, args: Record<string, unknown>, defa
     if (args.type !== undefined && element.type !== args.type) return false;
     if (ids && !ids.has(element.id)) return false;
     if (!region) return true;
-    const radians = element.rotation * Math.PI / 180;
-    const halfW = (Math.abs(Math.cos(radians)) * element.width + Math.abs(Math.sin(radians)) * element.height) / 2;
-    const halfH = (Math.abs(Math.sin(radians)) * element.width + Math.abs(Math.cos(radians)) * element.height) / 2;
+    const { a, b, c, d } = rotationMatrix(element);
+    const halfW = (Math.abs(a) * element.width + Math.abs(c) * element.height) / 2;
+    const halfH = (Math.abs(b) * element.width + Math.abs(d) * element.height) / 2;
     return element.x + halfW >= region.x && element.x - halfW <= region.x + region.width &&
       element.y + halfH >= region.y && element.y - halfH <= region.y + region.height;
   }).sort((a, b) => a.zIndex - b.zIndex);

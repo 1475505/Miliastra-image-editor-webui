@@ -12,7 +12,7 @@ const prefabUrl = moduleUrl("../src/prefabLibrary.ts");
 const assetsUrl = moduleUrl("../src/imageLibrary.ts");
 const stretchUrl = moduleUrl("../src/imageStretch.ts");
 const library = await import(assetsUrl);
-const tools = await import(moduleUrl("../src/webmcp.ts", [["./prefabLibrary", prefabUrl], ["./imageLibrary", assetsUrl], ["./imageStretch", stretchUrl]]));
+const tools = await import(moduleUrl("../src/webmcp.ts", [["./prefabLibrary", prefabUrl], ["./imageLibrary", assetsUrl], ["./imageStretch", stretchUrl], ["./rotation", moduleUrl("../src/rotation.ts")]]));
 
 test("image tools preserve Basic/Stretch and reject invalid or misplaced modes atomically", async () => {
   const originalDocument = globalThis.document;

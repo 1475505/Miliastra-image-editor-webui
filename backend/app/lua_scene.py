@@ -183,6 +183,11 @@ def read_drawing(source):
         if root[2] <= 0 or root[3] <= 0:
             raise ValueError("ROOT canvas dimensions must be positive")
         drawing = {"format": "gia", "root": root, "rows": _rows(rows, 18, "ELEMENTS")}
+        rotations = _literal(source, "ROTATIONS", required=False)
+        if rotations is not None:
+            drawing["rotations"] = _rows(rotations, 2, "ROTATIONS")
+            if len(rotations) != len(rows):
+                raise ValueError("ROTATIONS must contain X/Y angles for every image row")
         image_types = _literal(source, "IMAGE_TYPES", required=False)
         if image_types is not None:
             if not isinstance(image_types, list) or len(image_types) != len(rows) or any(value not in ("basic", "stretch") for value in image_types):
@@ -269,7 +274,7 @@ def dumps(scene, gia_data=None, name=""):
     """Adapt the upstream emitter and preserve the editor scene in an inert comment."""
     # Validate all metadata too (json.dumps rejects non-finite numeric fields).
     json.dumps(scene, allow_nan=False)
-    if any(item.get("type") in ("prefab", "textbox", "image") for item in scene["elements"]):
+    if any(item.get("type") in ("prefab", "textbox", "image") or item.get("rotationX") or item.get("rotationY") for item in scene["elements"]):
         script = _control_script(scene, gia_data, name)
     elif gia_data is not None:
         script = gia.build_gia_lua(gia_data, name or "千星图片编辑器")
@@ -327,12 +332,16 @@ def _textboxes(value):
     settings = {"text", "fontSize", "minFontSize", "alignH", "alignV", "anchorType", *numeric, *booleans}
     settings.update(f"{prefix}{suffix}" for prefix in ("text", "bg", "outline") for suffix in ("Color", "Opacity"))
     for item in value:
-        if not isinstance(item, dict) or set(item) != {"name", "x", "y", "width", "height", "rotation", "textBox"}:
+        required = {"name", "x", "y", "width", "height", "rotation", "textBox"}
+        if not isinstance(item, dict) or not required <= set(item) or set(item) - required - {"rotationX", "rotationY"}:
             raise ValueError("Invalid TEXTBOXES record fields")
         if not isinstance(item["name"], str):
             raise ValueError("Textbox names must be strings")
         for field in ("x", "y", "width", "height", "rotation"):
             _number(item[field])
+        for field in ("rotationX", "rotationY"):
+            if field in item:
+                _number(item[field])
         if min(item["width"], item["height"]) < 1:
             raise ValueError("Textbox dimensions must be positive")
         box = item["textBox"]
@@ -364,16 +373,18 @@ def _control_script(scene, gia_data, name):
     # scenes must use the same parent geometry even when the crop was resized.
     root = [0, 0, width, height, .5, .5, .5, .5, .5, .5, 1, 1, 0]
     static_rows = iter(static["records"] if static else [])
-    rows, bindings, textboxes, order, image_types = [], [], [], [], []
+    rows, bindings, textboxes, order, image_types, rotations = [], [], [], [], [], []
     variables = {}
     for item in sorted(scene["elements"], key=lambda item: (0 if item["isBackground"] else 1, item["zIndex"])):
         if item["type"] == "textbox":
             textboxes.append({key: item[key] for key in ("name", "x", "y", "width", "height", "rotation", "textBox")})
+            textboxes[-1].update({key: item[key] for key in ("rotationX", "rotationY") if item.get(key)})
             order.append([2, len(textboxes)])
             continue
         if not _is_image_element(item):
             continue
         order.append([1, len(rows) + 1])
+        rotations.append([item.get("rotationX", 0), item.get("rotationY", 0)])
         image_types.append(item.get("imageType", "basic") if item["type"] == "image" else "stretch")
         if item["type"] != "prefab":
             rows.append(next(static_rows))
@@ -404,6 +415,10 @@ def _control_script(scene, gia_data, name):
     lines += ["local ROOT = {" + ",".join(map(repr, root)) + "}", "local ELEMENTS = {"]
     lines += ["    {" + ",".join(map(repr, row)) + "}," for row in rows]
     lines.append("}")
+    has_xy = any(x or y for x, y in rotations)
+    if has_xy:
+        lines.append("-- X/Y rotation degrees; one pair per image row.")
+        lines.append("local ROTATIONS = " + _lua_literal(rotations))
     if any(item["type"] == "image" for item in scene["elements"]):
         lines.append("local IMAGE_TYPES = " + _lua_literal(image_types))
     runtime = gia._RUNTIME
@@ -420,6 +435,11 @@ def _control_script(scene, gia_data, name):
     body_start = runtime.index(before) + len(before)
     body_end = runtime.index(end) + len('            image:SetAsLastSibling()')
     image_body = runtime[body_start:body_end]
+    if has_xy:
+        setter = 'image:SetLocalRotation(0, 0, item[14])'
+        if image_body.count(setter) != 1:
+            raise ValueError("Upstream Lua runtime changed; XY rotation adapter needs review")
+        image_body = image_body.replace(setter, 'image:SetLocalRotation(ROTATIONS[index][1], ROTATIONS[index][2], item[14])')
     if any(item["type"] == "image" for item in scene["elements"]):
         setter_type = 'pcall(function() image.imageType = Enum.ImageType.Stretch end)'
         if image_body.count(setter_type) != 1:
@@ -489,7 +509,7 @@ _TEXTBOX_RUNTIME = '''                local item = TEXTBOXES[index]
                 text:SetPivot(box.pivotX, box.pivotY)
                 text:SetSizeDelta(item.width, item.height)
                 text:SetLocalScale(box.scaleX, box.scaleY, 1)
-                text:SetLocalRotation(0, 0, item.rotation)
+                text:SetLocalRotation(item.rotationX or 0, item.rotationY or 0, item.rotation)
                 text:SetAnchoredPosition(item.x - ROOT[3] / 2, ROOT[4] / 2 - item.y)
                 text.fontSize = box.fontSize
                 text.minimumFontSize = box.minFontSize
@@ -529,8 +549,11 @@ def drawing_to_scene(drawing):
                          w, h, .5, 1 / 3 if kind == shaper.KIND_TRIANGLE else .5,
                          .5, .5, .5, .5, 1, 1, angle, *color, alpha])
     prefab_bindings = {binding[0]: binding for binding in drawing.get("prefabBindings", [])}
+    rotations = drawing.get("rotations")
     for index, row in enumerate(rows):
         asset, x, y, w, h, px, py, aminx, aminy, amaxx, amaxy, sx, sy, angle, r, g, b, alpha = row
+        rotation_x, rotation_y = rotations[index] if rotations is not None else (0, 0)
+        xy = {"rotationX": rotation_x, "rotationY": rotation_y}
         if min(w, h) <= 0 or sx == 0 or sy == 0 or not all(0 <= value <= 255 for value in (r, g, b, alpha)):
             raise ValueError("Invalid image size, scale, color or opacity")
         # Unity anchors and pivots -> the editor's center coordinate; preserve
@@ -543,20 +566,25 @@ def drawing_to_scene(drawing):
         radians = math.radians(angle)
         cx = width * (aminx + (amaxx - aminx) * px) + x + dx * math.cos(radians) - dy * math.sin(radians)
         cy = height * (aminy + (amaxy - aminy) * py) + y + dx * math.sin(radians) + dy * math.cos(radians)
+        if rotation_x or rotation_y:
+            from .rotation import rotation_matrix
+            a, b_, c, d = rotation_matrix(angle, rotation_x, rotation_y)
+            cx = width * (aminx + (amaxx - aminx) * px) + x + a * dx - c * dy
+            cy = height * (aminy + (amaxy - aminy) * py) + y - b_ * dx + d * dy
         color = f"#{round(r):02x}{round(g):02x}{round(b):02x}"
         binding = prefab_bindings.get(index + 1)
         if binding is not None:
             prefab_id = drawing.get("prefabIds", {}).get(binding[2], binding[1])
             elements.append({"id": f"lua-{index + 1}", "name": f"元件 {prefab_id}", "type": "prefab",
                              "x": cx, "y": height - cy, "width": abs(w * sx), "height": abs(h * sy),
-                             "rotation": angle, "color": color, "opacity": alpha / 255, "zIndex": index,
+                             "rotation": angle, **xy, "color": color, "opacity": alpha / 255, "zIndex": index,
                              "isBackground": False, "prefabId": prefab_id, "prefabVariable": binding[2]})
             continue
         if asset not in ASSET_TYPES:
             # 素材库 sprite：白色代表未染色，其余颜色视为单色素材的染色
             elements.append({"id": f"lua-{index + 1}", "name": f"素材 {asset}", "type": "image",
                              "x": cx, "y": height - cy, "width": abs(w * sx), "height": abs(h * sy),
-                             "rotation": angle, "color": color,
+                             "rotation": angle, **xy, "color": color,
                              "opacity": alpha / 255, "zIndex": index,
                              "isBackground": drawing["format"] == "shaper" and index < drawing["backgrounds"],
                              "imageAssetId": int(asset), "imageTint": color.lower() != "#ffffff",
@@ -567,7 +595,7 @@ def drawing_to_scene(drawing):
             angle += 180
         elements.append({"id": f"lua-{index + 1}", "name": gia.ASSET_NAMES[asset], "type": shape,
                          "x": cx, "y": height - cy, "width": abs(w * sx), "height": abs(h * sy),
-                         "rotation": angle, "color": color,
+                         "rotation": angle, **xy, "color": color,
                          "opacity": alpha / 255, "zIndex": index,
                          "isBackground": drawing["format"] == "shaper" and index < drawing["backgrounds"]})
     if "textboxes" in drawing:
