@@ -46,6 +46,30 @@ const payload = {
 };
 const state = library.toCatalogState(payload, "network", false);
 
+test("stretch thumbnails require matching indexed IDs while drawing keeps the original URL", () => {
+  const previews = library.toCatalogState({ ...payload, stretchPreviews: {
+    107083: { id: 107083, img: "107083.png" },
+    100006: { id: 107083, img: "100006.png" },
+    111001: { id: 111001, img: "../111001.png" },
+    112001: { id: 112001, img: "111001.png" },
+    119999: { id: 119999, img: "119999.png" },
+    119998: { id: 119998, img: "119998.png" }
+  } }, "network", false);
+  assert.equal(previews.assets[107083].stretchPreviewUrl, "https://oss.070077.xyz/images/stretch/107083.png");
+  for (const id of [100006, 111001, 112001]) assert.equal(previews.assets[id].stretchPreviewUrl, undefined);
+  assert.equal(previews.assets[119999], undefined);
+  assert.equal(previews.assets[119998], undefined);
+  assert.equal(state.assets[107083].stretchPreviewUrl, undefined);
+  assert.equal(library.searchLibraryAssets(previews, { query: "107083" }).assets[0].imageUrl,
+    "https://oss.070077.xyz/images/sprite/107083.png");
+  const stretched = library.searchLibraryAssets(previews, { query: "107083" }).assets[0];
+  assert.equal(stretched.previewUrl, "https://oss.070077.xyz/images/stretch/107083.png");
+  assert.equal(stretched.previewImageType, "stretch");
+  const basic = library.searchLibraryAssets(previews, { query: "111001" }).assets[0];
+  assert.equal(basic.previewUrl, basic.imageUrl);
+  assert.equal(basic.previewImageType, "basic");
+});
+
 test("Chinese use synonyms and full-width IDs find the ring", () => {
   for (const query of ["头像框", "avatar.frame", "１００００６ 头像框"]) {
     assert.deepEqual(library.searchLibraryAssets(state, { query }).assets.map((asset) => asset.id), [100006]);
@@ -220,7 +244,8 @@ test("catalog refresh and AI tools share the enriched index", async () => {
   const originalFetch = globalThis.fetch;
   const storage = new Map();
   const calls = [];
-  let networkPayload = payload;
+  let networkPayload = { ...payload, stretchPreviews: { 107083: { id: 107083, img: "107083.png" } } };
+  let failMetadata = false;
   globalThis.window = { localStorage: {
     getItem: (key) => storage.get(key) ?? null,
     setItem: (key, value) => storage.set(key, value),
@@ -229,6 +254,13 @@ test("catalog refresh and AI tools share the enriched index", async () => {
   globalThis.fetch = async (url, options) => {
     calls.push([url, options]);
     if (url === "/api/library/contact-sheet") return new Response(Uint8Array.of(137, 80, 78, 71), { headers: { "Content-Type": "image/png", "X-Failed-Asset-IDs": "100006" } });
+    if (url.startsWith("/api/library/meta/")) {
+      if (failMetadata) return new Response("upstream failure", { status: 502 });
+      const id = Number(url.split("/").at(-1).split("?")[0]);
+      if (id === 111001) return new Response("not found", { status: 404 });
+      return new Response(JSON.stringify({ id, width: id === 107083 ? 60 : 28, height: id === 107083 ? 60 : 28,
+        border: id === 107083 ? { left: 30, right: 30, top: 30, bottom: 30 } : { left: 0, right: 0, top: 0, bottom: 0 } }));
+    }
     return new Response(JSON.stringify(networkPayload), { headers: { ETag: '"m2.fixture"' } });
   };
   try {
@@ -254,7 +286,48 @@ test("catalog refresh and AI tools share the enriched index", async () => {
       const result = await search.execute({ query: "头像框" }, {});
       assert.equal(result.ok, true);
       assert.deepEqual(result.assets.map((asset) => asset.id), [100006]);
+      assert.equal(result.assets[0].previewUrl, result.assets[0].imageUrl);
+      const indexed = await search.execute({ query: "107083" }, {});
+      assert.equal(indexed.assets[0].previewImageType, "stretch");
+      assert.equal(indexed.assets[0].stretchPreviewUrl, indexed.assets[0].previewUrl);
+      assert.notEqual(indexed.assets[0].imageUrl, indexed.assets[0].previewUrl);
+      assert.equal(calls.filter(([url]) => url.startsWith("/api/library/meta/")).length, 0);
       assert.equal((await search.execute({ tone: "invalid" }, {})).ok, false);
+      const infoTool = definitions.get("get_asset_info");
+      assert.equal(infoTool.annotations.readOnlyHint, true);
+      const info = await infoTool.execute({ id: 107083 }, {});
+      assert.equal(info.ok, true);
+      assert.equal(info.asset.defaultImageType, "stretch");
+      assert.deepEqual(info.asset.imageTypes, ["basic", "stretch"]);
+      assert.deepEqual(info.asset.defaultSize, { width: 136, height: 96 });
+      assert.equal(info.asset.metadata.width, 60);
+      assert.equal(info.asset.previewUrl, indexed.assets[0].previewUrl);
+      const basicInfo = await infoTool.execute({ id: 107083, imageType: "basic" }, {});
+      assert.equal(basicInfo.asset.imageType, "basic");
+      assert.equal(basicInfo.asset.previewImageType, "basic");
+      assert.equal(basicInfo.asset.previewUrl, basicInfo.asset.imageUrl);
+      const unsupported = await infoTool.execute({ id: 100006, imageType: "stretch" }, {});
+      assert.deepEqual(unsupported.asset.imageTypes, ["basic"]);
+      assert.equal(unsupported.asset.imageType, "basic");
+      assert.deepEqual(unsupported.asset.defaultSize, { width: 28, height: 28 });
+      const missingMeta = await infoTool.execute({ id: 111001 }, {});
+      assert.equal(missingMeta.asset.metadata, null);
+      assert.equal(missingMeta.asset.imageType, "basic");
+      assert.equal(missingMeta.asset.previewUrl, missingMeta.asset.imageUrl);
+      assert.deepEqual(missingMeta.asset.defaultSize, { width: 96, height: 96 });
+      const beforeUnknown = calls.length;
+      for (const args of [{ id: 119999 }, { id: 999999 }, { id: "107083" }, { id: 107083, imageType: "auto" },
+                          { id: 107083, refresh: "yes" }]) {
+        assert.equal((await infoTool.execute(args, {})).ok, false);
+      }
+      assert.equal(calls.length, beforeUnknown, "unlisted/invalid IDs must not request metadata or pictures");
+      const refreshed = await infoTool.execute({ id: 107083, refresh: true }, {});
+      assert.equal(refreshed.asset.imageType, "stretch");
+      assert.deepEqual(calls.slice(-2).map(([url]) => url), ["/api/library/catalog?refresh=1", "/api/library/meta/107083?refresh=1"]);
+      failMetadata = true;
+      assert.equal((await infoTool.execute({ id: 107083, refresh: true }, {})).ok, false);
+      failMetadata = false;
+      assert.ok(calls.every(([url]) => !url.endsWith(".png")), "lookups must not download original or unlisted preview PNGs");
       const uses = await definitions.get("list_asset_uses").execute({ query: "头像框", includeFine: true }, {});
       assert.deepEqual(uses.uses.map((entry) => entry.code), ["avatar.frame"]);
       assert.equal(uses.filters.find((entry) => entry.code === "purpose.avatar").count, 1);

@@ -7,6 +7,17 @@ export function supportsImageStretch(meta: SpriteMeta | null | undefined): boole
   return Boolean(meta?.border && Object.values(meta.border).some((value) => Number.isFinite(value) && value > 0));
 }
 
+/** New library sprites show their stretch behavior immediately; unsliced axes keep native thickness. */
+export function defaultLibraryImageSize(meta: SpriteMeta | null | undefined, fallback = 96): { width: number; height: number } {
+  const width = meta && meta.width > 0 ? Math.round(meta.width) : fallback;
+  const height = meta && meta.height > 0 ? Math.round(meta.height) : fallback;
+  const positive = (value: number) => Number.isFinite(value) && value > 0;
+  return {
+    width: meta?.border && [meta.border.left, meta.border.right].some(positive) ? 136 : width,
+    height: meta?.border && [meta.border.top, meta.border.bottom].some(positive) ? 96 : height
+  };
+}
+
 /** Undefined metadata is still loading; a missing file or zero borders only permits Basic. */
 export function resolveImageType(meta: SpriteMeta | null | undefined, requested?: ImageType): ImageType | undefined {
   if (meta === undefined) return requested;

@@ -53,8 +53,12 @@ test("image tools resolve defaults and resource changes before committing a batc
   library.clearLibraryCache();
   globalThis.fetch = async (url) => {
     const id = Number(url.split("/").at(-1));
-    return new Response(JSON.stringify({ id, border: id === 106030 ?
-      { left: 45, right: 45, top: 45, bottom: 45 } : { left: 0, right: 0, top: 0, bottom: 0 } }));
+    const sizes = { 106030: [90, 90], 100001: [20, 30], 105222: [17, 23], 105114: [144, 100], 105115: [8, 17] };
+    const [width, height] = sizes[id] ?? [96, 96];
+    return new Response(JSON.stringify({ id, width, height, border: id === 106030 ?
+      { left: 45, right: 45, top: 45, bottom: 45 } : id === 105114 ?
+      { left: 72, right: 72, top: 0, bottom: 0 } : id === 105115 ?
+      { left: 0, right: 0, top: 5, bottom: 5 } : { left: 0, right: 0, top: 0, bottom: 0 } }));
   };
   const edits = [];
   const dispose = tools.registerEditorTools(() => ({
@@ -68,11 +72,17 @@ test("image tools resolve defaults and resource changes before committing a batc
       { type: "image", imageAssetId: 106030 },
       { type: "image", imageAssetId: 100001, imageType: "stretch" },
       { type: "image", imageAssetId: 105222 },
-      { type: "image", imageAssetId: 106030, imageType: "basic" }
+      { type: "image", imageAssetId: 106030, imageType: "basic", width: 312, height: 87 },
+      { type: "image", imageAssetId: 105114 },
+      { type: "image", imageAssetId: 105115 }
     ] });
-    assert.deepEqual(result.elements.map((element) => element.imageType), ["stretch", "basic", "basic", "basic"]);
+    assert.deepEqual(result.elements.map((element) => element.imageType), ["stretch", "basic", "basic", "basic", "stretch", "stretch"]);
+    assert.deepEqual(result.elements.map(({ width, height }) => [width, height]),
+      [[136, 96], [20, 30], [17, 23], [312, 87], [136, 100], [8, 96]]);
     await execute("update_element", { id: "i", imageAssetId: 106030 });
     assert.equal(edits[1][0].patch.imageType, "stretch");
+    assert.equal(edits[1][0].patch.width, undefined);
+    assert.equal(edits[1][0].patch.height, undefined);
     await execute("update_element", { id: "i", imageType: "stretch" });
     assert.equal(edits[2][0].patch.imageType, "basic");
   } finally { dispose(); globalThis.document = originalDocument; globalThis.fetch = originalFetch; }

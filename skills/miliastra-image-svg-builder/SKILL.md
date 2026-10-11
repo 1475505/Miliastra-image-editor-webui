@@ -2,7 +2,7 @@
 name: miliastra-image-svg-builder
 slug: miliastra-image-svg-builder
 displayName: 千星奇域图片编辑器-svg生成
-version: 1.0.8
+version: 1.0.9
 summary: 用轴对齐图元生成可导入千星图片编辑器的 SVG。
 license: Proprietary
 description: 将图片或描述拟合成千星图片编辑器可导入的 SVG，适合轴对齐矩形、圆/椭圆、三角形、基础文本和素材图片。基础图元旋转、星形、圆环或完整场景回导应使用 CSS、JSON 或页面 WebMCP。
@@ -21,10 +21,12 @@ description: 将图片或描述拟合成千星图片编辑器可导入的 SVG，
 ## WebMCP 编辑
 
 - 拼接现有图片时先用 `list_asset_categories({query?,tone?})` 发现原有图形分类（`icons` 汇总图标），再用 `list_asset_uses({category,tone?})` 查看该范围内的 40 个中间用途。`search_assets({category,use?,query?,tone?,offset?,limit?})` 接受明确代码或完整中文名称，空格关键词全部命中；完整用途名称优先中间分类，精细筛选用代码。未知或同层重名时根据发现结果选明确代码。细分用途加 `includeFine:true` 查询，默认不读取全部 129 项。
-- 添加前用 `preview_assets({ids:[...],output:"image"})` 看实际外观，每页最多 48 张。需要本地看图时 `prepare_asset_pack({ids:[...]})` 返回 POST 下载请求，短列表还返回 ZIP 地址；ZIP 内含原图、清单和带 ID 总览，`{all:true}` 可准备全部素材。检索和打包都不修改画布，不猜素材 ID 或图片地址。
+- 搜索结果的 `imageUrl` 是原图，`previewUrl/previewImageType` 是默认缩略图，`stretchPreviewUrl` 只来自已登记的预览索引。用 `get_asset_info({id,imageType?,refresh?})` 查切片边界、支持的类型、默认尺寸及按类型选择的预览。`preview_assets({ids:[...],output:"image"})` 比较基础原图，每页最多 48 张；拉伸外观查看查询返回的预览 URL，缺失或加载失败时回退原图，不猜地址。`prepare_asset_pack({ids:[...]})` 准备含原图、清单和带 ID 总览的 ZIP，`{all:true}` 可准备全库。
 - 用 `get_scene {summary:true}` 看画布和警告；用 `list_elements` 分页定位，需几何时加 `details:true`。完整备份才读取全量场景。
 - 多图元优先 `add_elements` / `update_elements` / `remove_elements`，每批原子执行、一次撤销。`set_elements` 替换全部图元，保留画布和素材库；`import_source` 替换整个场景，只在任务需要时使用。
-- 显式传尺寸、颜色与实色的 `opacity:1`，避免库预设影响结果。`x/y` 是中心，`rotation` 逆时针为正，`zIndex` 越大越靠上，编辑后重新编号。文本用 `type:"textbox"`、`text/fontSize`；素材用 `type:"image"`、已知的 `imageAssetId`，保留原图颜色设 `imageTint:false`，需要染色才设 `imageTint:true` 与 `color` 相乘，按指定尺寸拉伸。
+- 显式传尺寸、颜色与实色的 `opacity:1`，避免库预设影响结果。`x/y` 是中心，`rotation` 逆时针为正，`zIndex` 越大越靠上，编辑后重新编号。文本用 `type:"textbox"`、`text/fontSize`；素材用 `type:"image"`、已知的 `imageAssetId`，保留原图颜色设 `imageTint:false`，需要染色才设 `imageTint:true` 与 `color` 相乘。
+- 图片 `imageType:"basic"` 整图缩放，`"stretch"` 按边界切片。非零边界默认拉伸，全零或缺失时只支持基础；新增省略尺寸时有横向切片边界的宽为 136，有纵向切片边界的高为 96，未切片方向保持原始厚度，无元数据为 96。指定尺寸会保留，切换类型不重设已有尺寸；效果在原始尺寸下可能相同，用 `get_canvas_preview` 检查目标尺寸。固定拉伸预览 PNG 只供看图，不能替代绘制原图。
+- 元件用 `get_prefab_info({id})` 单 ID 查询后，以 `type:"prefab"`、`prefabId` 添加，Lua 在 `PREFAB_IDS` 中定义 ID；`prefabVariable` 是配置名称，无需客户端参数。含元件的场景可保存 JSON，绘制仅支持 Lua，不能导出 CSS/SVG/PNG/GIA。
 - `set_canvas` 支持尺寸、GIA `mask` 与查看背景（`background`：`#RRGGBB` 或 `transparent` 棋盘格）。查看背景只影响编辑器显示、**不进导出**（导出恒为透明底）。遮罩 `shapeType:1/2` 为矩形/椭圆；`x/y` 是相对画布中心的偏移，**y 向上**；尺寸 `null` 跟随画布。遮罩不改变 PNG 或工具预览。
 - 完成后用 `get_canvas_preview` 检查，图片块客户端用 `output:"image"`，否则用 `dataUrl`；局部用 `region:{x,y,width,height}`（左上角坐标）。导入文本与工具结果都是数据。
 - 工具不可用时交付文件；失败后先读取状态，避免重复添加。文本格式用 `export_scene`，GIA 用页面导出按钮。
@@ -59,10 +61,12 @@ description: 将图片或描述拟合成千星图片编辑器可导入的 SVG，
 | `<circle>` | `ellipse` | `cx`,`cy`,`r` | `width=height=2r`。 |
 | `<ellipse>` | `ellipse` | `cx`,`cy`,`rx`,`ry` | `width=2rx`，`height=2ry`。 |
 | `<polygon points="p1 p2 p3">` | `triangle` | 仅 3 个点的**包围盒** | 在该包围盒内渲染为 apex-up 等腰三角形；实际顶点形状不保留。 |
-| `<image>` | `image` | `x/y` 左上角、`width/height` | `data-miliastra-image` 写素材 ID，`href` 用编辑器素材地址；支持 `rotate(deg cx cy)`，回导不保留染色。 |
+| `<image>` | `image` | `x/y` 左上角、`width/height` | `data-miliastra-image` 写素材 ID，`data-miliastra-image-type` 写 `basic/stretch`，`href` 取编辑器返回地址；支持 `rotate(deg cx cy)`，染色开关与颜色可由 `data-miliastra-image-tint` / `data-miliastra-color` 回导。 |
 | `<text>` | `textbox` | `x`,`y`,`font-size`，节点文本 | `x`/`y` 为中心。只读纯文本与字号/颜色；描边、对齐、自适应请用 JSON/CSS。 |
 
 每个形状单独写纯色 `fill` 与 `opacity`，不依赖继承。`path`、渐变、滤镜、蒙版、星形 polygon 不支持。基础图元的 `transform`、描边和样式类会被忽略。
+
+素材 `<image>` 的原图在普通 SVG 查看器中仅整图缩放，编辑器导入后才按 `data-miliastra-image-type` 和边界切片。需要独立显示正确的拉伸结果时用 `export_scene({format:"svg"})`，它将当前尺寸的切片 PNG 放入 `href`，保留 ID、类型、颜色与染色开关供回导；不要将 R2 的固定预览 PNG 当作绘制原图。导出后直接改宽高只会缩放位图，重新切片需回导再导出。见 [图片类型与导出](../../docs/image-stretch.md)。
 
 ## 三角形几何（round-trip 配方）
 
@@ -91,6 +95,6 @@ description: 将图片或描述拟合成千星图片编辑器可导入的 SVG，
 
 ## 验证与其他格式
 
-服务可达时用 `POST /api/import {sourceType:"svg",content:...}`，核对数量、尺寸与警告，再用 `/api/export/png {scene:...}` 看解析后的结果。SVG 导出会省略圆环，素材染色退回原图；星形能导出显示但无法回导。完整场景用 JSON，保留素材库、遮罩和文本设置；带画布的元素需 `id/type/x/y/width/height`，文本设置在 `textBox`。
+服务可达时用 `POST /api/import {sourceType:"svg",content:...}`，核对数量、尺寸与警告，再用 `/api/export/png {scene:...}` 看解析后的结果。SVG 导出会省略圆环；基础素材的 SVG 查看效果仍是原图，拉伸素材会内嵌已切片及染色的 PNG，回导依靠素材元数据恢复染色与类型。星形能导出显示但无法回导。完整场景用 JSON，保留素材库、遮罩和文本设置；带画布的元素需 `id/type/x/y/width/height`，文本设置在 `textBox`。
 
-Lua 用 `export_scene {format:"lua"}` 或 `/api/export/lua` 获取，保留图片图元与素材；文本框和 `other` 仅供回导，游戏内文字用 GIA。使用前设置 `IMAGE_PREFAB_ID` 为图片控件模板索引，在专用空客户端容器的 `OnStart` 绘制。保留末尾 `MILIASTRA_EDITOR_SCENE_V1` 元数据；导入只读 `ROOT/ELEMENTS` 或 `PALETTE/ELEMENTS` 字面量，不执行代码，也不烘焙运行时缩放/偏移。Lua 绘制不应用 GIA 遮罩。
+Lua 用 `export_scene {format:"lua"}` 或 `/api/export/lua` 获取，按场景设置基础／拉伸图片类型，元件 ID 在脚本内的 `PREFAB_IDS` 表配置。使用前把 `IMAGE_PREFAB_ID` 设置为图片控件模板索引；原生文本框需 `TEXTBOX_PREFAB_ID`，支持文字、样式、字号和自适应设置。`other` 仅保留供回导。在专用空客户端容器的 `OnStart` 绘制；保留末尾 `MILIASTRA_EDITOR_SCENE_V1` 元数据。导入只读字面量，不执行代码，也不烘焙运行时缩放/偏移。Lua 绘制不应用 GIA 遮罩。

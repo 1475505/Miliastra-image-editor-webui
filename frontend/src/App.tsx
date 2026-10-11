@@ -3,7 +3,7 @@ import { registerEditorTools, type EditorBridge, type ElementPatch, type Element
 import { useI18n } from "./i18n";
 import { PrefabLibraryPanel } from "./PrefabLibraryPanel";
 import { PrefabSprite } from "./PrefabSprite";
-import { normalizeImageElement, resolveImageType, sliceRegions, supportsImageStretch, type ImageType } from "./imageStretch";
+import { defaultLibraryImageSize, normalizeImageElement, resolveImageType, sliceRegions, supportsImageStretch, type ImageType } from "./imageStretch";
 import { defaultPrefabVariable, getPrefabInfo, PrefabLookupError, validPrefabVariable, type PrefabInfo } from "./prefabLibrary";
 import { recordAddedPrefabs } from "./prefabHistory";
 import {
@@ -581,12 +581,9 @@ function App() {
     return map;
   }, [activeAssetGroup]);
 
-  /** 素材拖入画布时的初始尺寸：直接采用素材元数据里的原始宽高，不放大、不裁剪，只在元数据缺失时兜底。 */
+  /** 新增素材的可拉伸方向采用预览尺寸，未切片方向保留原始厚度。 */
   function defaultAssetSize(assetId: number, meta?: SpriteMeta | null): { width: number; height: number } {
-    const source = meta !== undefined ? meta : readMetaCache(assetId);
-    const width = source && source.width > 0 ? source.width : DEFAULT_ASSET_SIZE;
-    const height = source && source.height > 0 ? source.height : DEFAULT_ASSET_SIZE;
-    return { width: Math.round(width), height: Math.round(height) };
+    return defaultLibraryImageSize(meta !== undefined ? meta : readMetaCache(assetId), DEFAULT_ASSET_SIZE);
   }
 
   function assetOverrides(assetId: number, label?: string, meta?: SpriteMeta | null): Partial<SceneElement> {
@@ -1838,7 +1835,7 @@ function App() {
         data.override = { ...prefabOverrides(info), ...data.override, prefabId: info.id };
       }
       if (data.type === "image" && data.override?.imageAssetId) {
-        // 拖入时用素材元数据里的原始尺寸，确保初始宽高不被固定
+        // 元数据加载后再取新增素材的默认尺寸；收藏素材已有的尺寸仍予以保留。
         let meta: SpriteMeta | null | undefined;
         try {
           meta = await loadSpriteMeta(data.override.imageAssetId);
@@ -1863,6 +1860,15 @@ function App() {
 
   function startShapeDrag(event: React.DragEvent<HTMLButtonElement>, type: ShapeType, override?: Partial<SceneElement>) {
     event.dataTransfer.setData("application/miliastra-shape", JSON.stringify({ type, override }));
+  }
+
+  function startAssetDrag(event: React.DragEvent<HTMLButtonElement>, assetId: number, label?: string) {
+    const override = assetOverrides(assetId, label);
+    // Drop resolves metadata before sizing; never serialize a temporary size or type from an empty cache.
+    delete override.width;
+    delete override.height;
+    delete override.imageType;
+    startShapeDrag(event, "image", override);
   }
 
   function savedElementOverrides(element: SceneElement): Partial<SceneElement> {
@@ -2027,7 +2033,8 @@ function App() {
                       className={`layer-row-item ${selectedId === element.id ? "selected" : ""}`}
                       onClick={() => setSelectedId(element.id)}
                     >
-                      <ShapeGlyph type={element.type} color={element.color} assetId={element.imageAssetId} tint={element.imageTint} prefabId={element.prefabId} />
+                      <ShapeGlyph type={element.type} color={element.color} assetId={element.imageAssetId} tint={element.imageTint} prefabId={element.prefabId}
+                        imageType={element.imageType} width={element.width} height={element.height} />
                       <div className="layer-info">
                         <strong>{getElementBaseName(element, shapeLabels)}</strong>
                         <span>
@@ -2137,25 +2144,20 @@ function App() {
                   <div className="asset-grid" onScroll={handleAssetGridScroll}>
                     {visibleAssetIds.map((id) => {
                       const isMono = assetToneById.get(id) === "mono";
+                      const stretchPreviewUrl = assetCatalog?.assets[id]?.stretchPreviewUrl;
                       return (
                         <button
                           key={id}
                           type="button"
-                          className={`asset-card ${selectedAssetId === id ? "is-selected" : ""} ${isMono ? "is-mono" : ""}`}
+                          className={`asset-card ${selectedAssetId === id ? "is-selected" : ""} ${isMono ? "is-mono" : ""} ${stretchPreviewUrl ? "is-stretchable" : ""}`}
                           onClick={() => selectAsset(id)}
                           draggable
-                          onDragStart={(event) =>
-                            startShapeDrag(
-                              event,
-                              "image",
-                              assetOverrides(id, activeAssetGroup?.label)
-                            )
-                          }
+                          onDragStart={(event) => startAssetDrag(event, id, activeAssetGroup?.label)}
                           onDoubleClick={() => addAssetToCanvas(id, activeAssetGroup?.label)}
                           title={`${id} · ${assetCatalog?.assets[id]?.description || t("library.dragHint")}`}
                         >
                           <span className="asset-thumb">
-                            <img src={imageUrl(id)} alt="" loading="lazy" decoding="async" draggable={false} />
+                            <LibraryAssetThumbnail key={stretchPreviewUrl} assetId={id} previewUrl={stretchPreviewUrl} />
                           </span>
                           <span className="asset-id">{id}</span>
                         </button>
@@ -2255,7 +2257,8 @@ function App() {
                         void addSavedItem(item.element)
                       }
                     >
-                      <ShapeGlyph type={item.element.type} color={item.element.color} assetId={item.element.imageAssetId} tint={item.element.imageTint} prefabId={item.element.prefabId} />
+                      <ShapeGlyph type={item.element.type} color={item.element.color} assetId={item.element.imageAssetId} tint={item.element.imageTint} prefabId={item.element.prefabId}
+                        imageType={item.element.imageType} width={item.element.width} height={item.element.height} />
                       <div className="layer-info">
                         <strong>{item.name}</strong>
                         <span>
@@ -2704,7 +2707,13 @@ function App() {
               {selectedElement && propsView === "element" ? (
                 <>
                   <div className="inspector-head">
-                    <ShapeGlyph type={selectedElement.type} color={selectedElement.color} assetId={selectedElement.imageAssetId} tint={selectedElement.imageTint} prefabId={selectedElement.prefabId} />
+                    {selectedElement.type === "image" && selectedElement.imageAssetId ? (
+                      <InspectorImagePreview assetId={selectedElement.imageAssetId} imageType={selectedElement.imageType}
+                        stretchPreviewUrl={assetCatalog?.assets[selectedElement.imageAssetId]?.stretchPreviewUrl} />
+                    ) : (
+                      <ShapeGlyph type={selectedElement.type} color={selectedElement.color} assetId={selectedElement.imageAssetId} tint={selectedElement.imageTint} prefabId={selectedElement.prefabId}
+                        imageType={selectedElement.imageType} width={selectedElement.width} height={selectedElement.height} />
+                    )}
                     <div className="layer-info">
                       <strong>{getElementBaseName(selectedElement, shapeLabels)}</strong>
                       <span>{shapeLabels[selectedElement.type]} · {t("props.layer", { n: selectedElement.zIndex + 1 })}</span>
@@ -3728,10 +3737,18 @@ function ensureSceneLibrary(scene: SceneDocument): SceneDocument {
   };
 }
 
-function ShapeGlyph({ type, color, assetId, tint, prefabId }: { type: ShapeType; color: string; assetId?: number; tint?: boolean; prefabId?: number }) {
+function ShapeGlyph({ type, color, assetId, tint, prefabId, imageType, width, height }: {
+  type: ShapeType; color: string; assetId?: number; tint?: boolean; prefabId?: number;
+  imageType?: ImageType; width?: number; height?: number;
+}) {
   if (type === "prefab" && prefabId) return <div className="glyph glyph-prefab"><PrefabSprite prefabId={prefabId} color={color} /></div>;
   if (type === "image" && assetId) {
-    return <AssetSprite assetId={assetId} tint={tint} color={color} />;
+    const ratio = width && height ? width / height : 1;
+    return <div className="glyph glyph-image">
+      <div style={{ width: `${Math.min(1, ratio) * 100}%`, height: `${Math.min(1, 1 / ratio) * 100}%` }}>
+        <AssetSprite assetId={assetId} tint={tint} color={color} imageType={imageType} width={width} height={height} />
+      </div>
+    </div>;
   }
   return (
     <div className={`glyph glyph-${type}`}>
@@ -3744,6 +3761,23 @@ function ShapeGlyph({ type, color, assetId, tint, prefabId }: { type: ShapeType;
       {type === "textbox" ? <div className="glyph-fill textbox">T</div> : null}
     </div>
   );
+}
+
+function InspectorImagePreview({ assetId, imageType, stretchPreviewUrl }: {
+  assetId: number; imageType?: ImageType; stretchPreviewUrl?: string;
+}) {
+  const previewUrl = imageType === "stretch" ? stretchPreviewUrl : undefined;
+  return <div className="glyph inspector-image-preview">
+    <LibraryAssetThumbnail key={`${assetId}:${previewUrl ?? "basic"}`} assetId={assetId} previewUrl={previewUrl} />
+  </div>;
+}
+
+/** Static thumbnails use the indexed Stretch PNG and fall back once on failure. */
+function LibraryAssetThumbnail({ assetId, previewUrl }: { assetId: number; previewUrl?: string }) {
+  const [failedPreview, setFailedPreview] = useState(false);
+  return <img src={previewUrl && !failedPreview ? previewUrl : imageUrl(assetId)} alt=""
+    loading="lazy" decoding="async" draggable={false}
+    onError={previewUrl && !failedPreview ? () => setFailedPreview(true) : undefined} />;
 }
 
 /** 素材染色按 RGB 通道乘算，保留原贴图细节和透明度。 */

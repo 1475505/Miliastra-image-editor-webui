@@ -9,10 +9,24 @@ function moduleUrl(path) {
   });
   return `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`;
 }
-const { sliceRegions, resolveImageType, supportsImageStretch, normalizeImageElement } = await import(moduleUrl("../src/imageStretch.ts"));
+const { defaultLibraryImageSize, sliceRegions, resolveImageType, supportsImageStretch, normalizeImageElement } = await import(moduleUrl("../src/imageStretch.ts"));
 const library = await import(moduleUrl("../src/imageLibrary.ts"));
 const meta = { id: 106030, width: 90, height: 90, stretchable: true,
   border: { left: 45, right: 45, top: 45, bottom: 45 } };
+
+test("new stretch sprites use preview dimensions while basic and unsliced axes retain native size", () => {
+  const small = { ...meta, id: 106020, width: 60, height: 60,
+    border: { left: 30, right: 30, top: 30, bottom: 30 } };
+  assert.deepEqual(defaultLibraryImageSize(small), { width: 136, height: 96 });
+  assert.deepEqual(defaultLibraryImageSize({ ...small, border: { left: 0, right: 0, top: 0, bottom: 0 } }),
+    { width: 60, height: 60 });
+  assert.deepEqual(defaultLibraryImageSize({ ...meta, width: 144, height: 100,
+    border: { left: 72, right: 72, top: 0, bottom: 0 } }), { width: 136, height: 100 });
+  assert.deepEqual(defaultLibraryImageSize({ ...meta, width: 8, height: 17,
+    border: { left: 0, right: 0, top: 4, bottom: 4 } }), { width: 8, height: 96 });
+  assert.deepEqual(defaultLibraryImageSize(undefined), { width: 96, height: 96 });
+  assert.deepEqual(defaultLibraryImageSize(null), { width: 96, height: 96 });
+});
 
 test("nonzero borders default to Stretch while zero/missing borders only permit Basic", () => {
   assert.equal(supportsImageStretch(meta), true);
@@ -99,6 +113,16 @@ test("repeated sprites share metadata requests and failed requests can retry", a
     assert.equal(await library.loadSpriteMeta(106031), null);
     assert.equal(await library.loadSpriteMeta(106031), null);
     assert.equal(calls, 3);
+    const requests = [];
+    globalThis.fetch = async (url, options) => {
+      requests.push([url, options]);
+      return new Response(JSON.stringify(meta));
+    };
+    assert.deepEqual(await library.loadSpriteMeta(106031, { refresh: true }), meta);
+    assert.equal(requests[0][0], "/api/library/meta/106031?refresh=1");
+    assert.equal(requests[0][1].cache, "no-store");
+    assert.deepEqual(await library.loadSpriteMeta(106031), meta);
+    assert.equal(requests.length, 1);
   } finally {
     library.clearLibraryCache();
     globalThis.window = originalWindow;

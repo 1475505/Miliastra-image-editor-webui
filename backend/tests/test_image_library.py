@@ -16,6 +16,8 @@ CATALOG = {
 }
 NAMES_ZH = {"1": "底板-单色"}
 NAMES_EN = {"1": "Surface - Monochrome"}
+STRETCH_PREVIEWS = {"schemaVersion": 1, "frameSize": {"width": 136, "height": 96},
+                    "imageData": {"106001": {"id": 106001, "img": "106001.png"}}}
 DESCRIPTIONS = [{"assetID": 106001, "description": "白色细线方框，适合面板描边。", "uses": ["container.frame"]}]
 USE_TAXONOMY = {"schemaVersion": 1, "groups": [{"id": "container", "label": "面板与容器"}],
                 "uses": {"container.frame": {"group": "container", "label": "内容边框", "keywords": ["面板描边", "图片框"]}}}
@@ -65,6 +67,7 @@ def standard_files(zh_etag: str = "zh111") -> dict[str, tuple[object, str]]:
         "i18n/en-us.json": (NAMES_EN, "en111"),
         "desc.json": (DESCRIPTIONS, "desc111"),
         "category.json": (USE_TAXONOMY, "use111"),
+        "stretch/data.json": (STRETCH_PREVIEWS, "stretch111"),
     }
 
 
@@ -104,14 +107,14 @@ class HelperTests(unittest.TestCase):
         self.assertFalse(meta["stretchable"])
 
     def test_bundle_etag_round_trip(self):
-        etag = image_library.build_bundle_etag(("cat111", "zh111", "en111", "desc111", "use111"))
-        self.assertEqual(etag, '"m2.cat111.zh111.en111.desc111.use111"')
-        self.assertEqual(image_library.parse_bundle_etag(etag), ("cat111", "zh111", "en111", "desc111", "use111"))
-        self.assertEqual(image_library.parse_bundle_etag('W/"m2.a.b.c.d.e"'), ("a", "b", "c", "d", "e"))
-        self.assertEqual(image_library.parse_bundle_etag('"other", "m2.a.b.c.d.e"'), ("a", "b", "c", "d", "e"))
+        etag = image_library.build_bundle_etag(("cat111", "zh111", "en111", "desc111", "use111", "stretch111"))
+        self.assertEqual(etag, '"m3.cat111.zh111.en111.desc111.use111.stretch111"')
+        self.assertEqual(image_library.parse_bundle_etag(etag), ("cat111", "zh111", "en111", "desc111", "use111", "stretch111"))
+        self.assertEqual(image_library.parse_bundle_etag('W/"m3.a.b.c.d.e.f"'), ("a", "b", "c", "d", "e", "f"))
+        self.assertEqual(image_library.parse_bundle_etag('"other", "m3.a.b.c.d.e.f"'), ("a", "b", "c", "d", "e", "f"))
 
     def test_parse_bundle_etag_rejects_garbage(self):
-        for bad in (None, "", '"m1..b.c"', '"m2.a.b.c"', '"m1.a.b"', "not-an-etag"):
+        for bad in (None, "", '"m1..b.c"', '"m2.a.b.c.d.e"', '"m3.a.b.c"', '"m1.a.b"', "not-an-etag"):
             with self.subTest(bad=bad):
                 self.assertIsNone(image_library.parse_bundle_etag(bad))
 
@@ -134,9 +137,9 @@ class CatalogTests(unittest.TestCase):
         result = self.run_bundle(upstream)
 
         self.assertFalse(result.not_modified)
-        self.assertEqual(upstream.paths(), ["data.json", "i18n/zh-cn.json", "i18n/en-us.json", "desc.json", "category.json"])
+        self.assertEqual(upstream.paths(), ["data.json", "i18n/zh-cn.json", "i18n/en-us.json", "desc.json", "category.json", "stretch/data.json"])
         self.assertIsNone(upstream.calls[0][1], "冷请求不应带 If-None-Match")
-        self.assertEqual(result.etag, '"m2.cat111.zh111.en111.desc111.use111"')
+        self.assertEqual(result.etag, '"m3.cat111.zh111.en111.desc111.use111.stretch111"')
 
         bundle = json.loads(result.payload)
         self.assertIn("106001", bundle["images"])
@@ -146,6 +149,45 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(bundle["descriptions"]["106001"]["description"], DESCRIPTIONS[0]["description"])
         self.assertEqual(bundle["descriptions"]["106001"]["uses"], ["container.frame"])
         self.assertEqual(bundle["useTaxonomy"], USE_TAXONOMY)
+        self.assertEqual(bundle["stretchPreviews"], STRETCH_PREVIEWS["imageData"])
+
+    def test_preview_change_invalidates_catalog(self):
+        upstream = FakeUpstream(standard_files())
+        first = self.run_bundle(upstream)
+        upstream.files["stretch/data.json"] = ({**STRETCH_PREVIEWS, "imageData": {}}, "stretch222")
+        second = self.run_bundle(upstream, if_none_match=first.etag)
+        self.assertFalse(second.not_modified)
+        self.assertNotEqual(first.etag, second.etag)
+        bundle = json.loads(second.payload)
+        self.assertEqual(bundle["stretchPreviews"], {})
+        self.assertEqual(bundle["images"], CATALOG["imageData"])
+
+    def test_preview_rows_require_indexed_images_and_exact_id_paths(self):
+        files = standard_files()
+        images = {**CATALOG["imageData"],
+                  "106002": {"id": 106002, "img": "sprite/106002.png"},
+                  "106003": {"id": 106003, "img": ""},
+                  "106004": {"id": 106004, "img": "sprite/106004.png"}}
+        files["data.json"] = ({**CATALOG, "imageData": images}, "cat222")
+        rows = {**STRETCH_PREVIEWS["imageData"],
+                "106002": {"id": 106002, "img": "../106002.png"},
+                "106003": {"id": 106003, "img": "106003.png"},
+                "106004": {"id": 106001, "img": "106004.png"},
+                "999999": {"id": 999999, "img": "999999.png"}}
+        files["stretch/data.json"] = ({**STRETCH_PREVIEWS, "imageData": rows}, "stretch222")
+        result = self.run_bundle(FakeUpstream(files))
+        self.assertEqual(json.loads(result.payload)["stretchPreviews"], STRETCH_PREVIEWS["imageData"])
+
+    def test_invalid_preview_protocol_preserves_basic_browsing(self):
+        for raw in ([], {**STRETCH_PREVIEWS, "schemaVersion": 2},
+                    {**STRETCH_PREVIEWS, "frameSize": {"width": True, "height": 96}},
+                    {**STRETCH_PREVIEWS, "imageData": []}):
+            with self.subTest(raw=raw):
+                files = standard_files()
+                files["stretch/data.json"] = (raw, "stretch222")
+                bundle = json.loads(self.run_bundle(FakeUpstream(files)).payload)
+                self.assertEqual(bundle["stretchPreviews"], {})
+                self.assertEqual(bundle["images"], CATALOG["imageData"])
 
     def test_revalidation_hit_transfers_no_body(self):
         upstream = FakeUpstream(standard_files())
@@ -157,7 +199,7 @@ class CatalogTests(unittest.TestCase):
         self.assertTrue(second.not_modified)
         self.assertIsNone(second.payload)
         self.assertEqual(second.etag, first.etag)
-        self.assertEqual(len(upstream.calls), 5)
+        self.assertEqual(len(upstream.calls), 6)
         for path, header in upstream.calls:
             with self.subTest(path=path):
                 self.assertIsNotNone(header, "校验请求必须带上上游 ETag")
@@ -172,7 +214,7 @@ class CatalogTests(unittest.TestCase):
 
         self.assertFalse(second.not_modified)
         self.assertNotEqual(second.etag, first.etag)
-        self.assertEqual(second.etag, '"m2.cat111.zh222.en111.desc111.use111"')
+        self.assertEqual(second.etag, '"m3.cat111.zh222.en111.desc111.use111.stretch111"')
         bundle = json.loads(second.payload)
         self.assertEqual(bundle["names"]["zh-CN"], {"1": "底板-彩色"})
         self.assertEqual(bundle["names"]["en-US"], NAMES_EN)
@@ -287,6 +329,9 @@ class CatalogTests(unittest.TestCase):
         elif failed_path == "category.json":
             self.assertEqual(bundle["useTaxonomy"]["uses"], {})
             self.assertEqual(bundle["descriptions"]["106001"]["description"], DESCRIPTIONS[0]["description"])
+        elif failed_path == image_library.STRETCH_PREVIEW_PATH:
+            self.assertEqual(bundle["stretchPreviews"], {})
+            self.assertEqual(bundle["useTaxonomy"], USE_TAXONOMY)
         else:
             language = next(key for key, path in image_library.CATEGORY_NAME_PATHS if path == failed_path)
             self.assertEqual(bundle["names"][language], {})
@@ -455,7 +500,7 @@ class EndpointTests(unittest.TestCase):
             response = library_catalog(make_request())
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.headers["etag"], '"m2.cat111.zh111.en111.desc111.use111"')
+        self.assertEqual(response.headers["etag"], '"m3.cat111.zh111.en111.desc111.use111.stretch111"')
         self.assertIn("max-age=43200", response.headers["cache-control"])
         self.assertEqual(json.loads(response.body)["categories"]["1"]["images"], [106001])
 

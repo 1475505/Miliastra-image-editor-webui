@@ -11,7 +11,7 @@
   上游全部 304 就直接回 304，一个字节的正文都不会传输
 - 前端另有 localStorage 副本，用于首屏瞬时渲染
 
-索引的 ETag 采用 `"m2.<data>.<zh>.<en>.<desc>.<uses>"` 结构，把五份上游 ETag 编码进去，
+索引的 ETag 采用 `"m3.<data>.<zh>.<en>.<desc>.<uses>.<stretch>"` 结构，把六份上游 ETag 编码进去，
 这样下次请求不必先回源就能知道该拿哪几个 ETag 去校验。
 """
 
@@ -44,7 +44,10 @@ CATEGORY_NAME_PATHS: tuple[tuple[str, str], ...] = (
     ("en-US", "i18n/en-us.json"),
 )
 ANNOTATION_PATHS = (("descriptions", "desc.json"), ("useTaxonomy", "category.json"))
-OPTIONAL_CATALOG_PATHS = frozenset(path for _key, path in (*CATEGORY_NAME_PATHS, *ANNOTATION_PATHS))
+STRETCH_PREVIEW_PATH = "stretch/data.json"
+CATALOG_DOCUMENTS = (("catalog", CATALOG_PATH), *CATEGORY_NAME_PATHS, *ANNOTATION_PATHS,
+                     ("stretchPreviews", STRETCH_PREVIEW_PATH))
+OPTIONAL_CATALOG_PATHS = frozenset(path for _key, path in CATALOG_DOCUMENTS if path != CATALOG_PATH)
 LOGGER = logging.getLogger(__name__)
 
 IMAGE_ID_RE = re.compile(r"^\d{6}$")
@@ -198,11 +201,11 @@ def _etag_token(etag: str | None) -> str:
 
 
 def build_bundle_etag(tokens: tuple[str, ...]) -> str:
-    return '"m2.' + ".".join(tokens) + '"'
+    return '"m3.' + ".".join(tokens) + '"'
 
 
 def parse_bundle_etag(value: str | None) -> tuple[str, ...] | None:
-    """从 If-None-Match 中还原五份上游 ETag token；旧版本重新取全量。"""
+    """从 If-None-Match 中还原六份上游 ETag token；旧版本重新取全量。"""
     if not value:
         return None
     for candidate in value.split(","):
@@ -211,7 +214,7 @@ def parse_bundle_etag(value: str | None) -> tuple[str, ...] | None:
             normalized = normalized[2:]
         normalized = normalized.strip('"')
         parts = normalized.split(".")
-        if len(parts) == 6 and parts[0] == "m2" and all(parts[1:]):
+        if len(parts) == len(CATALOG_DOCUMENTS) + 1 and parts[0] == "m3" and all(parts[1:]):
             return tuple(parts[1:])
     return None
 
@@ -292,9 +295,36 @@ def _annotations(bodies: dict[str, bytes], images: dict) -> tuple[dict, dict]:
     return descriptions, taxonomy
 
 
+def _stretch_previews(body: bytes, images: dict) -> dict:
+    """Only indexed IDs and their exact per-ID preview filenames may be displayed."""
+    try:
+        raw = json.loads(body)
+    except (UnicodeDecodeError, ValueError):
+        LOGGER.warning("拉伸预览索引不是合法 JSON：%s", STRETCH_PREVIEW_PATH)
+        return {}
+    if not isinstance(raw, dict) or type(raw.get("schemaVersion")) is not int or raw["schemaVersion"] != 1:
+        return {}
+    frame = raw.get("frameSize")
+    if not isinstance(frame, dict) or any(type(frame.get(axis)) is not int or not 0 < frame[axis] <= 4096
+                                         for axis in ("width", "height")):
+        return {}
+    rows = raw.get("imageData")
+    if not isinstance(rows, dict):
+        return {}
+    previews = {}
+    for asset_id, row in rows.items():
+        image = images.get(asset_id)
+        if (not IMAGE_ID_RE.fullmatch(asset_id) or not isinstance(row, dict)
+                or row.get("id") != int(asset_id) or row.get("img") != f"{asset_id}.png"
+                or not isinstance(image, dict) or image.get("id", int(asset_id)) != int(asset_id) or not image.get("img")):
+            continue
+        previews[asset_id] = {"id": row["id"], "img": row["img"]}
+    return previews
+
+
 def get_catalog_bundle(if_none_match: str | None = None, *, force: bool = False) -> BundleResult:
-    """合并索引与可选分类名、用途文件；补充数据失败时仍可浏览图片。"""
-    specs: tuple[tuple[str, str], ...] = (("catalog", CATALOG_PATH), *CATEGORY_NAME_PATHS, *ANNOTATION_PATHS)
+    """合并索引与可选分类名、用途、拉伸预览；补充数据失败时仍可浏览图片。"""
+    specs = CATALOG_DOCUMENTS
     expected = None if force else parse_bundle_etag(if_none_match)
 
     documents: dict[str, UpstreamDocument] = {}
@@ -336,6 +366,7 @@ def get_catalog_bundle(if_none_match: str | None = None, *, force: bool = False)
         "names": names,
         "descriptions": descriptions,
         "useTaxonomy": taxonomy,
+        "stretchPreviews": _stretch_previews(bodies["stretchPreviews"], images),
     }
     payload = json.dumps(bundle, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return BundleResult(payload=payload, etag=build_bundle_etag(tuple(tokens)), not_modified=False)

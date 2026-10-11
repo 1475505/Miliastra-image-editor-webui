@@ -5,6 +5,7 @@
 - [素材索引](https://oss.070077.xyz/images/data.json)
 - [图片描述](https://oss.070077.xyz/images/desc.json)
 - [用途字典](https://oss.070077.xyz/images/category.json)
+- [拉伸预览索引](https://oss.070077.xyz/images/stretch/data.json)
 
 `desc.json` 通过 `assetID` 补充图片描述和精细用途代码；`category.json` 定义用途分组、名称、同义词及中间用途的 `filters` 映射。后端运行时从这些地址获取数据，不读取仓库 JSON，也没有内置生产数据兜底。浏览器缓存仅保存已从 OSS 获取的数据。
 
@@ -18,13 +19,13 @@
 
 ```text
 R2: data.json + i18n/zh-cn.json + i18n/en-us.json
-                  + desc.json + category.json
+                  + desc.json + category.json + stretch/data.json
     → GET /api/library/catalog
     → 前端通过 assetID 合并描述、用途与原有图片分类
     → 图形库搜索 / 用途筛选 / WebMCP 查询
 ```
 
-后端把五个上游文件的 ETag 合并为整体索引版本，描述或用途字典变化会使整体索引失效。浏览器缓存保留描述与用途。分类名称、描述和用途字典缺失、格式错误或暂时不可访问时，仅对应功能降级，基础素材浏览和 ID 搜索仍可使用；用途数据不可用时清除已选用途筛选。必要的 `data.json` 请求失败时继续使用已有内存或浏览器缓存；首次访问且无缓存时，仅素材库显示加载错误，画布编辑与基础图形的导入导出仍可用。没有图片路径的条目仍隐藏。
+后端把六个上游文件的 ETag 合并为整体索引版本，描述、用途字典或拉伸预览变化会使整体索引失效。浏览器缓存保留描述、用途与拉伸预览地址。分类名称、描述、用途字典或拉伸预览索引缺失、格式错误或暂时不可访问时，仅对应功能降级，基础素材浏览和 ID 搜索仍可使用；用途数据不可用时清除已选用途筛选。必要的 `data.json` 请求失败时继续使用已有内存或浏览器缓存；首次访问且无缓存时，仅素材库显示加载错误，画布编辑与基础图形的导入导出仍可用。没有图片路径的条目仍隐藏。
 
 “用途”保持独立筛选栏，与“图形分类”、色态和文字搜索交叉筛选。界面提供 40 个中间用途分类，原来的 8 个用途分组只作为不可选择的段标题；129 个精细用途继续用于文字搜索、素材详情和 AI 精确查询。
 
@@ -45,6 +46,8 @@ search_assets({ use: "头像与徽章底框", limit: 10 })
 search_assets({ use: "button.background", tone: "color", limit: 10 })
 search_assets({ use: "group:content", limit: 10 })
 search_assets({ query: "头像框", refresh: true })
+get_asset_info({ id: 106020 })
+get_asset_info({ id: 106020, imageType: "basic", refresh: true })
 ```
 
 先用 `list_asset_categories` 发现原有图形分类的 `key/label/count/tones`；`icons` 汇总所有图标。再把 `category` 和可选的 `tone` 传给 `list_asset_uses`，只查询该范围内有素材的中间用途及数量，避免逐项浏览全库。
@@ -54,6 +57,8 @@ search_assets({ query: "头像框", refresh: true })
 `search_assets` 的 `use` 参数接受中间用途代码（如 `purpose.avatar`）、精细用途代码（如 `avatar.frame`）或用途分组（如 `group:content`）。`category/use` 也接受完整中文名称；完整用途名称优先匹配中间分类，精细筛选用明确代码。未知名称或同一层中重名会报错，不能把不认识的名称静默当作“全部素材”。关键词按空格分隔并且必须全部命中。
 
 返回的 `id` 可作为 `add_elements` 的 `imageAssetId`；`imageUrl` 可用于查看素材。`category` 参数继续使用原有图形分类代码，可与用途、色态交叉筛选。搜索与查询不会修改画布。
+
+`search_assets` 另返回 `previewUrl/previewImageType` 和索引中存在时的 `stretchPreviewUrl`，搜索本身不批量读取边界。用 `get_asset_info` 按单 ID 确认 `metadata.border`、支持的 `imageTypes`、`defaultImageType/defaultSize` 及指定类型的预览；未知或无图 ID 不请求元数据或图片。预渲染 PNG 仅用于缩略图，绘制仍使用原图与边界；基础／拉伸类型的具体行为见 [图片类型](image-stretch.md)。
 
 ## 看图与下载素材包
 

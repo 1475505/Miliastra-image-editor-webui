@@ -13,7 +13,7 @@
 const API_BASE = "/api/library";
 export const OSS_IMAGE_BASE = "https://oss.070077.xyz/images";
 
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
 const CATALOG_CACHE_KEY = `miliastra:image-library:v${CACHE_VERSION}:catalog`;
 const META_CACHE_KEY = `miliastra:image-library:v${CACHE_VERSION}:meta`;
 
@@ -59,6 +59,8 @@ export type LibraryAsset = AssetDescription & {
   groupKey: string;
   groupLabel: string;
   tone: LibraryTone | null;
+  /** Pre-rendered thumbnail only; drawing and exports still use the original sprite. */
+  stretchPreviewUrl?: string;
 };
 
 export type LibraryAssetCategory = {
@@ -89,6 +91,7 @@ type CatalogPayload = {
   names?: Record<string, Record<string, string>>;
   descriptions?: Record<string, AssetDescription>;
   useTaxonomy?: UseTaxonomy;
+  stretchPreviews?: Record<string, { id: number; img: string }>;
 };
 
 type CachedRecord<T> = { version: number; etag: string | null; fetchedAt: number; payload: T };
@@ -296,9 +299,13 @@ export function toCatalogState(payload: CatalogPayload, source: CacheSource, fro
     for (const bucket of group.tones) {
       for (const id of bucket.ids) {
         const description = payload.descriptions?.[id];
+        const preview = payload.stretchPreviews?.[id];
+        const stretchPreviewUrl = payload.images?.[id]?.img && preview?.id === id && preview.img === `${id}.png`
+          ? `${OSS_IMAGE_BASE}/stretch/${preview.img}` : undefined;
         assets[id] = { id, groupKey: group.key, groupLabel: group.label,
           tone: group.key === "basic-shape" ? "mono" : bucket.tone,
-          description: description?.description ?? "", uses: description?.uses ?? [] };
+          description: description?.description ?? "", uses: description?.uses ?? [],
+          ...(stretchPreviewUrl ? { stretchPreviewUrl } : {}) };
       }
     }
   }
@@ -469,6 +476,8 @@ export function searchLibraryAssets(state: LibraryCatalogState, options: AssetSe
   return { matched: matched.length, offset, count: selected.length,
     nextOffset: offset + selected.length < matched.length ? offset + selected.length : null,
     assets: selected.map((id) => ({ ...state.assets[id], imageUrl: imageUrl(id),
+      previewUrl: state.assets[id].stretchPreviewUrl ?? imageUrl(id),
+      previewImageType: state.assets[id].stretchPreviewUrl ? "stretch" as const : "basic" as const,
       useLabels: state.assets[id].uses.map((code) => state.useTaxonomy.uses[code]?.label ?? code) })) };
 }
 
@@ -646,20 +655,22 @@ function writeMetaCache(imageId: number, meta: SpriteMeta | null): void {
   writeJson(META_CACHE_KEY, store);
 }
 
-export async function loadSpriteMeta(imageId: number): Promise<SpriteMeta | null> {
-  const cached = readMetaCache(imageId);
-  if (cached !== undefined) {
-    return cached;
+export async function loadSpriteMeta(imageId: number, options: { refresh?: boolean } = {}): Promise<SpriteMeta | null> {
+  if (!options.refresh) {
+    const cached = readMetaCache(imageId);
+    if (cached !== undefined) return cached;
   }
   const pending = metaInflight.get(imageId);
   if (pending) return pending;
-  const request = requestSpriteMeta(imageId).finally(() => { metaInflight.delete(imageId); });
+  const request = requestSpriteMeta(imageId, options.refresh === true).finally(() => { metaInflight.delete(imageId); });
   metaInflight.set(imageId, request);
   return request;
 }
 
-async function requestSpriteMeta(imageId: number): Promise<SpriteMeta | null> {
-  const response = await fetch(`${API_BASE}/meta/${imageId}`, { headers: { Accept: "application/json" } });
+async function requestSpriteMeta(imageId: number, refresh = false): Promise<SpriteMeta | null> {
+  const response = await fetch(`${API_BASE}/meta/${imageId}${refresh ? "?refresh=1" : ""}`, {
+    headers: { Accept: "application/json" }, ...(refresh ? { cache: "no-store" as const } : {})
+  });
   if (response.status === 404) {
     writeMetaCache(imageId, null);
     return null;

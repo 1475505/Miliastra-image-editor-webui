@@ -2,10 +2,10 @@
 // Read-only tools are annotated; imported content is untrusted data.
 
 import { defaultPrefabVariable, getPrefabInfo, validPrefabVariable } from "./prefabLibrary";
-import { resolveImageType } from "./imageStretch";
+import { defaultLibraryImageSize, resolveImageType, supportsImageStretch } from "./imageStretch";
 import type { CanvasMask, SceneDocument, SceneElement, ShapeType, SourceType, TextBoxSettings } from "./App";
 import {
-  listLibraryAssetCategories, loadLibraryCatalog, loadSpriteMeta, queryLibraryAssetIds, scopeLibraryAssetIds, searchLibraryAssets,
+  imageUrl, listLibraryAssetCategories, loadLibraryCatalog, loadSpriteMeta, queryLibraryAssetIds, scopeLibraryAssetIds, searchLibraryAssets,
   type AssetSearchOptions, type LibraryCatalogState
 } from "./imageLibrary";
 
@@ -149,14 +149,14 @@ function clamp(value: number, min: number, max: number) {
 }
 
 const GEOMETRY = "Pixels: origin top-left, x right, y down; x/y are box centers, rotation counter-clockwise. Triangle points up; ring inner/outer diameter ratio is 0.8.";
-const DEFAULTS = "Defaults: canvas center, current library size/color, rotation 0; opacity 0.85 for shapes, 1 for text/image. Pass explicit size/color/opacity for predictable results. Omit zIndex to append on top.";
+const DEFAULTS = "Defaults: canvas center, rotation 0; shapes use current library size/color. Images use native sprite size, or width 136 / height 96 on axes with nonzero slice borders; missing metadata uses 96. Explicit dimensions are preserved. Images default to stretch when supported; request basic for whole-image scaling. Prefabs use thumbnail size and draw only in Lua. Opacity is 0.85 for shapes, 1 for text/image/prefab. Pass explicit size/color/opacity for predictable results. Omit zIndex to append on top.";
 
 const elementProperties = {
   name: { type: "string", description: "Display name; new elements default to the shape name" },
   x: numberProp("Center X in canvas pixels"),
   y: numberProp("Center Y in canvas pixels"),
-  width: numberProp("Box width in pixels (1-2048; default: current library preset)", 1, 2048),
-  height: numberProp("Box height in pixels (1-2048; default: current library preset)", 1, 2048),
+  width: numberProp("Box width (1-2048): omitted on add uses 136 for horizontally sliced images, native width for other images, thumbnail width for prefabs, library preset for shapes. Omitted on update preserves width.", 1, 2048),
+  height: numberProp("Box height (1-2048): omitted on add uses 96 for vertically sliced images, native height for other images, thumbnail height for prefabs, library preset for shapes. Omitted on update preserves height.", 1, 2048),
   rotation: numberProp("Degrees, counter-clockwise about the box center; default 0"),
   color: { type: "string", pattern: "^#[0-9a-fA-F]{6}$", description: "RGB hex color, e.g. #0f766e; default: current library preset" },
   opacity: numberProp("Opacity; default 0.85 for basic shapes, 1 for textbox/image", 0, 1),
@@ -166,7 +166,7 @@ const elementProperties = {
   fontSize: numberProp("Textbox font size (default 20)", 1, 256),
   imageAssetId: { type: "integer", minimum: 100000, maximum: 999999, description: "Required for image: six-digit library sprite id" },
   imageTint: { type: "boolean", description: "Multiply sprite RGB by color, default false" },
-  imageType: { type: "string", enum: ["basic", "stretch"], description: "Image display mode: sprites with nonzero borders default to stretch and also allow basic. Missing/zero borders only allow basic; unsupported stretch requests become basic." },
+  imageType: { type: "string", enum: ["basic", "stretch"], description: "Image rendering mode: basic scales the whole sprite; stretch uses its m_Border slices. Nonzero borders default to stretch and also allow basic; missing/zero borders only allow basic. get_asset_info returns supported modes and default size. Rendering always uses the original sprite, never the fixed stretchPreviewUrl thumbnail. Switching modes preserves current dimensions." },
   prefabId: { type: "integer", minimum: 1, maximum: 4294967295, description: "Required for prefab: exact catalog entity ID; Lua drawing only" },
   prefabVariable: { type: "string", minLength: 1, maxLength: 128, description: "Name in the script-local PREFAB_IDS configuration table, default prefab_<ID>; no client script parameter is required" }
 };
@@ -325,7 +325,7 @@ function parseUpdate(value: unknown): ElementUpdate {
 async function prepareElementInput(input: AddElementInput): Promise<AddElementInput> {
   if (input.type === "image") {
     const meta = await loadSpriteMeta(input.imageAssetId!);
-    return { ...input, imageType: resolveImageType(meta, input.imageType) };
+    return { ...defaultLibraryImageSize(meta), ...input, imageType: resolveImageType(meta, input.imageType) };
   }
   if (input.type !== "prefab") return input;
   const info = await getPrefabInfo(input.prefabId!);
@@ -464,7 +464,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
     {
       name: "search_assets",
       title: "Search image assets",
-      description: "Find existing sprites with category AND purpose AND keyword conditions. Prefer list_asset_categories → list_asset_uses({category}) → search_assets({category,use,query}); category and use accept discovered keys or full Chinese labels. Omit any condition to broaden. Empty results do not silently relax filters. Whitespace-separated query words must all match. Returns IDs, descriptions and image URLs; preview_assets compares candidates visually and prepare_asset_pack gives a downloadable ZIP request. Use id as imageAssetId in add_elements.",
+      description: "Find existing sprites with category AND purpose AND keyword conditions. Prefer list_asset_categories → list_asset_uses({category}) → search_assets({category,use,query}); category/use accept discovered keys or full Chinese labels. Empty results do not relax filters; all whitespace-separated query words must match. Returns IDs, descriptions, original imageUrl and previewUrl/previewImageType; stretchPreviewUrl appears only for indexed thumbnails. Preview availability does not determine rendering support: get_asset_info reads m_Border and returns supported modes/default size. preview_assets compares original sprites; prepare_asset_pack prepares original PNGs. Use id as imageAssetId in add_elements.",
       annotations: { readOnlyHint: true, untrustedContentHint: true },
       inputSchema: { type: "object", properties: {
         ...assetFilterProperties,
@@ -477,6 +477,40 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       const state = await loadLibraryCatalog({ refresh: args.refresh === true });
       return { ok: true, describedCount: Object.values(state.assets).filter((asset) => asset.description).length,
         ...searchLibraryAssets(state, options) };
+    }
+  );
+
+  register(
+    {
+      name: "get_asset_info",
+      title: "Look up image modes and previews by ID",
+      description: "Read one indexed six-digit sprite ID, original imageUrl, optional indexed stretchPreviewUrl, m_Border metadata, supported imageTypes, defaultImageType and defaultSize. imageType chooses a Basic or Stretch thumbnail, as in the inspector; unindexed Stretch previews use the original. If viewing a preview fails, use imageUrl. Does not download PNGs or change the canvas. Unlisted/no-image IDs stop before metadata or image requests. Add with type:image and imageAssetId; drawing uses original pixels plus borders, not the fixed preview PNG. Prefab/entity IDs use get_prefab_info.",
+      annotations: { readOnlyHint: true, untrustedContentHint: true },
+      inputSchema: { type: "object", required: ["id"], properties: {
+        id: { type: "integer", minimum: 100000, maximum: 999999, description: "Six-digit sprite ID from search_assets" },
+        imageType: { type: "string", enum: ["basic", "stretch"], description: "Thumbnail choice; omitted uses the sprite's default mode. Unsupported stretch resolves to basic." },
+        refresh: { type: "boolean", default: false, description: "Refresh both catalog and sprite metadata" }
+      } }
+    },
+    async (_bridge, args) => {
+      if (typeof args.id !== "number" || !Number.isInteger(args.id) || args.id < 100000 || args.id > 999999) return err("id must be a six-digit sprite integer");
+      if (args.imageType !== undefined && args.imageType !== "basic" && args.imageType !== "stretch") return err("imageType must be basic or stretch");
+      if (args.refresh !== undefined && typeof args.refresh !== "boolean") return err("refresh must be boolean");
+      const state = await loadLibraryCatalog({ refresh: args.refresh === true });
+      const asset = state.assets[args.id];
+      if (!asset) return err(`Image ${args.id} is not an indexed sprite with a picture`);
+      const metadata = await loadSpriteMeta(args.id, { refresh: args.refresh === true });
+      const stretchable = supportsImageStretch(metadata);
+      const imageType = resolveImageType(metadata, args.imageType);
+      const originalUrl = imageUrl(args.id);
+      const useStretchPreview = imageType === "stretch" && Boolean(asset.stretchPreviewUrl);
+      return { ok: true, asset: { ...asset, imageUrl: originalUrl,
+        useLabels: asset.uses.map((code) => state.useTaxonomy.uses[code]?.label ?? code),
+        metadata, stretchable, imageTypes: stretchable ? ["basic", "stretch"] : ["basic"],
+        defaultImageType: resolveImageType(metadata), defaultSize: defaultLibraryImageSize(metadata), imageType,
+        previewUrl: useStretchPreview ? asset.stretchPreviewUrl! : originalUrl,
+        previewImageType: useStretchPreview ? "stretch" : "basic"
+      } };
     }
   );
 
@@ -527,7 +561,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
     {
       name: "preview_assets",
       title: "Compare library images",
-      description: "Compare candidate sprites visually on a checkerboard contact sheet labeled with asset IDs, without adding anything to the canvas. Supply explicit ids or the same category/use/query/tone conditions as search_assets. Paginate at most 48 images per sheet; returned IDs correspond to image order. output:image returns an image content block; output:dataUrl returns PNG data URL. Use chosen IDs with prepare_asset_pack or add_elements.",
+      description: "Compare original Basic sprites on an ID-labeled checkerboard contact sheet, without adding to the canvas. For Stretch thumbnails use search_assets' indexed stretchPreviewUrl or get_asset_info; for actual target dimensions use get_canvas_preview after editing. Supply ids or category/use/query/tone filters. At most 48 images per page; returned IDs follow image order. output:image returns an image block, output:dataUrl a PNG data URL. Use chosen IDs with prepare_asset_pack or add_elements.",
       annotations: { readOnlyHint: true, untrustedContentHint: true },
       inputSchema: { type: "object", properties: {
         ...assetFilterProperties, ids: assetIdsProperty,
@@ -866,7 +900,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "export_scene",
       title: "Export scene",
       description:
-        "Export the current scene as text and return its content: css (web styles) / svg (vector; unsupported rings are dropped automatically) / json (scene source data) / lua (client drawing script; configure IMAGE_PREFAB_ID for images and TEXTBOX_PREFAB_ID for textboxes. Textbox styles and adaptive font sizing follow the editor settings). For the binary GIA format use the in-app export button.",
+        "Export scene text: css / svg / json / lua. Stretch CSS/SVG bake the current dimensions as an embedded PNG while preserving source ID/type for re-import; drawing never uses the library Stretch thumbnail. JSON preserves the scene. Lua sets Basic/Stretch image types; configure IMAGE_PREFAB_ID for images/prefabs and TEXTBOX_PREFAB_ID for native textboxes. Prefab IDs are defined in the script-local PREFAB_IDS table, with no script parameters. Scenes with prefabs support JSON saving and Lua drawing; other export formats reject them. For binary GIA use the in-app export button.",
       annotations: { readOnlyHint: true, untrustedContentHint: true },
       inputSchema: {
         type: "object",
