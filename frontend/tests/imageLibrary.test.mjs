@@ -242,7 +242,7 @@ test("catalog refresh and AI tools share the enriched index", async () => {
 
     const toolsSource = readFileSync(new URL("../src/webmcp.ts", import.meta.url), "utf8");
     const transpiled = ts.transpileModule(toolsSource, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 } }).outputText;
-    const toolsUrl = `data:text/javascript;base64,${Buffer.from(transpiled.replace('"./imageLibrary"', JSON.stringify(libraryUrl)).replace('"./prefabLibrary"', JSON.stringify(prefabLibraryUrl))).toString("base64")}`;
+    const toolsUrl = `data:text/javascript;base64,${Buffer.from(transpiled.replace('"./imageLibrary"', JSON.stringify(libraryUrl)).replace('"./prefabLibrary"', JSON.stringify(prefabLibraryUrl)).replace('"./imageStretch"', JSON.stringify(moduleUrl("../src/imageStretch.ts")))).toString("base64")}`;
     const definitions = new Map();
     const originalDocument = globalThis.document;
     globalThis.document = { modelContext: { registerTool: async (definition) => definitions.set(definition.name, definition) } };

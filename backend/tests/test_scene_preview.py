@@ -99,6 +99,7 @@ class PreviewGeometryTests(unittest.TestCase):
         scene = scene_with({"opacity": 0.5})
         scene.elements[0].type = "image"
         scene.elements[0].imageAssetId = 106001
+        scene.elements[0].imageType = "basic"
         sprite = Image.new("RGBA", (10, 10), (255, 0, 0, 255))
         buffer = io.BytesIO()
         sprite.save(buffer, "PNG")

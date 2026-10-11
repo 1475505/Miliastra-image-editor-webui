@@ -598,7 +598,7 @@ def _build_field14_data(guid):
     w.write_message(503, details)  # details is field 503
     return w
 
-def _build_image_settings_data(image_asset_ref, packed_color, guid):
+def _build_image_settings_data(image_asset_ref, packed_color, guid, image_type=0):
     """Build the image_settings data message.
     Structure:
       image_settings_component: <empty>
@@ -626,6 +626,11 @@ def _build_image_settings_data(image_asset_ref, packed_color, guid):
     source_meta.write_int64(501, 18446744073709551615)  # sentinel_id: max uint64
     img_settings.write_message(3, source_meta)
     img_settings.write_int32(4, packed_color)  # packed_color (ARGB int)
+    # Material-group compatibility hypothesis: legacy image type is field 5.
+    # Client-control Basic/Stretch was observed at image_slot.field504 (0/1),
+    # but class=15 uses the older image_settings layout. See docs/image-stretch.md.
+    if image_type:
+        img_settings.write_int32(5, image_type)
     img_settings.write_bytes(6, b'')  # field6: empty
     img_settings.write_bytes(10, b'')  # field10: empty
     details.write_message(31, img_settings)
@@ -791,7 +796,7 @@ def create_ui_image_payload(guid, index, parent_guid, offset_x, offset_y, size_x
                              scale_x=1.0, scale_y=1.0,
                              anchor_min_x=0.5, anchor_min_y=0.5,
                              anchor_max_x=0.5, anchor_max_y=0.5,
-                             mp_field502=9, textbox=None):
+                             mp_field502=9, textbox=None, image_type=0):
     """Create a UI image/textbox node payload (kind=8, resource_class=15).
     
     This constructs the ui.content message for a dependency node in the image template format.
@@ -852,7 +857,7 @@ def create_ui_image_payload(guid, index, parent_guid, offset_x, offset_y, size_x
     if textbox is not None:
         content.write_message(505, _build_textbox_settings_data(textbox, guid))
     else:
-        content.write_message(505, _build_image_settings_data(image_asset_ref, packed_color, guid))
+        content.write_message(505, _build_image_settings_data(image_asset_ref, packed_color, guid, image_type))
     
     return content
 
@@ -1546,6 +1551,7 @@ def _convert_image_mode(json_data, header, content_len, root_fields, tail, verbo
             size_x=size_x,
             size_y=size_y,
             image_asset_ref=image_asset_ref,
+            image_type=int(element.get('image_type', 0)),
             packed_color=packed_color,
             rot_z=rot_z,
             pivot_x=pivot_x,

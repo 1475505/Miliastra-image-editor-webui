@@ -121,6 +121,7 @@ const TONE_KEYWORDS: { tone: LibraryTone; labels: string }[] = [
 
 const listeners = new Set<(state: LibraryCatalogState) => void>();
 const metaMemory = new Map<number, SpriteMeta | null>();
+const metaInflight = new Map<number, Promise<SpriteMeta | null>>();
 
 let catalogCache: LibraryCatalogState | null = null;
 let inflight: Promise<LibraryCatalogState> | null = null;
@@ -650,6 +651,14 @@ export async function loadSpriteMeta(imageId: number): Promise<SpriteMeta | null
   if (cached !== undefined) {
     return cached;
   }
+  const pending = metaInflight.get(imageId);
+  if (pending) return pending;
+  const request = requestSpriteMeta(imageId).finally(() => { metaInflight.delete(imageId); });
+  metaInflight.set(imageId, request);
+  return request;
+}
+
+async function requestSpriteMeta(imageId: number): Promise<SpriteMeta | null> {
   const response = await fetch(`${API_BASE}/meta/${imageId}`, { headers: { Accept: "application/json" } });
   if (response.status === 404) {
     writeMetaCache(imageId, null);

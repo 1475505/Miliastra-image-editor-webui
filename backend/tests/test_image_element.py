@@ -47,6 +47,7 @@ def image_element(**overrides) -> dict:
         "isBackground": False,
         "imageAssetId": 106001,
         "imageTint": False,
+        "imageType": "basic",
     }
     element.update(overrides)
     return element

@@ -71,7 +71,7 @@ game = {
         assert(c.alive); rawset(c, "alive", false); destroyed = destroyed + 1
     end
 }
-Enum = {ImageSource={StaticReference="static", Prefab="prefab"}, ImageType={Stretch="stretch"},
+Enum = {ImageSource={StaticReference="static", Prefab="prefab"}, ImageType={Basic="basic", Stretch="stretch"},
     TextHorizontalAlignment={Left="left", Middle="center", Right="right"},
     TextVerticalAlignment={Top="top", Middle="middle", Bottom="bottom"}}
 Color = {FromRGBA=function(...) return {...} end}
@@ -99,6 +99,7 @@ for (const [i, element] of elements.entries()) {
   if (element.type !== 'textbox') {
     run(`assert(${c}.id == 1234 and ${c}.asset == ${element.prefabId ?? element.imageAssetId ?? assets[element.type]})`);
     run(`assert(${c}.source == ${quote(element.type === 'prefab' ? 'prefab' : 'static')})`);
+    if (element.type === 'image') run(`assert(${c}.imageType == ${quote(element.imageType ?? 'basic')})`);
     continue;
   }
   const box = element.textBox;

@@ -3,6 +3,7 @@ import { registerEditorTools, type EditorBridge, type ElementPatch, type Element
 import { useI18n } from "./i18n";
 import { PrefabLibraryPanel } from "./PrefabLibraryPanel";
 import { PrefabSprite } from "./PrefabSprite";
+import { normalizeImageElement, resolveImageType, sliceRegions, supportsImageStretch, type ImageType } from "./imageStretch";
 import { defaultPrefabVariable, getPrefabInfo, PrefabLookupError, validPrefabVariable, type PrefabInfo } from "./prefabLibrary";
 import { recordAddedPrefabs } from "./prefabHistory";
 import {
@@ -163,6 +164,7 @@ export type SceneElement = {
   imageAssetId?: number;
   /** 单色素材可染色，彩色素材忽略 color */
   imageTint?: boolean;
+  imageType?: ImageType;
   /** Catalog Prefab ID used for preview and the script-local Lua ID configuration. */
   prefabId?: number;
   prefabVariable?: string;
@@ -435,6 +437,7 @@ function App() {
     status: "loading" | "ready" | "missing" | "error";
     meta?: SpriteMeta | null;
   } | null>(null);
+  const [, refreshImageMeta] = useState(0);
   const [rightTab, setRightTab] = useState<RightTab>("props");
   const [sourceType, setSourceType] = useState<SourceType>("css");
   const [sourceContent, setSourceContent] = useState("");
@@ -594,6 +597,7 @@ function App() {
       height: size.height,
       imageAssetId: assetId,
       imageTint: true,
+      imageType: resolveImageType(meta !== undefined ? meta : readMetaCache(assetId)),
       // 单色/彩色素材统一默认染白（导出中性色）；查看背景偏浅时白蒙版对比会变弱，需要时自行改色或换深色查看背景
       color: "#ffffff",
       opacity: 1
@@ -755,7 +759,7 @@ function App() {
 
   function replaceScene(nextSceneOrUpdater: SceneDocument | ((current: SceneDocument) => SceneDocument)) {
     const current = sceneRef.current;
-    const next = typeof nextSceneOrUpdater === "function" ? nextSceneOrUpdater(current) : nextSceneOrUpdater;
+    const next = normalizeCachedImageTypes(typeof nextSceneOrUpdater === "function" ? nextSceneOrUpdater(current) : nextSceneOrUpdater);
     if (sameValue(current, next)) return;
     sceneRef.current = next;
     setScene(next);
@@ -782,7 +786,7 @@ function App() {
   function commitScene(nextSceneOrUpdater: SceneDocument | ((current: SceneDocument) => SceneDocument)) {
     const current = sceneRef.current;
     const rawNext = typeof nextSceneOrUpdater === "function" ? nextSceneOrUpdater(current) : nextSceneOrUpdater;
-    const next = rawNext.library === current.library ? rawNext : ensureSceneLibrary(rawNext);
+    const next = normalizeCachedImageTypes(rawNext.library === current.library ? rawNext : ensureSceneLibrary(rawNext));
     if (sameValue(current, next)) return;
     const previous = new Map(current.elements.map((element) => [element.id, element]));
     const addedPrefabs = next.elements.filter((element) => element.type === "prefab" && element.prefabId &&
@@ -793,6 +797,30 @@ function App() {
     setScene(next);
     void recordAddedPrefabs(addedPrefabs.map((element) => element.prefabId!));
   }
+
+  const sceneImageAssetKey = [...new Set([...scene.elements, ...scene.library.savedItems.map((item) => item.element)]
+    .filter((element) => element.type === "image" && element.imageAssetId)
+    .map((element) => element.imageAssetId!))].sort((a, b) => a - b).join(",");
+  useEffect(() => {
+    if (!sceneImageAssetKey) return;
+    let active = true;
+    const ids = sceneImageAssetKey.split(",").map(Number);
+    let index = 0;
+    const load = async () => {
+      while (active && index < ids.length) {
+        const id = ids[index++];
+        try { await loadSpriteMeta(id); } catch { /* Leave unresolved metadata retryable. */ }
+      }
+    };
+    void Promise.all(Array.from({ length: Math.min(4, ids.length) }, load)).then(() => {
+      if (!active) return;
+      // Metadata resolution belongs to the original edit, so undo/redo never adds a separate type change.
+      historyRef.current = historyRef.current.map(normalizeCachedImageTypes);
+      replaceScene(normalizeCachedImageTypes);
+      refreshImageMeta((revision) => revision + 1);
+    });
+    return () => { active = false; };
+  }, [sceneImageAssetKey]);
 
   function undoScene() {
     if (historyIndexRef.current <= 0) {
@@ -1415,6 +1443,7 @@ function App() {
     if (type === "image") {
       next.imageAssetId = override?.imageAssetId;
       next.imageTint = override?.imageTint ?? false;
+      next.imageType = resolveImageType(next.imageAssetId ? readMetaCache(next.imageAssetId) : null, override?.imageType);
       // 图元默认中性白：白色蒙版在默认深灰查看背景上直接可见，导出也是白色中性色
       next.color = override?.color ?? "#ffffff";
       next.opacity = override?.opacity ?? 1;
@@ -1473,7 +1502,7 @@ function App() {
       if (!target) return { ok: false, error: `Element not found: ${id}` };
       if (patches.has(id)) return { ok: false, error: `Duplicate update id: ${id}` };
       if (patch.textBox && target.type !== "textbox") return { ok: false, error: `Element is not a textbox: ${id}` };
-      if ((patch.imageAssetId !== undefined || patch.imageTint !== undefined) && target.type !== "image") {
+      if ((patch.imageAssetId !== undefined || patch.imageTint !== undefined || patch.imageType !== undefined) && target.type !== "image") {
         return { ok: false, error: `Element is not an image: ${id}` };
       }
       if ((patch.prefabId !== undefined || patch.prefabVariable !== undefined) && target.type !== "prefab") {
@@ -1487,6 +1516,10 @@ function App() {
       const patch = patches.get(element.id);
       if (!patch) return element;
       const merged = { ...element, ...patch } as SceneElement;
+      if (merged.type === "image") {
+        const requested = patch.imageType ?? (merged.imageAssetId === element.imageAssetId ? element.imageType : undefined);
+        merged.imageType = resolveImageType(merged.imageAssetId ? readMetaCache(merged.imageAssetId) : null, requested);
+      }
       if (merged.type === "textbox") {
         const box = { ...textBoxOf(element), ...patch.textBox };
         if (patch.color !== undefined && patch.textBox?.textColor === undefined) box.textColor = patch.color;
@@ -2426,7 +2459,8 @@ function App() {
                     {element.type === "five_point_star" ? <div className="star star-five" style={{ background: element.color }} /> : null}
                     {element.type === "textbox" ? <TextBoxPreview element={element} /> : null}
                     {element.type === "image" && element.imageAssetId ? (
-                      <AssetSprite assetId={element.imageAssetId} tint={element.imageTint} color={element.color} />
+                      <AssetSprite assetId={element.imageAssetId} tint={element.imageTint} color={element.color}
+                        imageType={element.imageType} width={element.width} height={element.height} />
                     ) : null}
                     {element.type === "prefab" && element.prefabId ? <PrefabSprite prefabId={element.prefabId} color={element.color} /> : null}
                     {selectedId === element.id ? (
@@ -2681,8 +2715,8 @@ function App() {
                   <div className="grid-2">
                     <NumField label="X" value={Math.round(selectedElement.x)} onChange={(value) => updateSelected({ x: value })} />
                     <NumField label="Y" value={Math.round(selectedElement.y)} onChange={(value) => updateSelected({ y: value })} />
-                    <NumField label={t("props.width")} value={Math.round(selectedElement.width)} min={1} onChange={(value) => updateSelected({ width: Math.max(1, value) })} />
-                    <NumField label={t("props.height")} value={Math.round(selectedElement.height)} min={1} onChange={(value) => updateSelected({ height: Math.max(1, value) })} />
+                    <NumField label={t("props.width")} value={selectedElement.type === "image" ? Math.round(selectedElement.width * 100) / 100 : Math.round(selectedElement.width)} min={1} step={selectedElement.type === "image" ? 0.01 : undefined} onChange={(value) => updateSelected({ width: Math.max(1, value) })} />
+                    <NumField label={t("props.height")} value={selectedElement.type === "image" ? Math.round(selectedElement.height * 100) / 100 : Math.round(selectedElement.height)} min={1} step={selectedElement.type === "image" ? 0.01 : undefined} onChange={(value) => updateSelected({ height: Math.max(1, value) })} />
                   </div>
                   <div className="field">
                     <span>{t("props.rotation")}</span>
@@ -2709,6 +2743,7 @@ function App() {
                     <>
                   <div className="section-head"><span>{t("props.appearance")}</span></div>
                   {selectedElement.type === "image" ? (
+                    <>
                     <div className="field">
                       <span>{t("props.assetId")}</span>
                       <div className="asset-id-row">
@@ -2716,6 +2751,17 @@ function App() {
                         <em>{t("props.assetTintable")}</em>
                       </div>
                     </div>
+                    <label className="field" htmlFor="image-type">
+                      <span>{t("props.imageType")}</span>
+                      <select id="image-type" value={selectedElement.imageType ?? "basic"}
+                        disabled={!supportsImageStretch(selectedElement.imageAssetId ? readMetaCache(selectedElement.imageAssetId) : null)}
+                        onChange={(event) => updateSelected({ imageType: event.target.value as ImageType })}>
+                        <option value="basic">{t("props.imageBasic")}</option>
+                        {supportsImageStretch(selectedElement.imageAssetId ? readMetaCache(selectedElement.imageAssetId) : null) ?
+                          <option value="stretch">{t("props.imageStretch")}</option> : null}
+                      </select>
+                    </label>
+                    </>
                   ) : null}
                   {selectedElement.type === "prefab" ? (
                     <>
@@ -3701,8 +3747,38 @@ function ShapeGlyph({ type, color, assetId, tint, prefabId }: { type: ShapeType;
 }
 
 /** 素材染色按 RGB 通道乘算，保留原贴图细节和透明度。 */
-function AssetSprite({ assetId, tint, color }: { assetId: number; tint?: boolean; color: string }) {
+function AssetSprite({ assetId, tint, color, imageType = "basic", width, height }: {
+  assetId: number; tint?: boolean; color: string; imageType?: ImageType; width?: number; height?: number;
+}) {
   const filterId = `asset-tint-${useId().replace(/:/g, "")}`;
+  const [metadata, setMetadata] = useState<SpriteMeta | null>(null);
+  useEffect(() => {
+    let active = true;
+    if (imageType === "stretch") {
+      void loadSpriteMeta(assetId).then((meta) => { if (active) setMetadata(meta); })
+        .catch(() => { if (active) setMetadata(null); });
+    }
+    return () => { active = false; };
+  }, [assetId, imageType]);
+  if (imageType === "stretch" && metadata?.id === assetId && metadata.stretchable && width && height) {
+    const channels = [1, 3, 5].map((offset) => parseInt(color.slice(offset, offset + 2), 16) / 255);
+    // SVG requires a positive viewBox span; a narrow band repeats the zero-span UV seam.
+    const seamSpan = 1 / 256;
+    return <svg className="asset-sprite" width="100%" height="100%" viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="none" data-image-type="stretch" aria-hidden="true">
+      <defs><filter id={filterId} x="0" y="0" width="100%" height="100%" colorInterpolationFilters="sRGB">
+        <feComponentTransfer><feFuncR type="linear" slope={channels[0]} /><feFuncG type="linear" slope={channels[1]} /><feFuncB type="linear" slope={channels[2]} /></feComponentTransfer>
+      </filter></defs>
+      <g filter={tint && color.toLowerCase() !== "#ffffff" ? `url(#${filterId})` : undefined}>
+        {sliceRegions(metadata, width, height).map(({ source: [sx, sy, sw, sh], target: [x, y, w, h] }, index) => (
+          <svg key={index} x={x} y={y} width={w} height={h} overflow="hidden" preserveAspectRatio="none"
+            viewBox={`${sw ? sx : sx - seamSpan / 2} ${sh ? sy : sy - seamSpan / 2} ${sw || seamSpan} ${sh || seamSpan}`}>
+            <image href={imageUrl(assetId)} width={metadata.width} height={metadata.height} />
+          </svg>
+        ))}
+      </g>
+    </svg>;
+  }
   if (tint && color.toLowerCase() !== "#ffffff") {
     const channels = [1, 3, 5].map((offset) => parseInt(color.slice(offset, offset + 2), 16) / 255);
     return (
@@ -3756,6 +3832,20 @@ function extractSvgExportWarning(text: string) {
 
 function normalizeZIndex(elements: SceneElement[]) {
   return elements.map((element, index) => element.zIndex === index ? element : { ...element, zIndex: index });
+}
+
+function normalizeCachedImageTypes(scene: SceneDocument): SceneDocument {
+  const normalize = (element: SceneElement) => normalizeImageElement(element,
+    element.imageAssetId ? readMetaCache(element.imageAssetId) : null);
+  const elements = scene.elements.map(normalize);
+  const savedItems = scene.library.savedItems.map((item) => {
+    const element = normalize(item.element);
+    return element === item.element ? item : { ...item, element };
+  });
+  const elementsChanged = elements.some((element, index) => element !== scene.elements[index]);
+  const libraryChanged = savedItems.some((item, index) => item !== scene.library.savedItems[index]);
+  return elementsChanged || libraryChanged ? { ...scene, elements: elementsChanged ? elements : scene.elements,
+    library: libraryChanged ? { ...scene.library, savedItems } : scene.library } : scene;
 }
 
 function clamp(value: number, min: number, max: number) {

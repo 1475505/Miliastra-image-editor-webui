@@ -2,9 +2,10 @@
 // Read-only tools are annotated; imported content is untrusted data.
 
 import { defaultPrefabVariable, getPrefabInfo, validPrefabVariable } from "./prefabLibrary";
+import { resolveImageType } from "./imageStretch";
 import type { CanvasMask, SceneDocument, SceneElement, ShapeType, SourceType, TextBoxSettings } from "./App";
 import {
-  listLibraryAssetCategories, loadLibraryCatalog, queryLibraryAssetIds, scopeLibraryAssetIds, searchLibraryAssets,
+  listLibraryAssetCategories, loadLibraryCatalog, loadSpriteMeta, queryLibraryAssetIds, scopeLibraryAssetIds, searchLibraryAssets,
   type AssetSearchOptions, type LibraryCatalogState
 } from "./imageLibrary";
 
@@ -68,6 +69,7 @@ export type AddElementInput = {
   imageAssetId?: number;
   /** 素材 RGB 乘色开关 */
   imageTint?: boolean;
+  imageType?: "basic" | "stretch";
   prefabId?: number;
   prefabVariable?: string;
 };
@@ -164,6 +166,7 @@ const elementProperties = {
   fontSize: numberProp("Textbox font size (default 20)", 1, 256),
   imageAssetId: { type: "integer", minimum: 100000, maximum: 999999, description: "Required for image: six-digit library sprite id" },
   imageTint: { type: "boolean", description: "Multiply sprite RGB by color, default false" },
+  imageType: { type: "string", enum: ["basic", "stretch"], description: "Image display mode: sprites with nonzero borders default to stretch and also allow basic. Missing/zero borders only allow basic; unsupported stretch requests become basic." },
   prefabId: { type: "integer", minimum: 1, maximum: 4294967295, description: "Required for prefab: exact catalog entity ID; Lua drawing only" },
   prefabVariable: { type: "string", minLength: 1, maxLength: 128, description: "Name in the script-local PREFAB_IDS configuration table, default prefab_<ID>; no client script parameter is required" }
 };
@@ -275,6 +278,10 @@ function parseElementFields(args: Record<string, unknown>): ElementPatch {
     patch[key] = args[key];
   }
   if (patch.color !== undefined && !/^#[0-9a-f]{6}$/i.test(patch.color)) throw new Error("color must be #RRGGBB");
+  if (args.imageType !== undefined) {
+    if (args.imageType !== "basic" && args.imageType !== "stretch") throw new Error("imageType must be basic or stretch");
+    patch.imageType = args.imageType;
+  }
   if (patch.prefabVariable !== undefined && !validPrefabVariable(patch.prefabVariable)) throw new Error("prefabVariable must be a non-empty configuration name without control characters (max 128)");
   for (const key of ["imageTint", "isBackground"] as const) {
     if (args[key] === undefined) continue;
@@ -299,7 +306,7 @@ function parseAddInput(value: unknown): AddElementInput {
   if (!SHAPE_TYPES.includes(type)) throw new Error(`type must be one of ${SHAPE_TYPES.join(" / ")}`);
   const fields = parseElementFields(args);
   if (type === "image" && fields.imageAssetId === undefined) throw new Error('imageAssetId is required for type "image"');
-  if (type !== "image" && (fields.imageAssetId !== undefined || fields.imageTint !== undefined)) throw new Error("imageAssetId/imageTint require type image");
+  if (type !== "image" && (fields.imageAssetId !== undefined || fields.imageTint !== undefined || fields.imageType !== undefined)) throw new Error("imageAssetId/imageTint/imageType require type image");
   if (type === "prefab" && fields.prefabId === undefined) throw new Error('prefabId is required for type "prefab"');
   if (type !== "prefab" && (fields.prefabId !== undefined || fields.prefabVariable !== undefined)) throw new Error("prefabId/prefabVariable require type prefab");
   if (type !== "textbox" && fields.textBox) throw new Error("text/fontSize require type textbox");
@@ -315,7 +322,11 @@ function parseUpdate(value: unknown): ElementUpdate {
   return { id: args.id, patch };
 }
 
-async function preparePrefabInput(input: AddElementInput): Promise<AddElementInput> {
+async function prepareElementInput(input: AddElementInput): Promise<AddElementInput> {
+  if (input.type === "image") {
+    const meta = await loadSpriteMeta(input.imageAssetId!);
+    return { ...input, imageType: resolveImageType(meta, input.imageType) };
+  }
   if (input.type !== "prefab") return input;
   const info = await getPrefabInfo(input.prefabId!);
   if (!info.imageUrl) throw new Error(`Prefab ${info.id} has no thumbnail`);
@@ -323,7 +334,16 @@ async function preparePrefabInput(input: AddElementInput): Promise<AddElementInp
     ...input, prefabVariable: input.prefabVariable?.trim() ?? defaultPrefabVariable(info.id) };
 }
 
-async function preparePrefabUpdate(update: ElementUpdate): Promise<ElementUpdate> {
+async function prepareElementUpdate(update: ElementUpdate, bridge: EditorBridge): Promise<ElementUpdate> {
+  if (update.patch.imageAssetId !== undefined || update.patch.imageType !== undefined) {
+    const target = bridge.getScene().elements.find((element) => element.id === update.id);
+    if (target?.type === "image") {
+      const assetId = update.patch.imageAssetId ?? target.imageAssetId;
+      const meta = assetId ? await loadSpriteMeta(assetId) : null;
+      const requested = update.patch.imageType ?? (assetId === target.imageAssetId ? target.imageType : undefined);
+      return { ...update, patch: { ...update.patch, imageType: resolveImageType(meta, requested) } };
+    }
+  }
   if (update.patch.prefabId !== undefined) {
     const info = await getPrefabInfo(update.patch.prefabId);
     if (!info.imageUrl) throw new Error(`Prefab ${info.id} has no thumbnail`);
@@ -621,7 +641,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       }
     },
     async (bridge, args) => {
-      const result = bridge.addElements([await preparePrefabInput(parseAddInput(args))], false, args.select === true);
+      const result = bridge.addElements([await prepareElementInput(parseAddInput(args))], false, args.select === true);
       return result.ok ? { ok: true, element: result.elements?.[0] } : result;
     }
   );
@@ -642,7 +662,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
         } }
       },
       async (bridge, args) => {
-        const inputs = await Promise.all(arrayArg(args.elements, "elements").map(parseAddInput).map(preparePrefabInput));
+        const inputs = await Promise.all(arrayArg(args.elements, "elements").map(parseAddInput).map(prepareElementInput));
         const result = bridge.addElements(inputs, replace, args.select === true);
         if (!result.ok) return result;
         return { ok: true, count: result.count, ids: result.elements?.map((element) => element.id),
@@ -666,7 +686,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
         }
       }
     },
-    async (bridge, args) => bridge.updateElements([await preparePrefabUpdate(parseUpdate(args))])
+    async (bridge, args) => bridge.updateElements([await prepareElementUpdate(parseUpdate(args), bridge)])
   );
 
   register(
@@ -680,7 +700,8 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
         } } }
       } }
     },
-    async (bridge, args) => bridge.updateElements(await Promise.all(arrayArg(args.updates, "updates").map(parseUpdate).map(preparePrefabUpdate)))
+    async (bridge, args) => bridge.updateElements(await Promise.all(arrayArg(args.updates, "updates").map(parseUpdate)
+      .map((update) => prepareElementUpdate(update, bridge))))
   );
 
   register(

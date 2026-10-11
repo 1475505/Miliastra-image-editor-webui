@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
 import io
 import json
@@ -22,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StrictBool, StrictInt
 from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFont, PngImagePlugin
 
-from . import image_library, lua_scene, prefab_library
+from . import image_library, image_stretch, lua_scene, prefab_library
 from .image_library import fetch_sprite_bytes, sprite_url
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -231,6 +232,7 @@ class SceneElementModel(BaseModel):
     # type == "image" 时生效：素材库 sprite id，以及是否用 color 参与染色（所有素材均支持）
     imageAssetId: int | None = None
     imageTint: bool = False
+    imageType: Literal["basic", "stretch"] = "basic"
     # 元件图片仅由 Lua 绘制；prefabId 用于预览及脚本内 ID 配置，图片来源为 ImageSource.Prefab。
     prefabId: StrictInt | None = Field(default=None, gt=0, le=0xFFFFFFFF)
     prefabVariable: str | None = Field(default=None, max_length=128, strict=True)
@@ -469,25 +471,26 @@ def import_scene(request: ImportRequest) -> ImportResponse:
     if request.sourceName:
         scene.meta.sourceName = request.sourceName
 
+    scene, _ = resolve_scene_image_types(scene)
     return ImportResponse(scene=scene, warnings=scene.meta.warnings)
 
 
 @app.post("/api/export/json")
 def export_json(request: ExportRequest) -> Response:
-    scene = normalize_scene(request.scene)
+    scene, _ = resolve_scene_image_types(normalize_scene(request.scene))
     content = json.dumps(scene.model_dump(), ensure_ascii=False, indent=2)
     return download_text(content, "scene.json", "application/json; charset=utf-8")
 
 
 @app.post("/api/export/css")
 def export_css(request: ExportRequest) -> Response:
-    scene = normalize_scene(request.scene)
-    return download_text(scene_to_css(scene), "scene.css", "text/css; charset=utf-8")
+    scene, metas = resolve_scene_image_types(normalize_scene(request.scene))
+    return download_text(scene_to_css(scene, metas), "scene.css", "text/css; charset=utf-8")
 
 
 @app.post("/api/export/lua")
 def export_lua(request: ExportRequest) -> Response:
-    scene = normalize_scene(request.scene)
+    scene, _ = resolve_scene_image_types(normalize_scene(request.scene))
     image_scene = scene.model_copy(update={
         "elements": [element for element in scene.elements if element_asset_id(element) is not None]
     })
@@ -507,21 +510,21 @@ def export_lua(request: ExportRequest) -> Response:
 
 @app.post("/api/export/svg")
 def export_svg(request: ExportRequest) -> Response:
-    scene = normalize_scene(request.scene)
-    return download_text(scene_to_svg(scene), "scene.svg", "image/svg+xml; charset=utf-8")
+    scene, metas = resolve_scene_image_types(normalize_scene(request.scene))
+    return download_text(scene_to_svg(scene, metas), "scene.svg", "image/svg+xml; charset=utf-8")
 
 
 @app.post("/api/export/png")
 def export_png(request: ExportRequest) -> Response:
-    scene = normalize_scene(request.scene)
-    png_bytes = scene_to_png_bytes(scene)
+    scene, metas = resolve_scene_image_types(normalize_scene(request.scene))
+    png_bytes = scene_to_png_bytes(scene, metas)
     headers = {"Content-Disposition": 'attachment; filename="scene.png"'}
     return Response(content=png_bytes, media_type="image/png", headers=headers)
 
 
 @app.post("/api/export/gia")
 def export_gia(request: ExportRequest) -> Response:
-    scene = normalize_scene(request.scene)
+    scene, _ = resolve_scene_image_types(normalize_scene(request.scene))
     gia_json = scene_to_gia_document(scene, request.giaGroupName)
     gia_bytes = convert_scene_to_gia_bytes(gia_json)
     headers = {"Content-Disposition": 'attachment; filename="scene.gia"'}
@@ -599,9 +602,20 @@ def ensure_textbox(element: SceneElementModel) -> TextBoxModel | None:
 
 
 def copy_element(element: SceneElementModel, **overrides) -> SceneElementModel:
-    payload = element.model_dump()
+    payload = element.model_dump(exclude_unset=True)
     payload.update(overrides)
     return SceneElementModel.model_validate(payload)
+
+
+def image_type_fields(element: SceneElementModel, shape_type: str) -> dict:
+    """Keep omitted imageType distinct from an explicitly selected Basic until metadata is loaded."""
+    if shape_type != "image":
+        return {"imageType": "basic"}
+    return {"imageType": element.imageType} if "imageType" in element.model_fields_set else {}
+
+
+def parse_image_type_fields(value: str | None) -> dict:
+    return {} if value is None else {"imageType": "stretch" if value == "stretch" else "basic"}
 
 
 def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
@@ -649,6 +663,7 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
                 textBox=element.textBox,
                 imageAssetId=image_asset_id,
                 imageTint=image_tint,
+                **image_type_fields(element, shape_type),
                 prefabId=prefab_id,
                 prefabVariable=prefab_variable,
             )
@@ -673,6 +688,7 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
                 textBox=text_box,
                 imageAssetId=image_asset_id,
                 imageTint=image_tint,
+                **image_type_fields(element, shape_type),
                 prefabId=prefab_id,
                 prefabVariable=prefab_variable,
             )
@@ -856,6 +872,7 @@ def normalize_library(library: SceneLibraryModel) -> SceneLibraryModel:
                     textBox=ensure_textbox(item.element) if shape_type == "textbox" else None,
                     imageAssetId=saved_asset_id,
                     imageTint=bool(item.element.imageTint) if shape_type == "image" else False,
+                    **image_type_fields(item.element, shape_type),
                     prefabId=prefab_id,
                     prefabVariable=prefab_variable,
                 ),
@@ -1003,6 +1020,8 @@ def convert_basic_json_element(item: dict, index: int) -> SceneElementModel:
         textBox=text_box,
         imageAssetId=image_asset_id,
         imageTint=image_tint,
+        **({"imageType": item.get("imageType", item.get("image_type"))}
+           if shape_type == "image" and ("imageType" in item or "image_type" in item) else {}),
         prefabId=item.get("prefabId") if shape_type == "prefab" else None,
         prefabVariable=item.get("prefabVariable") if shape_type == "prefab" else None,
     )
@@ -1092,7 +1111,7 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
             shape_x = parse_px(find_css_value(body, "left"), width / 2)
             shape_y = parse_px(find_css_value(body, "top"), height / 2)
             image_tint = parse_css_bool(find_css_value(body, "-miliastra-image-tint"), False)
-            color = normalize_color(find_css_value(body, "background-color") or "#ffffff")
+            color = normalize_color(find_css_value(body, "-miliastra-image-color") or find_css_value(body, "background-color") or "#ffffff")
             elements.append(
                 SceneElementModel(
                     id=f"css-{index}",
@@ -1109,6 +1128,7 @@ def parse_css_scene(content: str) -> SceneDocumentModel:
                     isBackground=False,
                     imageAssetId=image_asset_id,
                     imageTint=image_tint,
+                    **parse_image_type_fields(find_css_value(body, "-miliastra-image-type")),
                 )
             )
             continue
@@ -1354,12 +1374,13 @@ def parse_svg_scene(content: str) -> SceneDocumentModel:
                     width=w,
                     height=h,
                     rotation=rotation,
-                    color="#ffffff",
+                    color=normalize_color(node.attrib.get("data-miliastra-color", "#ffffff")),
                     opacity=opacity,
                     zIndex=index,
                     isBackground=False,
                     imageAssetId=asset_id,
-                    imageTint=False,
+                    imageTint=node.attrib.get("data-miliastra-image-tint") == "true",
+                    **parse_image_type_fields(node.attrib.get("data-miliastra-image-type")),
                 )
             )
         elif tag == "circle":
@@ -1470,8 +1491,9 @@ def parse_svg_scene(content: str) -> SceneDocumentModel:
     return normalize_scene(scene)
 
 
-def scene_to_css(scene: SceneDocumentModel) -> str:
+def scene_to_css(scene: SceneDocumentModel, image_metas: dict[int, dict] | None = None) -> str:
     require_supported_draw_format(scene, "CSS")
+    stretch_urls = stretched_data_urls(scene, image_metas)
     lines = [
         "/* Miliastra CSS Export */",
         ".shaper-container {",
@@ -1506,8 +1528,10 @@ def scene_to_css(scene: SceneDocumentModel) -> str:
                     "  -miliastra-type: image;",
                     f"  -miliastra-image: {element.imageAssetId};",
                     f"  -miliastra-image-tint: {'true' if element.imageTint else 'false'};",
-                    f"  background-color: {tint_color};",
-                    f"  background-image: url({sprite_url(element.imageAssetId)});",
+                    f"  -miliastra-image-type: {element.imageType};",
+                    f"  -miliastra-image-color: {element.color};",
+                    f"  background-color: {'transparent' if element.imageType == 'stretch' else tint_color};",
+                    f"  background-image: url({stretch_urls.get(element.id, sprite_url(element.imageAssetId))});",
                     "  background-size: 100% 100%;",
                     "  background-repeat: no-repeat;",
                     "  background-position: center;",
@@ -1565,11 +1589,13 @@ def scene_to_css(scene: SceneDocumentModel) -> str:
     return "\n".join(lines)
 
 
-def scene_to_svg(scene: SceneDocumentModel) -> str:
+def scene_to_svg(scene: SceneDocumentModel, image_metas: dict[int, dict] | None = None) -> str:
     require_supported_draw_format(scene, "SVG")
+    stretch_urls = stretched_data_urls(scene, image_metas)
     sorted_elements = sorted(scene.elements, key=lambda item: item.zIndex)
     ring_count = sum(1 for element in sorted_elements if element.type == "ring")
-    tinted_count = sum(1 for element in sorted_elements if element.type == "image" and element.imageTint)
+    tinted_count = sum(1 for element in sorted_elements
+                       if element.type == "image" and element.imageTint and element.imageType == "basic")
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{scene.canvas.width:.0f}" height="{scene.canvas.height:.0f}" viewBox="0 0 {scene.canvas.width:.0f} {scene.canvas.height:.0f}">',
     ]
@@ -1618,7 +1644,9 @@ def scene_to_svg(scene: SceneDocumentModel) -> str:
         if element.type == "image" and element.imageAssetId:
             asset_id = element.imageAssetId
             parts.append(
-                f'<image data-miliastra-image="{asset_id}" href="{sprite_url(asset_id)}"'
+                f'<image data-miliastra-image="{asset_id}" data-miliastra-image-type="{element.imageType}"'
+                f' data-miliastra-image-tint="{str(element.imageTint).lower()}" data-miliastra-color="{element.color}"'
+                f' href="{stretch_urls.get(element.id, sprite_url(asset_id))}"'
                 f' x="{element.x - element.width / 2:.2f}" y="{element.y - element.height / 2:.2f}"'
                 f' width="{element.width:.2f}" height="{element.height:.2f}"'
                 f' preserveAspectRatio="none" opacity="{opacity}" transform="{transform}" />'
@@ -1685,29 +1713,92 @@ def load_sprite_images(elements: list[SceneElementModel]) -> dict[int, Image.Ima
     return sprites
 
 
-def paste_sprite(image: Image.Image, element: SceneElementModel, sprite: Image.Image) -> None:
-    """把素材贴图按图元宽高直接拉伸，再应用旋转。
+def load_image_metas(ids: list[int]) -> dict[int, dict]:
+    """Deduplicate within this request, without a server cache."""
+    ids = sorted(set(ids))
+    def fetch(asset_id):
+        try:
+            return json.loads(image_library.get_image_meta(asset_id).payload or b"{}")
+        except image_library.LibraryNotFoundError:
+            return None
+        except (image_library.LibraryUpstreamError, urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=502, detail=f"Unable to load stretch metadata for image {asset_id}") from exc
+    if not ids:
+        return {}
+    with ThreadPoolExecutor(max_workers=SPRITE_PREFETCH_WORKERS) as pool:
+        return {asset_id: meta for asset_id, meta in zip(ids, pool.map(fetch, ids)) if meta}
 
-    sprite 是本请求内共享的解码缓存，先拷贝再改，避免染色/透明度污染原贴图。
-    """
-    sprite = sprite.copy()
+
+def load_stretch_metas(elements: list[SceneElementModel]) -> dict[int, dict]:
+    return load_image_metas([item.imageAssetId for item in elements
+                             if item.type == "image" and item.imageAssetId and item.imageType == "stretch"])
+
+
+def resolve_scene_image_types(scene: SceneDocumentModel) -> tuple[SceneDocumentModel, dict[int, dict]]:
+    """Nonzero borders permit and default to Stretch; all other sprites only permit Basic."""
+    images = scene.elements + [item.element for item in scene.library.savedItems]
+    metas = load_image_metas([item.imageAssetId for item in images if item.type == "image" and item.imageAssetId
+                              and (item.imageType == "stretch" or "imageType" not in item.model_fields_set)])
+
+    def resolve(element: SceneElementModel) -> SceneElementModel:
+        if element.type != "image":
+            return element
+        if element.imageType == "basic" and "imageType" in element.model_fields_set:
+            return element
+        meta = metas.get(element.imageAssetId)
+        border = meta.get("border", {}) if meta else {}
+        stretchable = any(value > 0 for value in border.values())
+        return element.model_copy(update={"imageType": "stretch" if stretchable else "basic"})
+
+    return scene.model_copy(update={
+        "elements": [resolve(element) for element in scene.elements],
+        "library": scene.library.model_copy(update={"savedItems": [item.model_copy(update={"element": resolve(item.element)})
+                                                                  for item in scene.library.savedItems]}),
+    }), metas
+
+
+def render_sprite(element: SceneElementModel, sprite: Image.Image, meta: dict | None = None) -> Image.Image:
+    """Basic scales the whole texture; Stretch samples its three/nine-slice grid."""
+    target = (max(1, int(round(element.width))), max(1, int(round(element.height))))
+    if element.imageType == "stretch" and meta and meta.get("stretchable"):
+        sprite = image_stretch.resize_sliced(sprite, target, meta)
+    else:
+        sprite = sprite.resize(target, Image.Resampling.LANCZOS) if target != sprite.size else sprite.copy()
     opacity = clamp01(element.opacity)
     if element.imageTint:
         rgba = color_with_alpha(element.color, 1.0)
         layer = ImageChops.multiply(sprite.convert("RGB"), Image.new("RGB", sprite.size, rgba[:3])).convert("RGBA")
-        alpha = sprite.getchannel("A")
-        if opacity < 1:
-            alpha = alpha.point(lambda value: int(value * opacity))
-        layer.putalpha(alpha)
+        layer.putalpha(sprite.getchannel("A"))
         sprite = layer
-    elif opacity < 1:
+    if opacity < 1:
         sprite.putalpha(sprite.getchannel("A").point(lambda value: int(value * opacity)))
+    return sprite
 
-    box_width = max(1, int(round(element.width)))
-    box_height = max(1, int(round(element.height)))
-    target = (box_width, box_height)
-    if target != sprite.size:
-        sprite = sprite.resize(target, Image.LANCZOS)
+
+def stretched_data_urls(scene: SceneDocumentModel, image_metas: dict[int, dict] | None = None) -> dict[str, str]:
+    """Embed rendered slices in CSS/SVG so those exports work without external SVG image loads."""
+    elements = [item for item in scene.elements if item.type == "image" and item.imageType == "stretch"]
+    sprites = load_sprite_images(elements)
+    metas = load_stretch_metas(elements) if image_metas is None else image_metas
+    urls = {}
+    for item in elements:
+        sprite = sprites.get(item.imageAssetId)
+        if sprite is None:
+            raise HTTPException(status_code=502, detail=f"Unable to load image {item.imageAssetId} for stretch export")
+        # Element opacity belongs to the outer CSS/SVG node, not the embedded bitmap.
+        layer = render_sprite(item.model_copy(update={"opacity": 1.0}), sprite, metas.get(item.imageAssetId))
+        buffer = io.BytesIO()
+        layer.save(buffer, format="PNG")
+        urls[item.id] = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+    return urls
+
+
+def paste_sprite(image: Image.Image, element: SceneElementModel, sprite: Image.Image, meta: dict | None = None) -> None:
+    """Render the configured image type and tint, then apply scene rotation.
+
+    sprite 是本请求内共享的解码缓存，先拷贝再改，避免染色/透明度污染原贴图。
+    """
+    sprite = render_sprite(element, sprite, meta)
     if abs(element.rotation) > 0.001:
         # 场景旋转为逆时针正方向，与 Pillow rotate() 的方向一致
         sprite = sprite.rotate(element.rotation, expand=True, resample=Image.BICUBIC)
@@ -1717,7 +1808,7 @@ def paste_sprite(image: Image.Image, element: SceneElementModel, sprite: Image.I
     image.alpha_composite(sprite, (left, top))
 
 
-def scene_to_png_bytes(scene: SceneDocumentModel) -> bytes:
+def scene_to_png_bytes(scene: SceneDocumentModel, image_metas: dict[int, dict] | None = None) -> bytes:
     require_supported_draw_format(scene, "PNG")
     # 画布背景仅是编辑器查看偏好：PNG 导出恒为透明底
     canvas_fill = (0, 0, 0, 0)
@@ -1726,6 +1817,7 @@ def scene_to_png_bytes(scene: SceneDocumentModel) -> bytes:
 
     ordered_elements = sorted(scene.elements, key=lambda item: item.zIndex)
     sprites = load_sprite_images(ordered_elements)
+    metas = load_stretch_metas(ordered_elements) if image_metas is None else image_metas
 
     for element in ordered_elements:
         rgba = color_with_alpha(element.color, element.opacity)
@@ -1734,7 +1826,7 @@ def scene_to_png_bytes(scene: SceneDocumentModel) -> bytes:
             if sprite is None:
                 skipped_assets.append(element.imageAssetId)
             else:
-                paste_sprite(image, element, sprite)
+                paste_sprite(image, element, sprite, metas.get(element.imageAssetId))
             continue
         if element.type == "textbox":
             layer = Image.new("RGBA", image.size)
@@ -1842,6 +1934,8 @@ def scene_to_gia_document(scene: SceneDocumentModel, group_name: str | None = No
             if asset_id is None:
                 continue
             payload["image_asset_ref"] = asset_id
+            if element.type == "image":
+                payload["image_type"] = 1 if element.imageType == "stretch" else 0
             # 彩色素材不能被染色，用白色作为中性色；单色素材才使用图元颜色
             tint = element.color if (element.type != "image" or element.imageTint) else "#ffffff"
             payload["packed_color"] = to_packed_argb(tint, element.opacity)

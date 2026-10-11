@@ -183,6 +183,11 @@ def read_drawing(source):
         if root[2] <= 0 or root[3] <= 0:
             raise ValueError("ROOT canvas dimensions must be positive")
         drawing = {"format": "gia", "root": root, "rows": _rows(rows, 18, "ELEMENTS")}
+        image_types = _literal(source, "IMAGE_TYPES", required=False)
+        if image_types is not None:
+            if not isinstance(image_types, list) or len(image_types) != len(rows) or any(value not in ("basic", "stretch") for value in image_types):
+                raise ValueError("IMAGE_TYPES must contain basic/stretch for every image row")
+            drawing["imageTypes"] = image_types
         bindings = _literal(source, "PREFAB_BINDINGS", required=False)
         if bindings is not None:
             if not isinstance(bindings, list):
@@ -264,7 +269,7 @@ def dumps(scene, gia_data=None, name=""):
     """Adapt the upstream emitter and preserve the editor scene in an inert comment."""
     # Validate all metadata too (json.dumps rejects non-finite numeric fields).
     json.dumps(scene, allow_nan=False)
-    if any(item.get("type") in ("prefab", "textbox") for item in scene["elements"]):
+    if any(item.get("type") in ("prefab", "textbox", "image") for item in scene["elements"]):
         script = _control_script(scene, gia_data, name)
     elif gia_data is not None:
         script = gia.build_gia_lua(gia_data, name or "千星图片编辑器")
@@ -359,7 +364,7 @@ def _control_script(scene, gia_data, name):
     # scenes must use the same parent geometry even when the crop was resized.
     root = [0, 0, width, height, .5, .5, .5, .5, .5, .5, 1, 1, 0]
     static_rows = iter(static["records"] if static else [])
-    rows, bindings, textboxes, order = [], [], [], []
+    rows, bindings, textboxes, order, image_types = [], [], [], [], []
     variables = {}
     for item in sorted(scene["elements"], key=lambda item: (0 if item["isBackground"] else 1, item["zIndex"])):
         if item["type"] == "textbox":
@@ -369,6 +374,7 @@ def _control_script(scene, gia_data, name):
         if not _is_image_element(item):
             continue
         order.append([1, len(rows) + 1])
+        image_types.append(item.get("imageType", "basic") if item["type"] == "image" else "stretch")
         if item["type"] != "prefab":
             rows.append(next(static_rows))
             continue
@@ -398,6 +404,8 @@ def _control_script(scene, gia_data, name):
     lines += ["local ROOT = {" + ",".join(map(repr, root)) + "}", "local ELEMENTS = {"]
     lines += ["    {" + ",".join(map(repr, row)) + "}," for row in rows]
     lines.append("}")
+    if any(item["type"] == "image" for item in scene["elements"]):
+        lines.append("local IMAGE_TYPES = " + _lua_literal(image_types))
     runtime = gia._RUNTIME
     if textboxes:
         lines += ["-- 文本框数据：位置使用编辑器画布坐标，textBox 保存完整文字与样式。", "local TEXTBOXES = {"]
@@ -412,6 +420,12 @@ def _control_script(scene, gia_data, name):
     body_start = runtime.index(before) + len(before)
     body_end = runtime.index(end) + len('            image:SetAsLastSibling()')
     image_body = runtime[body_start:body_end]
+    if any(item["type"] == "image" for item in scene["elements"]):
+        setter_type = 'pcall(function() image.imageType = Enum.ImageType.Stretch end)'
+        if image_body.count(setter_type) != 1:
+            raise ValueError("Upstream Lua runtime changed; image type adapter needs review")
+        image_body = image_body.replace(setter_type,
+            'pcall(function() image.imageType = IMAGE_TYPES[index] == "stretch" and Enum.ImageType.Stretch or Enum.ImageType.Basic end)')
     prefix = '''        local prefabValues = {}
         for _, binding in ipairs(PREFAB_BINDINGS) do
             local value = PREFAB_IDS[binding[3]]
@@ -545,7 +559,8 @@ def drawing_to_scene(drawing):
                              "rotation": angle, "color": color,
                              "opacity": alpha / 255, "zIndex": index,
                              "isBackground": drawing["format"] == "shaper" and index < drawing["backgrounds"],
-                             "imageAssetId": int(asset), "imageTint": color.lower() != "#ffffff"})
+                             "imageAssetId": int(asset), "imageTint": color.lower() != "#ffffff",
+                             "imageType": drawing.get("imageTypes", ["stretch"] * len(rows))[index]})
             continue
         shape = ASSET_TYPES[asset]
         if sy < 0 and shape in ("triangle", "five_point_star"):

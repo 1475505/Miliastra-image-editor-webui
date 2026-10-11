@@ -81,6 +81,8 @@
 
 核心模型：
 
+素材图片另有 `imageType: "basic" | "stretch"`：任一 `m_Border` 大于零时支持且默认拉伸，全零或缺失边界时只支持基础；支持拉伸的图片仍可明确选择基础。拉伸的边界采样、各格式的保存方式及 GIA 字段的验证状态见 [图片类型说明](image-stretch.md)。
+
 ```ts
 type SceneDocument = {
   canvas: {

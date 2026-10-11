@@ -20,7 +20,7 @@ def prefab_scene(mixed=False):
     elements = [element]
     if mixed:
         elements = [dict(id="r", type="rectangle", x=100, y=80, width=90, height=60, zIndex=0), element,
-                    dict(id="i", type="image", imageAssetId=106001, x=400, y=180, width=24, height=32, zIndex=2)]
+                    dict(id="i", type="image", imageAssetId=106001, imageType="basic", x=400, y=180, width=24, height=32, zIndex=2)]
     return normalize_scene(SceneDocumentModel.model_validate({"canvas": {"width": 720, "height": 480}, "elements": elements,
                 "library": {"savedItems": [{"id": "saved-p", "name": "收藏元件", "element": element}]}}))
 

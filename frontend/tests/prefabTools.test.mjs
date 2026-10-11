@@ -10,7 +10,73 @@ function moduleUrl(path, replacements = []) {
 }
 const prefabUrl = moduleUrl("../src/prefabLibrary.ts");
 const assetsUrl = moduleUrl("../src/imageLibrary.ts");
-const tools = await import(moduleUrl("../src/webmcp.ts", [["./prefabLibrary", prefabUrl], ["./imageLibrary", assetsUrl]]));
+const stretchUrl = moduleUrl("../src/imageStretch.ts");
+const library = await import(assetsUrl);
+const tools = await import(moduleUrl("../src/webmcp.ts", [["./prefabLibrary", prefabUrl], ["./imageLibrary", assetsUrl], ["./imageStretch", stretchUrl]]));
+
+test("image tools preserve Basic/Stretch and reject invalid or misplaced modes atomically", async () => {
+  const originalDocument = globalThis.document;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ id: 106030, border: { left: 45, right: 45, top: 45, bottom: 45 } }));
+  const definitions = new Map();
+  globalThis.document = { modelContext: { registerTool: async (tool) => definitions.set(tool.name, tool) } };
+  const edits = [];
+  const dispose = tools.registerEditorTools(() => ({
+    getScene: () => ({ elements: [{ id: "i", type: "image", imageAssetId: 106030, imageType: "stretch" }] }),
+    addElements: (inputs) => { edits.push(inputs); return { ok: true, elements: inputs, count: inputs.length }; },
+    updateElements: (updates) => { edits.push(updates); return { ok: true }; }
+  }));
+  try {
+    const execute = (name, args) => definitions.get(name).execute(args, {});
+    assert.deepEqual(definitions.get("add_element").inputSchema.properties.imageType.enum, ["basic", "stretch"]);
+    const added = await execute("add_element", { type: "image", imageAssetId: 106030, imageType: "stretch" });
+    assert.equal(added.element.imageType, "stretch");
+    assert.equal((await execute("update_element", { id: "i", imageType: "basic" })).ok, true);
+    assert.deepEqual(edits[1], [{ id: "i", patch: { imageType: "basic" } }]);
+    for (const imageType of ["slice", "Stretch", 1, null]) {
+      assert.equal((await execute("update_element", { id: "i", imageType })).ok, false);
+    }
+    assert.equal((await execute("add_element", { type: "rectangle", imageType: "stretch" })).ok, false);
+    assert.equal((await execute("add_elements", { elements: [
+      { type: "image", imageAssetId: 106030, imageType: "stretch" },
+      { type: "rectangle", imageType: "basic" }
+    ] })).ok, false);
+    assert.equal(edits.length, 2);
+  } finally { dispose(); globalThis.document = originalDocument; globalThis.fetch = originalFetch; }
+});
+
+test("image tools resolve defaults and resource changes before committing a batch", async () => {
+  const originalDocument = globalThis.document;
+  const originalFetch = globalThis.fetch;
+  const definitions = new Map();
+  globalThis.document = { modelContext: { registerTool: async (tool) => definitions.set(tool.name, tool) } };
+  library.clearLibraryCache();
+  globalThis.fetch = async (url) => {
+    const id = Number(url.split("/").at(-1));
+    return new Response(JSON.stringify({ id, border: id === 106030 ?
+      { left: 45, right: 45, top: 45, bottom: 45 } : { left: 0, right: 0, top: 0, bottom: 0 } }));
+  };
+  const edits = [];
+  const dispose = tools.registerEditorTools(() => ({
+    getScene: () => ({ elements: [{ id: "i", type: "image", imageAssetId: 100001, imageType: "basic" }] }),
+    addElements: (inputs) => { edits.push(inputs); return { ok: true, elements: inputs, count: inputs.length }; },
+    updateElements: (updates) => { edits.push(updates); return { ok: true }; }
+  }));
+  try {
+    const execute = (name, args) => definitions.get(name).execute(args, {});
+    const result = await execute("add_elements", { returnElements: true, elements: [
+      { type: "image", imageAssetId: 106030 },
+      { type: "image", imageAssetId: 100001, imageType: "stretch" },
+      { type: "image", imageAssetId: 105222 },
+      { type: "image", imageAssetId: 106030, imageType: "basic" }
+    ] });
+    assert.deepEqual(result.elements.map((element) => element.imageType), ["stretch", "basic", "basic", "basic"]);
+    await execute("update_element", { id: "i", imageAssetId: 106030 });
+    assert.equal(edits[1][0].patch.imageType, "stretch");
+    await execute("update_element", { id: "i", imageType: "stretch" });
+    assert.equal(edits[2][0].patch.imageType, "basic");
+  } finally { dispose(); globalThis.document = originalDocument; globalThis.fetch = originalFetch; }
+});
 
 test("Prefab tools validate catalog IDs before atomic add/update, with Lua configuration names", async () => {
   const storage = new Map();
