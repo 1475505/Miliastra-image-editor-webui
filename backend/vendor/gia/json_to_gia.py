@@ -656,10 +656,10 @@ def _build_textbox_settings_data(textbox, guid):
       details {
         textbox {
           font_size: 20
-          field503: 1            # auto-size enabled
+          field503: 1            # sample constant; semantics unverified
           field504: 1            # outline enabled (sample)
           text { value: "..." }
-          field506: 1            # initial visibility
+          field506: 1            # auto-size enabled (0=disabled)
           field507: 12           # min font size
           field508: 1            # horizontal align: omit=left, 1=center, 2=right
           field509: 1            # vertical align: omit=top, 1=middle, 2=bottom
@@ -677,7 +677,6 @@ def _build_textbox_settings_data(textbox, guid):
     font_size = int(textbox.get("font_size", 20))
     auto_size = 1 if textbox.get("auto_size", True) else 0
     outline_enabled = 1 if textbox.get("outline_enabled", True) else 0
-    visible = 1 if textbox.get("visible", True) else 0
     min_font_size = int(textbox.get("min_font_size", 12))
     text = textbox.get("text", "") or ""
     packed_color = int(textbox.get("packed_color", 0xFFFFFFFF))
@@ -696,13 +695,16 @@ def _build_textbox_settings_data(textbox, guid):
     details = ProtoWriter()
     box = ProtoWriter()
     box.write_int32(502, font_size)
-    box.write_int32(503, auto_size)
+    # The 2026-10-13 GIA pair keeps 503=1 with auto-size both off and on.
+    # Its meaning is unverified; do not repurpose it as a visibility flag.
+    box.write_int32(503, 1)
     box.write_int32(504, outline_enabled)
     text_wrapper = ProtoWriter()
     if text:
         text_wrapper.write_string(501, str(text))
     box.write_message(505, text_wrapper)
-    box.write_int32(506, visible)
+    # Client-confirmed auto-size toggle: field 506 changes from 0 to 1.
+    box.write_int32(506, auto_size)
     box.write_int32(507, min_font_size)
     if align_h:
         box.write_int32(508, align_h)
