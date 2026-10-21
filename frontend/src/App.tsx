@@ -1,10 +1,11 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { registerEditorTools, type EditorBridge, type ElementPatch, type ElementUpdate } from "./webmcp";
 import { useI18n } from "./i18n";
 import { PrefabLibraryPanel } from "./PrefabLibraryPanel";
 import { PrefabSprite } from "./PrefabSprite";
 import { SlicedSprite } from "./SlicedSprite";
-import { defaultLibraryImageSize, normalizeImageElement, resolveImageType, supportsImageStretch, type ImageType } from "./imageStretch";
+import { defaultLibraryImageSize, normalizeImageElement, resolveImageType, type ImageType } from "./imageStretch";
+import { ImageTypeSelect, LibraryAssetThumbnail } from "./ImageAssetControls";
 import { defaultPrefabVariable, getPrefabInfo, PrefabLookupError, validPrefabVariable, type PrefabInfo } from "./prefabLibrary";
 import { recordAddedPrefabs } from "./prefabHistory";
 import { rotationCss, unprojectVector } from "./rotation";
@@ -474,6 +475,12 @@ function App() {
   const exportButtonRef = useRef<HTMLButtonElement>(null);
   const [propsView, setPropsView] = useState<"element" | "canvas">("canvas");
   const [elementTab, setElementTab] = useState<"basic" | "advanced">("basic");
+  const [showMaskGuides, setShowMaskGuides] = useState(true);
+  const [maskDraft, setMaskDraft] = useState<{ id: string; source: SceneElement; mask: LuaMask } | null>(null);
+  const previewMask = useCallback((mask: LuaMask | null) => {
+    const source = sceneRef.current.elements.find(element => element.id === selectedIdRef.current);
+    setMaskDraft(mask && source ? { id: source.id, source, mask } : null);
+  }, []);
   const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false });
   const [welcomeOpen, setWelcomeOpen] = useState<boolean>(() => {
     try {
@@ -2482,7 +2489,9 @@ function App() {
                       });
                     }}
                   >
-                    <LuaMaskPreview element={element} appearance={shapeStyle(element)}>
+                    <LuaMaskPreview element={maskDraft?.id === element.id && maskDraft.source === element && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"
+                      ? { ...element, luaMask: maskDraft.mask } : element} appearance={shapeStyle(element)}
+                      guides={showMaskGuides && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"}>
                     {element.type === "triangle" ? <div className="triangle-fill" style={{ background: element.color }} /> : null}
                     {element.type === "four_point_star" ? <div className="star star-four" style={{ background: element.color }} /> : null}
                     {element.type === "five_point_star" ? <div className="star star-five" style={{ background: element.color }} /> : null}
@@ -2761,8 +2770,11 @@ function App() {
                   </div>
                   {elementTab === "advanced" ? (
                     selectedElement.type === "other" ? <div className="tip-box">{t("luaMask.unsupported")}</div> :
-                    <LuaMaskInspector mask={selectedElement.luaMask} width={selectedElement.width} height={selectedElement.height}
-                      onChange={luaMask => updateSelected({ luaMask })} />
+                    <LuaMaskInspector key={selectedElement.id} mask={selectedElement.luaMask}
+                      width={selectedElement.width * Math.abs(selectedElement.type === "textbox" ? selectedElement.textBox?.scaleX ?? 1 : 1)}
+                      height={selectedElement.height * Math.abs(selectedElement.type === "textbox" ? selectedElement.textBox?.scaleY ?? 1 : 1)}
+                      showGuides={showMaskGuides} onShowGuides={setShowMaskGuides}
+                      onPreview={previewMask} onChange={luaMask => updateSelected({ luaMask })} />
                   ) : <>
                   <div className="section-head"><span>{t("props.transform")}</span></div>
                   <div className="grid-2">
@@ -2810,16 +2822,8 @@ function App() {
                         <em>{t("props.assetTintable")}</em>
                       </div>
                     </div>
-                    <label className="field" htmlFor="image-type">
-                      <span>{t("props.imageType")}</span>
-                      <select id="image-type" value={selectedElement.imageType ?? "basic"}
-                        disabled={!supportsImageStretch(selectedElement.imageAssetId ? readMetaCache(selectedElement.imageAssetId) : null)}
-                        onChange={(event) => updateSelected({ imageType: event.target.value as ImageType })}>
-                        <option value="basic">{t("props.imageBasic")}</option>
-                        {supportsImageStretch(selectedElement.imageAssetId ? readMetaCache(selectedElement.imageAssetId) : null) ?
-                          <option value="stretch">{t("props.imageStretch")}</option> : null}
-                      </select>
-                    </label>
+                    <ImageTypeSelect value={selectedElement.imageType} metadata={selectedElement.imageAssetId ? readMetaCache(selectedElement.imageAssetId) : null}
+                      onChange={imageType => updateSelected({ imageType: imageType ?? "basic" })} />
                     </>
                   ) : null}
                   {selectedElement.type === "prefab" ? (
@@ -3821,14 +3825,6 @@ function InspectorImagePreview({ assetId, imageType, stretchPreviewUrl }: {
   return <div className="glyph inspector-image-preview">
     <LibraryAssetThumbnail key={`${assetId}:${previewUrl ?? "basic"}`} assetId={assetId} previewUrl={previewUrl} />
   </div>;
-}
-
-/** Static thumbnails use the indexed Stretch PNG and fall back once on failure. */
-function LibraryAssetThumbnail({ assetId, previewUrl }: { assetId: number; previewUrl?: string }) {
-  const [failedPreview, setFailedPreview] = useState(false);
-  return <img src={previewUrl && !failedPreview ? previewUrl : imageUrl(assetId)} alt=""
-    loading="lazy" decoding="async" draggable={false}
-    onError={previewUrl && !failedPreview ? () => setFailedPreview(true) : undefined} />;
 }
 
 /** 素材染色按 RGB 通道乘算，保留原贴图细节和透明度。 */

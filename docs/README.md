@@ -75,7 +75,7 @@ Need to turn a raster image into shapes? Open the [image fitting tool / 图元�
   - background-element flag
   - layer ordering
   - delete current element
-- **图元 → 高级**：蒙版图片 ID（默认 `100001`）、图片类型（保持默认／基础／拉伸）、区域反转、羽化；支持 Pixel / Percentage、水平/垂直宽度与范围。**仅 Lua 导出可用**，JSON/收藏/复制/回导保留配置；画布预览默认矩形裁切、近似 Pixel 宽度羽化和 Percentage 范围羽化（中心不透明占比，非真机公式），自定义图片及反转显示原图元和预览提示。导出脚本需要用户挂载到客户端容器，运行时自动创建透明图片父控件和子内容；启用蒙版或羽化后，GIA/CSS/SVG/PNG 导出不可用，避免丢失效果。详情见 [Lua 蒙版与羽化](lua-mask.md)。
+- **图元 → 高级**：蒙版图片 ID（默认 `100001`）、图片类型（保持默认／基础／拉伸）、区域反转、羽化；支持 Pixel / Percentage、水平/垂直宽度与范围。选图复用图形库缩略图与图片类型能力，提供素材搜索及独立蒙版预览。画布辅助显示保留原内容，以黑白虚线和红色半透明斜线标出蒙版轮廓与被遮区域；关闭可看实际裁切。候选确认保存、取消恢复，辅助线不导出。**仅 Lua 导出可用**，JSON/收藏/复制/回导保留配置；网页按基础形状或素材 alpha 近似预览裁切、羽化及反转，不代表真机公式。导出脚本需要用户挂载到客户端容器，运行时自动创建透明图片父控件和子内容；启用蒙版或羽化后，GIA/CSS/SVG/PNG 导出不可用，避免丢失效果。详情见 [Lua 蒙版与羽化](lua-mask.md)。
 - When nothing is selected, the right panel shows the current element list
 - Undo / redo shortcuts:
   - `Ctrl+Z`

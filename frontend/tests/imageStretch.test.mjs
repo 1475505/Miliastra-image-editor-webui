@@ -9,7 +9,7 @@ function moduleUrl(path) {
   });
   return `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`;
 }
-const { defaultLibraryImageSize, sliceRegions, rasterSliceRegions, resolveImageType, supportsImageStretch, normalizeImageElement } = await import(moduleUrl("../src/imageStretch.ts"));
+const { defaultLibraryImageSize, sliceRegions, rasterSliceRegions, resolveImageType, resolveOptionalImageType, supportsImageStretch, normalizeImageElement } = await import(moduleUrl("../src/imageStretch.ts"));
 const library = await import(moduleUrl("../src/imageLibrary.ts"));
 const meta = { id: 106030, width: 90, height: 90, stretchable: true,
   border: { left: 45, right: 45, top: 45, bottom: 45 } };
@@ -51,6 +51,18 @@ test("pending metadata keeps defaults unresolved and preserves explicit Basic af
   assert.equal(normalizeImageElement({ ...image, imageType: "stretch" }, null).imageType, "basic");
   const shape = { type: "rectangle" };
   assert.equal(normalizeImageElement(shape, meta), shape);
+});
+
+test("mask selections share library type capabilities without changing native-default intent", () => {
+  const flat = { ...meta, id: 100002, border: { left: 0, right: 0, top: 0, bottom: 0 } };
+  for (const metadata of [meta, flat, null, undefined]) {
+    assert.equal(resolveOptionalImageType(metadata, null), null);
+    for (const type of ["basic", "stretch"]) {
+      assert.equal(resolveOptionalImageType(metadata, type), resolveImageType(metadata, type));
+    }
+  }
+  assert.equal(resolveOptionalImageType(flat, "stretch"), "basic");
+  assert.equal(resolveOptionalImageType(meta, "stretch"), "stretch");
 });
 
 test("106030 uses raw 45-unit corners and retains its zero-span center", () => {

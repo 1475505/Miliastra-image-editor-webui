@@ -1,12 +1,39 @@
 import { useI18n } from "./i18n";
 import { luaMaskActive, luaMaskOf, type LuaMask } from "./luaMask";
+import { MaskImagePicker } from "./MaskImagePicker";
+import { ImageTypeSelect, useSpriteMetadata } from "./ImageAssetControls";
+import { loadSpriteMeta } from "./imageLibrary";
+import { resolveOptionalImageType } from "./imageStretch";
+import { useEffect, useRef, useState } from "react";
 
-export function LuaMaskInspector({ mask, width, height, onChange }: {
+export function LuaMaskInspector({ mask, width, height, onChange, onPreview, showGuides, onShowGuides }: {
   mask?: LuaMask | null; width: number; height: number; onChange: (mask: LuaMask) => void;
+  onPreview: (mask: LuaMask | null) => void;
+  showGuides: boolean; onShowGuides: (show: boolean) => void;
 }) {
   const { t } = useI18n();
   const value = luaMaskOf(mask);
   const update = (patch: Partial<LuaMask>) => onChange({ ...value, ...patch });
+  const metadata = useSpriteMetadata(value.imageId);
+  const selection = useRef(0), currentValue = useRef(value);
+  currentValue.current = value;
+  const [selecting, setSelecting] = useState(false), [selectionFailed, setSelectionFailed] = useState(false);
+  useEffect(() => () => { selection.current++; onPreview(null); }, [onPreview]);
+  useEffect(() => { selection.current++; setSelecting(false); }, [mask]);
+  async function selectImage(imageId: number) {
+    const request = ++selection.current;
+    setSelecting(true); setSelectionFailed(false);
+    try {
+      const meta = await loadSpriteMeta(imageId);
+      if (request !== selection.current) return;
+      onChange({ ...currentValue.current, imageId, imageType: resolveOptionalImageType(meta, currentValue.current.imageType) });
+    } catch { if (request === selection.current) setSelectionFailed(true); }
+    finally { if (request === selection.current) setSelecting(false); }
+  }
+  const [draftId, setDraftId] = useState(String(value.imageId));
+  useEffect(() => setDraftId(String(value.imageId)), [value.imageId]);
+  const id = Number(draftId), validId = draftId.trim() !== "" && Number.isInteger(id) && id > 0 && id <= 0x7fffffff;
+  const commitId = () => { if (validId && id !== value.imageId) void selectImage(id); };
   const number = (key: "offsetX" | "offsetY" | "width" | "height" | "softEdgeWidthX" | "softEdgeWidthY" | "horizontalSoftRange" | "verticalSoftRange", label: string) => (
     <label className="num-field"><span>{label}</span><input type="number" step="any"
       min={key === "width" || key === "height" ? 0 : undefined}
@@ -15,27 +42,26 @@ export function LuaMaskInspector({ mask, width, height, onChange }: {
   );
   return <>
     <div className="tip-box">{t("luaMask.only")}<br /><small>{t("luaMask.previewHint")}</small></div>
-    {luaMaskActive(value) && value.reverseMaskArea ?
-      <div className="tip-box" role="status">{t("luaMask.unverifiedPreview")}</div> : null}
-    {luaMaskActive(value) && value.imageId !== 100001 ?
-      <div className="tip-box" role="status">{t("luaMask.customImageHint")}</div> : null}
+    {!luaMaskActive(value) ? <p className="field-hint">{t("luaMask.disabledHint")}</p> : null}
     {value.enableSoftEdge && value.softEdgeMode === "Pixel" && value.softEdgeWidthX === 0 && value.softEdgeWidthY === 0 ?
       <p className="field-hint">{t("luaMask.zeroFeather")}</p> : null}
     <div className="section-head"><span>{t("luaMask.mask")}</span></div>
-    <label className="field"><span>{t("luaMask.imageId")}</span>
-      <input type="number" min="1" max="2147483647" step="1" value={value.imageId}
-        onChange={e => { const id = e.target.valueAsNumber; if (Number.isInteger(id) && id > 0 && id <= 0x7fffffff) update({ imageId: id }); }} />
-      <em className="field-hint">{t("luaMask.imageIdHint")}</em>
-    </label>
-    <label className="field"><span>{t("luaMask.imageType")}</span>
-      <select value={value.imageType ?? ""} onChange={e => update({ imageType: (e.target.value || null) as LuaMask["imageType"] })}>
-        <option value="">{t("luaMask.imageTypeDefault")}</option>
-        <option value="basic">{t("props.imageBasic")}</option>
-        <option value="stretch">{t("props.imageStretch")}</option>
-      </select>
-      <em className="field-hint">{t("luaMask.imageTypeHint")}</em>
-    </label>
+    <label className="check-row"><input type="checkbox" checked={showGuides} onChange={e => onShowGuides(e.target.checked)} /><span>{t("luaMask.previewOnCanvas")}</span></label>
+    <p className="field-hint">{t("luaMask.guidesHint")}</p>
     <label className="check-row"><input type="checkbox" checked={value.enabled} onChange={e => update({ enabled: e.target.checked })}/><span>{t("luaMask.enable")}</span></label>
+    <MaskImagePicker value={value} width={width} height={height} onPreview={onPreview} showGuides={showGuides} onShowGuides={onShowGuides}
+      onChange={patch => update(patch)} onSelectImage={imageId => void selectImage(imageId)} />
+    <label className="field"><span>{t("luaMask.imageId")}</span>
+      <input type="text" inputMode="numeric" value={draftId} aria-invalid={!validId}
+        onChange={e => setDraftId(e.target.value)} onBlur={commitId}
+        onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") { selection.current++; setSelecting(false); setDraftId(String(value.imageId)); } }} />
+      {!validId ? <em className="field-hint" role="status">{t("luaMask.invalidImageId")}</em> : null}
+      <em className="field-hint">{t("luaMask.imageIdHint")}</em>
+      {selecting || selectionFailed ? <small role="status">{t(selecting ? "library.metaLoading" : "library.metaFailed")}</small> : null}
+    </label>
+    <ImageTypeSelect label={t("luaMask.imageType")} value={value.imageType} metadata={metadata.meta} allowDefault
+      loading={metadata.loading} error={metadata.error} onRetry={metadata.retry} onChange={imageType => update({ imageType })} />
+    <p className="field-hint">{t("luaMask.imageTypeHint")}</p>
     <label className="check-row"><input type="checkbox" checked={value.reverseMaskArea} onChange={e => update({ reverseMaskArea: e.target.checked })}/><span>{t("luaMask.reverse")}</span></label>
     <label className="check-row"><input type="checkbox" checked={value.width === null && value.height === null}
       onChange={e => update(e.target.checked ? { width: null, height: null } : { width, height })}/><span>{t("luaMask.follow")}</span></label>

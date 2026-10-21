@@ -24,6 +24,11 @@ export function resolveImageType(meta: SpriteMeta | null | undefined, requested?
   return supportsImageStretch(meta) ? requested ?? "stretch" : "basic";
 }
 
+/** Optional mask type shares the library's capability policy; null leaves native type unchanged. */
+export function resolveOptionalImageType(meta: SpriteMeta | null | undefined, requested: ImageType | null): ImageType | null {
+  return requested === null ? null : resolveImageType(meta, requested) ?? requested;
+}
+
 export function normalizeImageElement<T extends { type: string; imageAssetId?: number; imageType?: ImageType }>(
   element: T, meta: SpriteMeta | null | undefined
 ): T {

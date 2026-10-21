@@ -11,8 +11,11 @@ const transpile = path => ts.transpileModule(readFileSync(new URL(path, import.m
   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext }
 }).outputText;
 const previewJs = transpile('../src/maskPreview.ts').replace('"./luaMask"', JSON.stringify(asModule(js)))
-  .replace('"./rotation"', JSON.stringify(asModule(transpile('../src/rotation.ts'))));
-const { previewCoverage, previewFeatherWidths, previewMaskSupported, maskPreviewBounds } = await import(asModule(previewJs));
+  .replace('"./rotation"', JSON.stringify(asModule(transpile('../src/rotation.ts'))))
+  .replace('"./maskShapes"', JSON.stringify(asModule(transpile('../src/maskShapes.ts'))))
+  .replace('"./maskGuides"', JSON.stringify(asModule(transpile('../src/maskGuides.ts'))))
+  .replace('"./imageStretch"', JSON.stringify(asModule(transpile('../src/imageStretch.ts'))));
+const { previewCoverage, previewFeatherWidths, previewMaskSupported, maskPreviewBounds, featherMaskAlpha } = await import(asModule(previewJs));
 
 test('mask mode changes preserve all raw values; feather-only enables the Lua gate', () => {
   const original = luaMaskOf({ softEdgeWidthX: 13.5, horizontalSoftRange: 81, width: 0 });
@@ -33,7 +36,9 @@ test('mask image defaults to the rectangle and custom IDs survive edits and scal
   const custom = luaMaskOf({ imageId: 100002, enabled: true, softEdgeMode: 'Percentage' });
   assert.equal(scaleLuaMask(custom, 2).imageId, 100002);
   assert.equal(luaMaskOf({ ...custom, softEdgeMode: 'Pixel' }).imageId, 100002);
-  assert.equal(previewMaskSupported(custom), false, 'unverified custom contour must not be shown as a rectangle');
+  assert.equal(previewMaskSupported(custom), true, 'circle uses geometric contour preview');
+  assert.equal(previewMaskSupported({ ...custom, imageId: 106030 }), false, 'custom contour waits for its image');
+  assert.equal(previewMaskSupported({ ...custom, imageId: 106030 }, { image: {} }), true);
   assert.equal(previewMaskSupported({ enabled: true }), true, 'legacy settings still preview');
   assert.equal(previewMaskSupported({ ...custom, imageId: 100001 }), true, 'returning to default restores preview');
   for (const imageId of [0, -1, 1.5, NaN, Infinity, true, null, '100002', 2147483648]) {
@@ -80,7 +85,7 @@ test('Pixel preview clips and feathers against the axis-aligned mask, without mo
   assert.equal(previewCoverage(-29, 0, offset, 100, 60), 1);
   assert.equal(previewMaskSupported(mask), true);
   assert.equal(previewMaskSupported({ ...mask, softEdgeMode: 'Percentage' }), true);
-  assert.equal(previewMaskSupported({ ...mask, reverseMaskArea: true }), false);
+  assert.equal(previewMaskSupported({ ...mask, reverseMaskArea: true }), true);
   assert.equal(previewMaskSupported(null), false);
   assert.equal(mask.softEdgeWidthX, 20);
 });
@@ -127,4 +132,26 @@ test('preview buffers contain projected/scaled visuals without rotating the mask
     { width: 204, height: 34, contentWidth: 200, contentHeight: 30 });
   const rotated = maskPreviewBounds({ width: 100, height: 100, rotation: 45 });
   assert.ok(rotated.width >= 142 && rotated.height >= 142, 'rotated corners remain inside the visual buffer');
+});
+
+test('contour feather respects transparent holes, independent axes and original alpha', () => {
+  const alpha = new Uint8ClampedArray([
+    0, 0, 0, 0, 0,
+    0, 255, 255, 255, 0,
+    0, 255, 0, 255, 0,
+    0, 255, 128, 255, 0,
+    0, 0, 0, 0, 0
+  ]);
+  assert.deepEqual(featherMaskAlpha(alpha, 5, 5, 0, 0), alpha);
+  const horizontal = featherMaskAlpha(alpha, 5, 5, 2, 0);
+  assert.equal(horizontal[12], 0, 'hole never filled');
+  assert.equal(horizontal[11], 64, 'hole edge feathers inward');
+  assert.equal(horizontal[7], 191, 'row center is farther from the contour');
+  assert.equal(horizontal[17], 128, 'source alpha remains an upper bound');
+  const vertical = featherMaskAlpha(alpha, 5, 5, 0, 2);
+  assert.equal(vertical[7], 64, 'same point touches hole along Y');
+  assert.equal(vertical[11], 191);
+  const both = featherMaskAlpha(alpha, 5, 5, 2, 2);
+  assert.equal(both[11], 64);
+  assert.equal(alpha[11], 255, 'source was not mutated');
 });
