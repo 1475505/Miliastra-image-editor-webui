@@ -8,6 +8,9 @@ import { defaultLibraryImageSize, normalizeImageElement, resolveImageType, suppo
 import { defaultPrefabVariable, getPrefabInfo, PrefabLookupError, validPrefabVariable, type PrefabInfo } from "./prefabLibrary";
 import { recordAddedPrefabs } from "./prefabHistory";
 import { rotationCss, unprojectVector } from "./rotation";
+import { LuaMaskInspector } from "./LuaMaskInspector";
+import { LuaMaskPreview } from "./LuaMaskPreview";
+import { luaMaskActive, luaMaskOf, scaleLuaMask, type LuaMask } from "./luaMask";
 import {
   assetMaskUrl,
   DEFAULT_BACKDROP_URL,
@@ -172,6 +175,7 @@ export type SceneElement = {
   /** Catalog Prefab ID used for preview and the script-local Lua ID configuration. */
   prefabId?: number;
   prefabVariable?: string;
+  luaMask?: LuaMask | null;
 };
 
 type LibraryCategory = {
@@ -469,6 +473,7 @@ function App() {
   const [luaDialogOpen, setLuaDialogOpen] = useState(false);
   const exportButtonRef = useRef<HTMLButtonElement>(null);
   const [propsView, setPropsView] = useState<"element" | "canvas">("canvas");
+  const [elementTab, setElementTab] = useState<"basic" | "advanced">("basic");
   const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false });
   const [welcomeOpen, setWelcomeOpen] = useState<boolean>(() => {
     try {
@@ -498,6 +503,9 @@ function App() {
     [scene.elements]
   );
   const hasPrefabs = scene.elements.some((element) => element.type === "prefab");
+  const hasLuaMasks = scene.elements.some(element => luaMaskActive(element.luaMask));
+  const luaOnly = hasPrefabs || hasLuaMasks;
+  const luaOnlyHint = hasLuaMasks ? t("luaMask.exportHint") : t("prefab.luaOnly");
 
   const selectedElement = useMemo(
     () => orderedElements.find((element) => element.id === selectedId) ?? null,
@@ -1117,7 +1125,7 @@ function App() {
 
   useEffect(() => {
     if (rightTab !== "code") return;
-    if (hasPrefabs && previewTab !== "json" && previewTab !== "lua") { setPreviewTab("lua"); return; }
+    if (luaOnly && previewTab !== "json" && previewTab !== "lua") { setPreviewTab("lua"); return; }
     const controller = new AbortController();
     const setText = (text: string) => {
       if (previewTab === "json") setGeneratedJson(text);
@@ -1151,7 +1159,7 @@ function App() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [scene, rightTab, previewTab, previewRevision, hasPrefabs]);
+  }, [scene, rightTab, previewTab, previewRevision, luaOnly]);
 
   async function handleSaveAndApply() {
     const nextScene = {
@@ -1392,7 +1400,7 @@ function App() {
   }
 
   async function copyCurrentCode() {
-    if (hasPrefabs && previewTab !== "json" && previewTab !== "lua") { setStatus(t("prefab.luaOnly")); return; }
+    if (luaOnly && previewTab !== "json" && previewTab !== "lua") { setStatus(luaOnlyHint); return; }
     const label = previewLabels[previewTab];
     const current = sceneRef.current;
     let text: string;
@@ -1464,6 +1472,7 @@ function App() {
       next.color = override?.color ?? "#ffffff";
       next.opacity = override?.opacity ?? 1;
     }
+    if (override?.luaMask !== undefined) next.luaMask = override.luaMask === null ? null : luaMaskOf(override.luaMask);
     return next;
   }
 
@@ -1526,6 +1535,7 @@ function App() {
       const patch = patches.get(element.id);
       if (!patch) return element;
       const merged = { ...element, ...patch } as SceneElement;
+      if (patch.luaMask !== undefined) merged.luaMask = patch.luaMask === null ? null : luaMaskOf({ ...element.luaMask, ...patch.luaMask });
       if (merged.type === "image") {
         const requested = patch.imageType ?? (merged.imageAssetId === element.imageAssetId ? element.imageType : undefined);
         merged.imageType = resolveImageType(merged.imageAssetId ? readMetaCache(merged.imageAssetId) : null, requested);
@@ -1640,7 +1650,7 @@ function App() {
 
   async function downloadExport(endpoint: string, filename: string) {
     setExportOpen(false);
-    if (hasPrefabs && endpoint !== "/api/export/lua" && endpoint !== "/api/export/json") { setStatus(t("prefab.luaOnly")); return; }
+    if (luaOnly && endpoint !== "/api/export/lua" && endpoint !== "/api/export/json") { setStatus(luaOnlyHint); return; }
     setStatus(t("statusbar.preparing", { name: filename }));
     const response = await fetch(endpoint, {
       method: "POST",
@@ -1763,6 +1773,7 @@ function App() {
           width: Math.max(1, Math.round(element.width * value * 100) / 100),
           height: Math.max(1, Math.round(element.height * value * 100) / 100)
         };
+        if (element.luaMask) scaled.luaMask = scaleLuaMask(element.luaMask, value);
         if (element.textBox) {
           scaled.textBox = {
             ...element.textBox,
@@ -1962,8 +1973,8 @@ function App() {
                   <button
                     key={item.ext}
                     className="menu-item"
-                    disabled={hasPrefabs && item.ext !== "lua" && item.ext !== "json"}
-                    title={hasPrefabs && item.ext !== "lua" && item.ext !== "json" ? t("prefab.luaOnly") : undefined}
+                    disabled={luaOnly && item.ext !== "lua" && item.ext !== "json"}
+                    title={luaOnly && item.ext !== "lua" && item.ext !== "json" ? luaOnlyHint : undefined}
                     onClick={() => downloadExport(item.endpoint, `${exportFileName}.${item.ext}`)}
                   >
                     <Icon name="download" size={14} />
@@ -2421,8 +2432,9 @@ function App() {
                 {orderedElements.map((element) => (
                   <div
                     key={element.id}
-                    className={`shape shape-${element.type} ${selectedId === element.id ? "is-selected" : ""}`}
-                    style={shapeStyle(element)}
+                    className={`shape shape-${element.type}`}
+                    style={{ left: element.x, top: element.y, width: element.width, height: element.height,
+                      transform: "translate(-50%, -50%)", zIndex: element.zIndex }}
                     onMouseDown={(event) => {
                       if (event.button !== 0) {
                         return;
@@ -2470,6 +2482,7 @@ function App() {
                       });
                     }}
                   >
+                    <LuaMaskPreview element={element} appearance={shapeStyle(element)}>
                     {element.type === "triangle" ? <div className="triangle-fill" style={{ background: element.color }} /> : null}
                     {element.type === "four_point_star" ? <div className="star star-four" style={{ background: element.color }} /> : null}
                     {element.type === "five_point_star" ? <div className="star star-five" style={{ background: element.color }} /> : null}
@@ -2479,6 +2492,8 @@ function App() {
                         imageType={element.imageType} width={element.width} height={element.height} />
                     ) : null}
                     {element.type === "prefab" && element.prefabId ? <PrefabSprite prefabId={element.prefabId} color={element.color} /> : null}
+                    </LuaMaskPreview>
+                    <div className={`shape-interaction ${selectedId === element.id ? "is-selected" : ""}`} style={{ transform: rotationCss(element) }}>
                     {selectedId === element.id ? (
                       <>
                         <div className="rotate-stem" />
@@ -2525,6 +2540,7 @@ function App() {
                         />
                       </>
                     ) : null}
+                    </div>
                   </div>
                 ))}
                 {guideLines.map((guide, index) =>
@@ -2739,6 +2755,15 @@ function App() {
                     </div>
                   </div>
 
+                  <div className="seg seg-compact" role="tablist" aria-label={t("props.element")}>
+                    <button role="tab" aria-selected={elementTab === "basic"} className={elementTab === "basic" ? "active" : ""} onClick={() => setElementTab("basic")}>{t("props.basic")}</button>
+                    <button role="tab" aria-selected={elementTab === "advanced"} className={elementTab === "advanced" ? "active" : ""} onClick={() => setElementTab("advanced")}>{t("props.advanced")}</button>
+                  </div>
+                  {elementTab === "advanced" ? (
+                    selectedElement.type === "other" ? <div className="tip-box">{t("luaMask.unsupported")}</div> :
+                    <LuaMaskInspector mask={selectedElement.luaMask} width={selectedElement.width} height={selectedElement.height}
+                      onChange={luaMask => updateSelected({ luaMask })} />
+                  ) : <>
                   <div className="section-head"><span>{t("props.transform")}</span></div>
                   <div className="grid-2">
                     <NumField label="X" value={Math.round(selectedElement.x)} onChange={(value) => updateSelected({ x: value })} />
@@ -2876,6 +2901,7 @@ function App() {
                   </label>
                   ) : null}
 
+                  </>}
                   <div className="section-spacer" />
                   <button className="btn btn-danger-ghost btn-block" onClick={removeSelected}>
                     <Icon name="trash" size={13} />
@@ -3074,7 +3100,7 @@ function App() {
                     <button
                       key={tab}
                       className={previewTab === tab ? "active" : ""}
-                      disabled={hasPrefabs && tab !== "json" && tab !== "lua"}
+                      disabled={luaOnly && tab !== "json" && tab !== "lua"}
                       onClick={() => setPreviewTab(tab)}
                     >
                       {previewLabels[tab]}
@@ -3084,7 +3110,7 @@ function App() {
                 {previewTab === "lua" ? (
                   <div className="tip-box">{t("export.lua.setup")}</div>
                 ) : null}
-                {hasPrefabs ? <div className="tip-box">{t("prefab.luaOnly")}</div> : null}
+                {luaOnly ? <div className="tip-box">{luaOnlyHint}</div> : null}
                 {previewTab === "lua" && scene.elements.some((element) => element.type === "other") ? (
                   <div className="message-box warning">{t("export.lua.preservedOnly")}</div>
                 ) : null}

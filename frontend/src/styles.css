@@ -1583,12 +1583,25 @@ input[type="range"]::-moz-range-thumb {
 .shape {
   position: absolute;
   cursor: move;
+  pointer-events: none;
 }
 
-.shape.is-selected {
+.shape-interaction {
+  position: absolute;
+  inset: 0;
+  cursor: move;
+  pointer-events: auto;
+  z-index: 1;
+}
+
+.shape-interaction.is-selected {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+
+.lua-mask-native-values { color: var(--text-3); font-size: 11px; }
+.lua-mask-native-values summary { cursor: pointer; padding: 4px 0; }
+.lua-mask-native-values .grid-2 { margin-top: 8px; }
 
 .transform-handle {
   position: absolute;

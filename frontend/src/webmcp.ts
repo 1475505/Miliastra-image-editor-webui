@@ -4,6 +4,7 @@
 import { defaultPrefabVariable, getPrefabInfo, validPrefabVariable } from "./prefabLibrary";
 import { defaultLibraryImageSize, resolveImageType, supportsImageStretch } from "./imageStretch";
 import { rotationMatrix } from "./rotation";
+import { parseLuaMaskPatch, type LuaMask } from "./luaMask";
 import type { CanvasMask, SceneDocument, SceneElement, ShapeType, SourceType, TextBoxSettings } from "./App";
 import {
   imageUrl, listLibraryAssetCategories, loadLibraryCatalog, loadSpriteMeta, queryLibraryAssetIds, scopeLibraryAssetIds, searchLibraryAssets,
@@ -75,9 +76,10 @@ export type AddElementInput = {
   imageType?: "basic" | "stretch";
   prefabId?: number;
   prefabVariable?: string;
+  luaMask?: Partial<LuaMask> | null;
 };
 
-export type ElementPatch = Omit<Partial<SceneElement>, "textBox"> & { textBox?: Partial<TextBoxSettings> };
+export type ElementPatch = Omit<Partial<SceneElement>, "textBox" | "luaMask"> & { textBox?: Partial<TextBoxSettings>; luaMask?: Partial<LuaMask> | null };
 export type ElementUpdate = { id: string; patch: ElementPatch };
 export type CanvasRegion = { x: number; y: number; width: number; height: number };
 export type PreviewOptions = {
@@ -173,7 +175,18 @@ const elementProperties = {
   imageTint: { type: "boolean", description: "Multiply sprite RGB by color, default false" },
   imageType: { type: "string", enum: ["basic", "stretch"], description: "Image rendering mode: basic scales the whole sprite; stretch uses its m_Border slices. Nonzero borders default to stretch and also allow basic; missing/zero borders only allow basic. get_asset_info returns supported modes and default size. Rendering always uses the original sprite, never the fixed stretchPreviewUrl thumbnail. Switching modes preserves current dimensions." },
   prefabId: { type: "integer", minimum: 1, maximum: 4294967295, description: "Required for prefab: exact catalog entity ID; Lua drawing only" },
-  prefabVariable: { type: "string", minLength: 1, maxLength: 128, description: "Name in the script-local PREFAB_IDS configuration table, default prefab_<ID>; no client script parameter is required" }
+  prefabVariable: { type: "string", minLength: 1, maxLength: 128, description: "Name in the script-local PREFAB_IDS configuration table, default prefab_<ID>; no client script parameter is required" },
+  luaMask: { type: ["object", "null"], additionalProperties: false, description: "Lua-only image parent mask. imageId defaults to 100001 (rectangle). JSON preserves settings; active effects disable other drawing exports. The default rectangle approximates Pixel widths and Percentage ranges as central opaque spans (0-100, 100 hard), not verified device math. Custom images/reverse show original content. Fields merge on update; null clears settings. Lua exports native values unchanged.", properties: {
+    enabled: { type: "boolean" }, reverseMaskArea: { type: "boolean" }, enableSoftEdge: { type: "boolean" },
+    imageId: { type: "integer", minimum: 1, maximum: 2147483647, default: 100001, description: "Mask StaticReference image asset ID, independent of the content image and IMAGE_PREFAB_ID. Custom contours require device verification." },
+    imageType: { type: ["string", "null"], enum: ["basic", "stretch", null], default: null, description: "Mask image type only; null leaves native type unchanged for legacy compatibility. Lua attempts explicit Basic/Stretch after binding; unsupported writes/readbacks log once per image ID/type and continue with the current type. Does not resize the content or imply verified custom contour rendering." },
+    offsetX: numberProp("Mask offset from element center, X right"), offsetY: numberProp("Mask offset from element center, Y down"),
+    width: { type: ["number", "null"], minimum: 0, description: "null follows content width; zero gives empty coverage" },
+    height: { type: ["number", "null"], minimum: 0, description: "null follows content height; zero gives empty coverage" },
+    softEdgeMode: { type: "string", enum: ["Pixel", "Percentage"] },
+    softEdgeWidthX: numberProp("Native horizontal feather width"), softEdgeWidthY: numberProp("Native vertical feather width"),
+    horizontalSoftRange: numberProp("Native horizontal feather range"), verticalSoftRange: numberProp("Native vertical feather range")
+  } }
 };
 const addProperties = {
   ...elementProperties,
@@ -267,6 +280,7 @@ function parseRegion(value: unknown): CanvasRegion | undefined {
 
 function parseElementFields(args: Record<string, unknown>): ElementPatch {
   const patch: ElementPatch = {};
+  if (args.luaMask !== undefined) patch.luaMask = parseLuaMaskPatch(args.luaMask);
   for (const key of ["x", "y", "width", "height", "rotation", "rotationX", "rotationY", "opacity", "zIndex", "imageAssetId", "prefabId"] as const) {
     if (args[key] === undefined) continue;
     const value = args[key];

@@ -26,6 +26,7 @@ from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFont, PngImagePlu
 from . import image_library, image_stretch, lua_scene, prefab_library
 from .image_library import fetch_sprite_bytes, sprite_url
 from .rotation import rotation_matrix
+from .lua_mask import LuaMaskModel, mask_active
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 STATIC_DIR = ROOT_DIR / "backend" / "app" / "static"
@@ -239,6 +240,7 @@ class SceneElementModel(BaseModel):
     # 元件图片仅由 Lua 绘制；prefabId 用于预览及脚本内 ID 配置，图片来源为 ImageSource.Prefab。
     prefabId: StrictInt | None = Field(default=None, gt=0, le=0xFFFFFFFF)
     prefabVariable: str | None = Field(default=None, max_length=128, strict=True)
+    luaMask: LuaMaskModel | None = None
 
 
 class LibraryBaseShapePresetModel(BaseModel):
@@ -498,7 +500,7 @@ def export_lua(request: ExportRequest) -> Response:
         # The unchanged upstream GIA-to-Lua parser handles Z-only records.
         # XY are carried separately by our ROTATIONS adapter, never discarded
         # from the user scene, GIA download or final Lua draw calls.
-        "elements": [element.model_copy(update={"rotationX": 0.0, "rotationY": 0.0})
+        "elements": [element.model_copy(update={"rotationX": 0.0, "rotationY": 0.0, "luaMask": None})
                      for element in scene.elements if element_asset_id(element) is not None]
     })
     try:
@@ -640,6 +642,8 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
 
     for index, element in enumerate(sorted_elements):
         shape_type = element.type if element.type in SHAPE_TYPES else "rectangle"
+        if shape_type == "other" and mask_active(element.luaMask):
+            raise HTTPException(status_code=400, detail="此图元类型不支持 Lua 蒙版和羽化。")
         prefab_id, prefab_variable = normalize_prefab_binding(element) if shape_type == "prefab" else (None, None)
         image_asset_id: int | None = None
         image_tint = False
@@ -675,6 +679,7 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
                 **image_type_fields(element, shape_type),
                 prefabId=prefab_id,
                 prefabVariable=prefab_variable,
+                luaMask=element.luaMask,
             )
         )
         if shape_type == "textbox" and text_box is not None:
@@ -702,6 +707,7 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
                 **image_type_fields(element, shape_type),
                 prefabId=prefab_id,
                 prefabVariable=prefab_variable,
+                luaMask=element.luaMask,
             )
         )
 
@@ -727,6 +733,8 @@ def normalize_prefab_binding(element: SceneElementModel) -> tuple[int, str]:
 
 
 def require_supported_draw_format(scene: SceneDocumentModel, format_name: str) -> None:
+    if any(mask_active(element.luaMask) for element in scene.elements):
+        raise HTTPException(status_code=400, detail=f"蒙版和羽化仅 Lua 可用；{format_name} 暂不支持。JSON 可保存配置。")
     if any(element.type == "prefab" for element in scene.elements):
         raise HTTPException(status_code=400, detail=f"Prefab images support Lua drawing only; {format_name} is unavailable. JSON can preserve the scene.")
 
@@ -913,6 +921,7 @@ def normalize_library(library: SceneLibraryModel) -> SceneLibraryModel:
                     **image_type_fields(item.element, shape_type),
                     prefabId=prefab_id,
                     prefabVariable=prefab_variable,
+                    luaMask=item.element.luaMask,
                 ),
             )
         )
@@ -1058,6 +1067,7 @@ def convert_basic_json_element(item: dict, index: int) -> SceneElementModel:
         zIndex=int(item.get("zIndex", index)),
         isBackground=bool(item.get("isBackground", False)),
         textBox=text_box,
+        luaMask=item.get("luaMask"),
         imageAssetId=image_asset_id,
         imageTint=image_tint,
         **({"imageType": item.get("imageType", item.get("image_type"))}

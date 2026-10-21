@@ -6,6 +6,8 @@
 
 ### Lua 绘制与回导
 
+图元级 `luaMask` 的模型、运行时父控件及格式限制见 [Lua 蒙版与羽化](lua-mask.md)。它与 `canvas.mask` 的旧素材组全局遮罩分开；高级页签中的两项目前仅 Lua 绘制生效。
+
 X/Y 旋转的模型、配置、导出适配与证据范围见 [三轴旋转](rotation-xy.md)。`rotation` 保持 Z，新增 `rotationX/rotationY`，缺省为 0。
 
 - `POST /api/export/lua` 生成千星客户端图片与文本框绘制脚本。图片链路：规范化场景 → 本项目 GIA 编码器 → 拟合工具的 `gia_lua.parse_material_gia` / `build_gia_lua`；使用同一份 ROOT/ELEMENTS 布局及运行时。应用适配层增加元件、TEXTBOXES 和 DRAW_ORDER，不修改上游文件。纯文本场景使用完整画布 ROOT 与空 ELEMENTS；空画布使用同项目 `lua_export.build_lua_export_text`。

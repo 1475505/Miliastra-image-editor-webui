@@ -7,6 +7,7 @@ import json
 import math
 from pathlib import Path
 import re
+from .lua_mask import LuaMaskModel, RUNTIME as MASK_RUNTIME, mask_active, validate_mask
 
 MAX_CONTENT_SIZE = 10 * 1024 * 1024
 MAX_DEPTH = 64
@@ -243,6 +244,13 @@ def read_drawing(source):
                 references.append((kind, index))
             if len(references) != len(expected) or set(references) != expected:
                 raise ValueError("DRAW_ORDER must reference every image and textbox exactly once")
+        for declaration, key, count in (("IMAGE_MASKS", "imageMasks", len(rows)),
+                                        ("TEXT_MASKS", "textMasks", len(drawing.get("textboxes", [])))):
+            masks = _literal(source, declaration, required=False)
+            if masks is not None:
+                if not isinstance(masks, list) or len(masks) != count:
+                    raise ValueError(f"{declaration} must contain one mask record per control")
+                drawing[key] = [validate_mask(value) for value in masks]
         return drawing
     width, height = (_number(_literal(source, name)) for name in ("IMG_WIDTH", "IMG_HEIGHT"))
     if width <= 0 or height <= 0:
@@ -274,7 +282,7 @@ def dumps(scene, gia_data=None, name=""):
     """Adapt the upstream emitter and preserve the editor scene in an inert comment."""
     # Validate all metadata too (json.dumps rejects non-finite numeric fields).
     json.dumps(scene, allow_nan=False)
-    if any(item.get("type") in ("prefab", "textbox", "image") or item.get("rotationX") or item.get("rotationY") for item in scene["elements"]):
+    if any(item.get("type") in ("prefab", "textbox", "image") or item.get("rotationX") or item.get("rotationY") or item.get("luaMask") is not None for item in scene["elements"]):
         script = _control_script(scene, gia_data, name)
     elif gia_data is not None:
         script = gia.build_gia_lua(gia_data, name or "千星图片编辑器")
@@ -374,9 +382,13 @@ def _control_script(scene, gia_data, name):
     root = [0, 0, width, height, .5, .5, .5, .5, .5, .5, 1, 1, 0]
     static_rows = iter(static["records"] if static else [])
     rows, bindings, textboxes, order, image_types, rotations = [], [], [], [], [], []
+    image_masks, text_masks = [], []
+    has_mask_data = any(item.get("luaMask") is not None for item in scene["elements"])
+    needs_masks = any(mask_active(item.get("luaMask")) for item in scene["elements"])
     variables = {}
     for item in sorted(scene["elements"], key=lambda item: (0 if item["isBackground"] else 1, item["zIndex"])):
         if item["type"] == "textbox":
+            text_masks.append(LuaMaskModel.model_validate(item.get("luaMask") or {}).model_dump(exclude_none=True))
             textboxes.append({key: item[key] for key in ("name", "x", "y", "width", "height", "rotation", "textBox")})
             textboxes[-1].update({key: item[key] for key in ("rotationX", "rotationY") if item.get(key)})
             order.append([2, len(textboxes)])
@@ -384,6 +396,7 @@ def _control_script(scene, gia_data, name):
         if not _is_image_element(item):
             continue
         order.append([1, len(rows) + 1])
+        image_masks.append(LuaMaskModel.model_validate(item.get("luaMask") or {}).model_dump(exclude_none=True))
         rotations.append([item.get("rotationX", 0), item.get("rotationY", 0)])
         image_types.append(item.get("imageType", "basic") if item["type"] == "image" else "stretch")
         if item["type"] != "prefab":
@@ -401,7 +414,7 @@ def _control_script(scene, gia_data, name):
     title = str(name or "千星图片编辑器").replace("\r", " ").replace("\n", " ")
     lines = [f"-- {title}：图片与文本 Lua 绘制脚本",
              "-- 挂到专用空客户端容器，OnStart 绘制；模板设为仅存为模板。",
-             "local IMAGE_PREFAB_ID = 0 -- 图片控件模板索引ID；没有图片时无需填写"]
+              "local IMAGE_PREFAB_ID = 0 -- 图片控件模板索引ID；无图片且未启用蒙版/羽化时无需填写"]
     if textboxes:
         lines += ["local TEXTBOX_PREFAB_ID = 0 -- 必填：文本框控件模板索引ID",
                   "-- 字号自适应由每个文本框的 autoSize 显式设置，默认开启；minFontSize 为最小字号。"]
@@ -421,6 +434,10 @@ def _control_script(scene, gia_data, name):
         lines.append("local ROTATIONS = " + _lua_literal(rotations))
     if any(item["type"] == "image" for item in scene["elements"]):
         lines.append("local IMAGE_TYPES = " + _lua_literal(image_types))
+    if has_mask_data:
+        lines += ["-- 蒙版和羽化仅 Lua 可用；四个羽化数值原样传入，不换算百分比。",
+                  "local IMAGE_MASKS = " + _lua_literal(image_masks),
+                  "local TEXT_MASKS = " + _lua_literal(text_masks)]
     runtime = gia._RUNTIME
     if textboxes:
         lines += ["-- 文本框数据：位置使用编辑器画布坐标，textBox 保存完整文字与样式。", "local TEXTBOXES = {"]
@@ -465,12 +482,35 @@ def _control_script(scene, gia_data, name):
         if image_body.count(setter) != 1:
             raise ValueError("Upstream Lua runtime changed; Prefab adapter needs review")
         image_body = image_body.replace(setter, replacement)
+    text_body = _TEXTBOX_RUNTIME
+    if has_mask_data:
+        rotations_expr = "ROTATIONS[index][1], ROTATIONS[index][2]" if has_xy else "0, 0"
+        image_body = (f'''            local frame = MaskFrame(IMAGE_MASKS[index], parent, item[4], item[5], item[2], item[3],
+                item[8], item[9], item[10], item[11], item[6], item[7], item[12], item[13], {rotations_expr}, item[14])
+''' + image_body.replace("game.InstantiateClientUIControl(IMAGE_PREFAB_ID, parent)",
+                         "game.InstantiateClientUIControl(IMAGE_PREFAB_ID, frame and frame.control or parent)"))
+        image_body = image_body.replace("            image:SetAsLastSibling()", '''            image.enableMask, image.enableSoftEdge, image.reverseMaskArea = false, false, false
+            image:SetFillUnused()
+            FitMaskedContent(image, frame, item[4], item[5], item[2], item[3],
+                item[8], item[9], item[10], item[11], item[6], item[7])
+            image:SetActive(true)
+            image:SetVisible(true)
+            image:SetAsLastSibling()''')
+        text_body = text_body.replace("                local text = game.InstantiateClientUIControl(TEXTBOX_PREFAB_ID, parent)", '''                local frame = MaskFrame(TEXT_MASKS[index], parent, item.width, item.height,
+                    item.x - ROOT[3] / 2, ROOT[4] / 2 - item.y,
+                    box.anchorMinX, box.anchorMinY, box.anchorMaxX, box.anchorMaxY, box.pivotX, box.pivotY,
+                    box.scaleX, box.scaleY, item.rotationX or 0, item.rotationY or 0, item.rotation)
+                local text = game.InstantiateClientUIControl(TEXTBOX_PREFAB_ID, frame and frame.control or parent)''')
+        text_body = text_body.replace("                text:SetActive(true)", '''                FitMaskedContent(text, frame, item.width, item.height,
+                    item.x - ROOT[3] / 2, ROOT[4] / 2 - item.y,
+                    box.anchorMinX, box.anchorMinY, box.anchorMaxX, box.anchorMaxY, box.pivotX, box.pivotY)
+                text:SetActive(true)''')
     if textboxes:
         image_body = "\n".join("    " + line for line in image_body.splitlines())
         loop = '''        for _, entry in ipairs(DRAW_ORDER) do
             local index = entry[2]
             if entry[1] == 2 then
-''' + _TEXTBOX_RUNTIME + '''
+''' + text_body + '''
             else
                 local item = ELEMENTS[index]
 ''' + image_body + '''
@@ -481,7 +521,8 @@ def _control_script(scene, gia_data, name):
     runtime = runtime[:runtime.index(before)] + (prefix if bindings else "") + loop + runtime[body_end + len('\n        end'):]
     if textboxes:
         check = 'if type(IMAGE_PREFAB_ID) ~= "number" or IMAGE_PREFAB_ID <= 0 or IMAGE_PREFAB_ID % 1 ~= 0 then'
-        runtime = runtime.replace(check, 'if #ELEMENTS > 0 and (type(IMAGE_PREFAB_ID) ~= "number" or IMAGE_PREFAB_ID <= 0 or IMAGE_PREFAB_ID % 1 ~= 0) then')
+        image_needed = 'true' if needs_masks else '#ELEMENTS > 0'
+        runtime = runtime.replace(check, f'if {image_needed} and (type(IMAGE_PREFAB_ID) ~= "number" or IMAGE_PREFAB_ID <= 0 or IMAGE_PREFAB_ID % 1 ~= 0) then')
         runtime = runtime.replace('    local parent = script.object', '''    if type(TEXTBOX_PREFAB_ID) ~= "number" or TEXTBOX_PREFAB_ID <= 0 or TEXTBOX_PREFAB_ID % 1 ~= 0 then
         printerr("[GIA绘制] 请填写 TEXTBOX_PREFAB_ID：客户端文本框控件模板索引ID")
         return
@@ -494,6 +535,26 @@ local function TextColor(hex, opacity)
     return Color.FromRGBA(tonumber(string.sub(hex, 2, 3), 16), tonumber(string.sub(hex, 4, 5), 16), tonumber(string.sub(hex, 6, 7), 16), math.floor(opacity * 255))
 end
 ''' + runtime
+    if has_mask_data:
+        runtime = runtime.replace("local created = {}", "local created = {}\n" + MASK_RUNTIME, 1)
+        runtime = runtime.replace("        game.DestroyClientUIControl(created[i])",
+                                  "        if created[i].alive then game.DestroyClientUIControl(created[i]) end")
+        runtime = runtime.replace("function OnDestroy()\n    Clear()\nend",
+                                  "function OnDestroy()\n    created = {} -- 宿主销毁负责回收子树，不重复 Destroy。\nend")
+        # Instantiate/activation can synchronously reenter lifecycle callbacks.
+        runtime = runtime.replace("function OnStart()\n    Clear()", "local building = false\nlocal function Build()\n    Clear()", 1)
+        runtime += '''
+function OnStart()
+    if building then return end
+    building = true
+    local ok, err = xpcall(Build, debug.traceback)
+    building = false
+    if not ok then
+        local cleanupOk, cleanupErr = pcall(Clear)
+        printerr("[图片绘制] " .. tostring(err) .. (cleanupOk and "" or (" | cleanup: " .. tostring(cleanupErr))))
+    end
+end
+'''
     lines.append(runtime.replace("[GIA绘制]", "[图片绘制]"))
     return "\n".join(lines)
 
@@ -598,6 +659,9 @@ def drawing_to_scene(drawing):
                          "rotation": angle, **xy, "color": color,
                          "opacity": alpha / 255, "zIndex": index,
                          "isBackground": drawing["format"] == "shaper" and index < drawing["backgrounds"]})
+    if "imageMasks" in drawing:
+        for item, mask in zip(elements, drawing["imageMasks"]):
+            item["luaMask"] = mask
     if "textboxes" in drawing:
         text_elements = []
         for index, item in enumerate(drawing["textboxes"]):
@@ -605,6 +669,8 @@ def drawing_to_scene(drawing):
             text_elements.append({**item, "id": f"lua-text-{index + 1}", "type": "textbox",
                                   "color": box["textColor"], "opacity": box["textOpacity"],
                                   "zIndex": index, "isBackground": False})
+            if "textMasks" in drawing:
+                text_elements[-1]["luaMask"] = drawing["textMasks"][index]
         controls = {1: elements, 2: text_elements}
         elements = [controls[kind][index - 1] for kind, index in drawing["order"]]
         for index, item in enumerate(elements):

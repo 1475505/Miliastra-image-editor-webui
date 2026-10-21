@@ -1,0 +1,40 @@
+{
+  "canvas": { "width": 800, "height": 360, "background": "transparent" },
+  "elements": [
+    {
+      "id": "gradient-base", "name": "底色文字 · 蓝", "type": "textbox",
+      "x": 400, "y": 180, "width": 560, "height": 130,
+      "rotation": 0, "color": "#6f9aff", "opacity": 1, "zIndex": 0, "isBackground": false,
+      "textBox": {
+        "text": "星间来信", "fontSize": 72, "autoSize": false, "minFontSize": 72,
+        "textColor": "#6f9aff", "textOpacity": 1,
+        "bgColor": "#ffffff", "bgOpacity": 0,
+        "outlineEnabled": false, "outlineColor": "#333333", "outlineOpacity": 0,
+        "alignH": "center", "alignV": "middle", "anchorType": "center", "visible": true,
+        "scaleX": 1, "scaleY": 1, "anchorMinX": 0.5, "anchorMinY": 0.5,
+        "anchorMaxX": 0.5, "anchorMaxY": 0.5, "pivotX": 0.5, "pivotY": 0.5
+      }
+    },
+    {
+      "id": "gradient-top", "name": "渐入文字 · 金", "type": "textbox",
+      "x": 400, "y": 180, "width": 560, "height": 130,
+      "rotation": 0, "color": "#f5d49c", "opacity": 1, "zIndex": 1, "isBackground": false,
+      "textBox": {
+        "text": "星间来信", "fontSize": 72, "autoSize": false, "minFontSize": 72,
+        "textColor": "#f5d49c", "textOpacity": 1,
+        "bgColor": "#ffffff", "bgOpacity": 0,
+        "outlineEnabled": false, "outlineColor": "#333333", "outlineOpacity": 0,
+        "alignH": "center", "alignV": "middle", "anchorType": "center", "visible": true,
+        "scaleX": 1, "scaleY": 1, "anchorMinX": 0.5, "anchorMinY": 0.5,
+        "anchorMaxX": 0.5, "anchorMaxY": 0.5, "pivotX": 0.5, "pivotY": 0.5
+      },
+      "luaMask": {
+        "enabled": true, "offsetX": 310, "offsetY": 0, "width": 920, "height": 220,
+        "reverseMaskArea": false, "enableSoftEdge": true, "softEdgeMode": "Pixel",
+        "softEdgeWidthX": 300, "softEdgeWidthY": 0,
+        "horizontalSoftRange": 85, "verticalSoftRange": 85
+      }
+    }
+  ],
+  "meta": { "sourceType": "editor", "sourceName": "gradient-text", "warnings": [] }
+}

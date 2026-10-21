@@ -12,7 +12,32 @@ const prefabUrl = moduleUrl("../src/prefabLibrary.ts");
 const assetsUrl = moduleUrl("../src/imageLibrary.ts");
 const stretchUrl = moduleUrl("../src/imageStretch.ts");
 const library = await import(assetsUrl);
-const tools = await import(moduleUrl("../src/webmcp.ts", [["./prefabLibrary", prefabUrl], ["./imageLibrary", assetsUrl], ["./imageStretch", stretchUrl], ["./rotation", moduleUrl("../src/rotation.ts")]]));
+const tools = await import(moduleUrl("../src/webmcp.ts", [["./prefabLibrary", prefabUrl], ["./imageLibrary", assetsUrl], ["./imageStretch", stretchUrl], ["./rotation", moduleUrl("../src/rotation.ts")], ["./luaMask", moduleUrl("../src/luaMask.ts")]]));
+
+test("mask tools preserve partial native values and reject malformed updates", async () => {
+  const old = globalThis.document, definitions = new Map(), edits = [];
+  globalThis.document = { modelContext: { registerTool: async tool => definitions.set(tool.name, tool) } };
+  const dispose = tools.registerEditorTools(() => ({
+    getScene: () => ({ elements: [{ id: "text", type: "textbox" }] }),
+    updateElements: updates => { edits.push(updates); return { ok: true }; }
+  }));
+  try {
+    const execute = args => definitions.get("update_element").execute({ id: "text", ...args }, {});
+    assert.equal(definitions.get("update_element").inputSchema.properties.luaMask.properties.imageId.default, 100001);
+    assert.deepEqual(definitions.get("update_element").inputSchema.properties.luaMask.properties.imageType.enum, ["basic", "stretch", null]);
+    assert.equal((await execute({ luaMask: { imageId: 100002, imageType: "basic", enableSoftEdge: true, softEdgeMode: "Percentage", horizontalSoftRange: 82 } })).ok, true);
+    assert.deepEqual(edits[0][0].patch.luaMask, { imageId: 100002, imageType: "basic", enableSoftEdge: true, softEdgeMode: "Percentage", horizontalSoftRange: 82 });
+    for (const luaMask of [{ width: -1 }, { enabled: 1 }, { softEdgeMode: "percent" }, { softEdgeWidthX: Infinity }, { imageId: 0 }, { imageId: 1.5 }, { imageId: true }, { imageId: 2147483648 }, { imageType: "Basic" }, { imageType: true }]) {
+      assert.equal((await execute({ luaMask })).ok, false);
+    }
+    assert.equal((await execute({ luaMask: { imageType: "stretch" } })).ok, true);
+    assert.deepEqual(edits[1][0].patch.luaMask, { imageType: "stretch" });
+    assert.equal((await execute({ luaMask: { imageType: null } })).ok, true);
+    assert.deepEqual(edits[2][0].patch.luaMask, { imageType: null });
+    assert.equal((await execute({ luaMask: null })).ok, true);
+    assert.equal(edits.length, 4);
+  } finally { dispose(); globalThis.document = old; }
+});
 
 test("image tools preserve Basic/Stretch and reject invalid or misplaced modes atomically", async () => {
   const originalDocument = globalThis.document;
