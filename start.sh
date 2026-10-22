@@ -7,8 +7,20 @@ FRONTEND_DIR="$SCRIPT_DIR/frontend"
 VENV_DIR="$BACKEND_DIR/.venv"
 REQ_FILE="$BACKEND_DIR/requirements.txt"
 
-# 构建前端（输出到 backend/app/static）
-if command -v npm >/dev/null 2>&1 && [ -f "$FRONTEND_DIR/package.json" ]; then
+# PM2 可能保留已失效的 fnm_multishells 临时 PATH，回退到稳定的默认版本。
+if ! command -v npm >/dev/null 2>&1; then
+    FNM_DEFAULT_BIN="${FNM_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/fnm}/aliases/default/bin"
+    if [ -x "$FNM_DEFAULT_BIN/npm" ] && [ -x "$FNM_DEFAULT_BIN/node" ]; then
+        export PATH="$FNM_DEFAULT_BIN:$PATH"
+    fi
+fi
+
+# 构建前端（输出到 backend/app/static），禁止静默跳过导致 HTML 与资源不匹配。
+if [ -f "$FRONTEND_DIR/package.json" ]; then
+    if ! command -v npm >/dev/null 2>&1; then
+        echo "Error: npm not found. Install Node.js or refresh PM2 PATH with pm2 restart qx-img --update-env." >&2
+        exit 1
+    fi
     echo "Building frontend..."
     cd "$FRONTEND_DIR"
     if [ ! -d "node_modules" ]; then
