@@ -609,10 +609,6 @@ export function imageUrl(imageId: number): string {
   return `${OSS_IMAGE_BASE}/sprite/${imageId}.png`;
 }
 
-export function borderPath(imageId: number): string {
-  return `${OSS_IMAGE_BASE}/border/${imageId}.json`;
-}
-
 /** 编辑器「默认背景图」：千星 UIPage 参考图，仅作画布查看背景，不进场景也不导出 */
 export const DEFAULT_BACKDROP_URL = `${OSS_IMAGE_BASE}/UIPage.png`;
 

@@ -99,7 +99,7 @@ function contourCanvas(mask: LuaMask, width: number, height: number, feather: { 
   const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
   let outline;
   if (guides && !isBasicMask(mask.imageId)) {
-    const scale = Math.min(1, 256 / Math.max(w, h));
+    const scale = Math.min(1, 768 / Math.max(w, h));
     const preview = document.createElement("canvas");
     preview.width = Math.max(1, Math.ceil(w * scale)); preview.height = Math.max(1, Math.ceil(h * scale));
     const context = preview.getContext("2d");

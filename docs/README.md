@@ -1,156 +1,51 @@
-# Miliastra Image Editor WebUI
+# 使用指南
 
-## Overview
+[中文首页](../README.zh-CN.md) · [English](../README.md) · [在线编辑器](https://qx.070077.xyz/)
 
-Miliastra Image Editor WebUI is a single-page image element editor with an integrated frontend and backend.
+## 创建与保存作品
 
-It is designed to:
+1. **添加内容**：图形库拖入或双击添加。素材可按分类、用途、关键词检索；元件按准确 ID 查询。
+2. **编辑**：画布拖动，单选使用缩放／旋转手柄；右侧「图元」设置文字、颜色、位置与层级。「高级」设置 Lua 蒙版和羽化。
+3. **多选**：Shift 点选增减，空白拖框选择；多选后可整体移动、复制、删除和调层级。
+4. **保存**：导出 JSON。下次从「导入」打开即可继续。撤销历史和当前选择只保留在本次会话。
 
-- import `CSS / JSON / SVG / Lua` into one unified scene model
-- continue editing that scene in the browser
-- export `GIA / CSS / SVG / JSON / Lua`
+「保存并应用」把当前图元更新到可复用图形库，并刷新代码预览；它不会下载文件或自动保存到服务器。
 
-Production deployment is intentionally simple: one FastAPI process serves both the API and the built frontend.
+## 导入与导出
 
-## Quick Start / 快速上手
+- JSON 最适合完整保存。Lua 支持本编辑器与配套拟合工具的绘图数据；导入仅读取数据，不运行脚本。
+- CSS 和 SVG 支持有限图元子集。复杂路径、滤镜、任意分组与渐变不保证还原；导入后留意警告。
+- GIA 用于界面素材组。Lua 可绘制图片、元件和原生文本框，使用前按[说明](lua-mask.md#使用导出的-lua)配置模板索引。
+- 含元件或已启用图元蒙版／羽化的作品只能保存 JSON 或导出 Lua。辅助虚线不导出。
+- SVG 会省略圆环并给出提示；需要完整作品时用 JSON 或 Lua。
+- PNG 可通过 `/api/export/png` 或 WebMCP `get_canvas_preview` 获取；网页导出菜单主要提供 GIA、Lua、CSS、SVG、JSON。
 
-图片描述、40 类用途搜索、看图筛选、素材包下载及 R2 文件发布步骤见 [素材库上传与接入](image-library-upload.md)。AI 选型与批量拼接见 [素材选择技能](../skills/miliastra-image-asset-selector/SKILL.md)。
+画布查看背景、缩放倍率及辅助线不改变作品。需要实色背景时添加满画布矩形。画布级 GIA 遮罩与图元级 Lua 蒙版是两套设置，不能互相替代。
 
-1. 从左侧图形库拖入形状（或双击添加），也可在「导入」中上传文件或粘贴数据。
-2. 直接拖动图元，使用手柄缩放、旋转；在右侧属性面板精调尺寸、颜色和文字。
-3. 点击右上角「导出」下载作品。GIA 用于游戏素材，JSON / Lua 可保留场景数据以便继续编辑。
+## 常见问题
 
-Add shapes from the library or import a file, edit on the canvas, then choose **Export**. Use **Save & Apply** to refresh code previews and reusable library items. This does not save a file to disk; export JSON or Lua to keep a copy.
+**刷新后作品不见了？** 当前画布不是自动保存。请及时导出 JSON；“已添加的元件”仅是浏览器中的素材使用历史。
 
-Lua exports extend the primitive-shape tool’s client drawing runtime with native textboxes. Set `IMAGE_PREFAB_ID` for scenes with images and `TEXTBOX_PREFAB_ID` for scenes with textboxes to the corresponding control template indices, then attach the script to a dedicated empty client container. Both that tool’s palette-based Lua and its GIA-to-Lua outputs can be imported here; uploaded code is never executed. Exports preserve names, textbox settings and library items in an editor-data comment. Textbox text, colors, outline, alignment, visibility and layout are exported. `adaptiveFontSize` explicitly follows the editor’s `autoSize` setting (enabled by default); `fontSize` and `minimumFontSize` are integers. Images and textboxes retain their stacking order.
+**选中了图片却看不出基础／拉伸区别？** 调整图元宽高试试；接近原图大小时两者可能相同。只有带切片边框的素材提供拉伸。
 
-Need to turn a raster image into shapes? Open the [image fitting tool / 图元拟合工具](https://qx-img.070077.xyz/), then import the resulting supported data into the editor. The separate [Miliastra knowledge base / 千星知识库](https://ugc.070077.xyz/) documents the game editor, not this application.
+**蒙版开了但辅助画面仍看得到全部内容？** 「显示蒙版辅助预览」保留原内容，灰色半透明覆盖表示被遮部分，细虚线标出轮廓。关闭它可看实际裁切。
 
-【图形库 → 元件】通过 Prefab ID 查找缩略图、名称、分类和像素尺寸，仅展示单条查询结果；下方记录添加到画布过的元件，便于再次使用。数据按 R2 的 `prefabs/` 前缀组织，公开索引候选尚待审查上传，说明见 [Prefab 索引接入](prefab-library-upload.md)。
+**倾转后图元消失？** X/Y 为 90° 时侧立。可从图层列表选择，再修改角度。
 
-## Current Capabilities
+**素材无法加载？** 点击图形库刷新；确认可连接素材服务。已有画布和基本图形仍可编辑。
 
-### Import
+## 文档导航
 
-- Paste or upload `css / json / svg / lua` (Lua: editor / primitive-shape drawing formats)
-- Prefer `.shaper-container` width and height as the canvas when importing CSS
-- Honor the CSS canvas options `-miliastra-canvas-size: WxH` (wins over `width` / `height`) and `-miliastra-canvas-fit: lock | expand | fit`
-- Ignore `.shaper-container` background color by design; use a full-canvas rectangle element if a visual background is needed
-- Auto-expand the canvas when positioned CSS elements overflow `.shaper-container`, unless the CSS pins it with `-miliastra-canvas-fit: lock` (then overflow is clipped and reported as a warning)
-- Auto-fit the canvas from parsed elements when `.shaper-container` is missing
-- Parse positioned CSS rules without requiring a fixed `.shaper-element.shaper-eN` naming pattern
-- Auto-fit canvas bounds for simplified JSON when `canvas` is missing
-- Keep `library` information in the scene structure, including categories, presets, and saved items
+| 需求 | 文档 |
+|---|---|
+| 多选、复制、拖动与快捷键 | [编辑操作](editor-interaction.md) |
+| 素材基础／拉伸 | [图片类型](image-stretch.md) |
+| 倾转、翻面与旋转 | [三轴旋转](rotation-xy.md) |
+| 蒙版、羽化与脚本使用 | [Lua 导出与蒙版](lua-mask.md) |
+| 让 AI 操作当前页面 | [WebMCP](webmcp.md) |
+| 本地启动、开发或容器部署 | [运行与部署](deploy.md) |
+| 配置图片素材服务 | [素材库接入](image-library-upload.md) |
+| 配置元件素材服务 | [元件索引接入](prefab-library-upload.md) |
+| 维护源码与格式兼容性 | [维护说明](technical-design.md) |
 
-### Editing
-
-- Left panel provides `基础模板` and `图形库`
-- Basic shape library includes:
-  - ellipse
-  - rectangle
-  - triangle
-  - four-point star
-  - five-point star
-  - ring (圆环, fixed inner:outer radius ratio 0.8, GIA asset ref 100006)
-  - textbox (文本框: 默认字号 20、白字、透明白底、描边 `#333333` 20%、左/上对齐；支持 `<color>` / `<i>` / `<size>`)
-- Browse the existing image library by original category, 40 purpose filters, tone and keywords; purpose and category stay separate
-- 图形库「元件」按官方 ID 查询单个缩略图，点击/拖动添加；已添加的元件去重保存在浏览器，刷新后可复用，未列入 JSON 的 ID 不访问图片。Lua 在脚本内定义 `PREFAB_IDS` 表并通过 `ImageSource.Prefab` 绘制，无需创建客户端脚本参数；JSON 保存可回导，含元件的场景仅允许 Lua 绘制。
-- 「导出 → 复制Lua绘制脚本」在弹窗中展示当前画布生成的脚本，可直接复制到剪贴板，无需下载文件；生成失败可重试。
-- WebMCP discovers categories and purpose counts, searches assets, previews up to 48 ID-labelled thumbnails, and prepares selected or complete asset ZIPs with original images and a manifest
-- Drag shapes into canvas or double-click to add
-- Canvas supports:
-  - panning
-  - zooming
-  - width / height adjustment
-  - locked aspect ratio
-  - direct move / rotate / resize for selected elements
-  - quick right-click color and opacity editing
-- Right panel supports:
-  - position
-  - size
-  - rotation
-  - color
-  - opacity
-  - textbox settings (font, colors, outline, alignment, Min/Max/pivot anchors, rich text)
-  - background-element flag
-  - layer ordering
-  - delete current element
-- **图元 → 高级**：蒙版图片 ID（默认 `100001`）、图片类型（保持默认／基础／拉伸）、区域反转、羽化；支持 Pixel / Percentage、水平/垂直宽度与范围。选图复用图形库缩略图与图片类型能力，提供素材搜索及独立蒙版预览。画布辅助显示保留原内容，以黑白虚线和红色半透明斜线标出蒙版轮廓与被遮区域；关闭可看实际裁切。候选确认保存、取消恢复，辅助线不导出。**仅 Lua 导出可用**，JSON/收藏/复制/回导保留配置；网页按基础形状或素材 alpha 近似预览裁切、羽化及反转，不代表真机公式。导出脚本需要用户挂载到客户端容器，运行时自动创建透明图片父控件和子内容；启用蒙版或羽化后，GIA/CSS/SVG/PNG 导出不可用，避免丢失效果。详情见 [Lua 蒙版与羽化](lua-mask.md)。
-- When nothing is selected, the right panel shows the current element list
-- Undo / redo shortcuts:
-  - `Ctrl+Z`
-  - `Ctrl+Shift+Z` or `Ctrl+Y` (use ⌘ on macOS)
-
-### Save And Export
-
-- `保存并应用` refreshes JSON / CSS / SVG / Lua previews
-- The current canvas can be exported as:
-  - `GIA`
-  - `CSS`
-  - `SVG`
-  - `JSON`
-  - `Lua` (re-importable scene data)
-- Canvas zoom only affects editor display and does not change export geometry
-
-## JSON Structure
-
-Exported JSON uses this high-level structure:
-
-```json
-{
-  "canvas": {
-    "width": 300,
-    "height": 300,
-    "background": "#ffffff"
-  },
-  "elements": [],
-  "meta": {
-    "sourceType": "editor",
-    "sourceName": "",
-    "warnings": []
-  },
-  "library": {
-    "activeCategory": "基础形状",
-    "categories": [],
-    "baseShapePresets": [],
-    "savedItems": []
-  }
-}
-```
-
-Field notes:
-
-- `library.activeCategory` stores the current library category
-- `library.categories` keeps the reserved category interface
-- `library.baseShapePresets` stores default size and color for basic shapes
-- `library.savedItems` stores saved element snapshots after `保存并应用`
-
-## Repository Structure
-
-```text
-backend/   FastAPI service and import/export APIs
-frontend/  React + TypeScript + Vite frontend
-docs/      project documentation
-demo/      sample CSS input
-skills/    reusable Codex skill definitions
-```
-
-## Stack
-
-- Frontend: `React + TypeScript + Vite`
-- Backend: `FastAPI`
-- GIA conversion: bundled Python converter in `backend/vendor/gia/`
-
-For deeper implementation details, see [technical-design.md](technical-design.md).
-
-### Design proposals / 设计提案
-
-- [遮罩与渐变效果技术方案](mask-effects-design.md) · [交互式 UI 稿](ui/mask-effects.html)：裁切组、双色渐变、软边高光带。当前为待评审设计，尚未接入正式编辑器。
-- [效果相关 Lua API 核对](mask-effects-api.md)：图片遮罩、像素/比例羽化、范围、反转、填充及 Tween 的属性表与证据边界。
-
-## Known Limitations
-
-- Complex SVG is not guaranteed to round-trip correctly
-- SVG export skips ring (圆环) elements and writes a `Miliastra-Warning` comment in the file head; use CSS or JSON export for rings
-- Current transform editing is single-element only
-- Undo / redo is session-level and not persisted
+示例：[基础 CSS](../demo/demo.css) · [渐变字 JSON / Lua](../demo/gradient-text.md)

@@ -12,6 +12,8 @@ import { rotationCss, unprojectVector } from "./rotation";
 import { LuaMaskInspector } from "./LuaMaskInspector";
 import { LuaMaskPreview } from "./LuaMaskPreview";
 import { luaMaskActive, luaMaskOf, scaleLuaMask, type LuaMask } from "./luaMask";
+import { clickSelection, cloneSelection, editableTarget, intersectsSelection, reorderSelection, selectionBounds, selectionRect, translateSelection, type SelectionRect } from "./editorSelection";
+import { ShortcutHelp } from "./ShortcutHelp";
 import {
   assetMaskUrl,
   DEFAULT_BACKDROP_URL,
@@ -277,11 +279,18 @@ type InteractionState =
     }
   | {
       kind: "shape";
-      id: string;
+      ids: string[];
       startX: number;
       startY: number;
-      originX: number;
-      originY: number;
+      source: SceneElement[];
+      bounds: SelectionRect;
+    }
+  | {
+      kind: "marquee";
+      startX: number; startY: number;
+      origin: { x: number; y: number };
+      initial: string[];
+      additive: boolean;
     }
   | {
       kind: "resize";
@@ -432,7 +441,27 @@ function App() {
     [t]
   );
   const [scene, setScene] = useState<SceneDocument>(EMPTY_SCENE);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectionIds, setSelectionIds] = useState<string[]>([]);
+  const selectionRef = useRef<string[]>([]);
+  const selectionAnchorRef = useRef<string | null>(null);
+  const selectedId = selectionIds[selectionIds.length - 1] ?? null;
+  function selectIds(ids: string[], anchor?: string | null) {
+    const next = [...new Set(ids)];
+    selectionRef.current = next;
+    selectedIdRef.current = next[next.length - 1] ?? null;
+    setSelectionIds(next);
+    if (anchor !== undefined) selectionAnchorRef.current = anchor;
+  }
+  // Existing single-item creation/import/AI entry points remain single selection.
+  function setSelectedId(id: string | null) { selectIds(id ? [id] : [], id); }
+  const [marquee, setMarquee] = useState<SelectionRect | null>(null);
+  const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
+  const [spacePanning, setSpacePanning] = useState(false);
+  const spaceRef = useRef(false);
+  const clipboardRef = useRef<SceneElement[]>([]);
+  const pasteOffsetRef = useRef(0);
+  const gestureStartRef = useRef<{ scene: SceneDocument; selection: string[] } | null>(null);
+  const nudgeRef = useRef<SceneDocument | null>(null);
   const [leftTab, setLeftTab] = useState<LeftTab>("library");
   const [assetCatalog, setAssetCatalog] = useState<LibraryCatalogState | null>(() => getCachedLibraryCatalog());
   // 图形分类与单色/彩色筛选属于「浏览位置」，不做持久化：每次打开都从基础形状开始
@@ -504,6 +533,8 @@ function App() {
   const [previewRevision, setPreviewRevision] = useState(0);
   const previewCacheRef = useRef<Partial<Record<PreviewTab, { scene: SceneDocument; text: string }>>>({});
   const saveAndApplyRef = useRef<() => Promise<void>>(async () => {});
+  const keyboardRef = useRef<(event: KeyboardEvent) => void>(() => {});
+  const clipboardEventRef = useRef<(event: ClipboardEvent) => void>(() => {});
 
   const orderedElements = useMemo(
     () => [...scene.elements].sort((a, b) => a.zIndex - b.zIndex),
@@ -518,6 +549,10 @@ function App() {
     () => orderedElements.find((element) => element.id === selectedId) ?? null,
     [orderedElements, selectedId]
   );
+  const selectedIds = useMemo(() => new Set(selectionIds), [selectionIds]);
+  const selectedElements = useMemo(() => orderedElements.filter(element => selectedIds.has(element.id)), [orderedElements, selectedIds]);
+  const selectedBounds = useMemo(() => selectionBounds(selectedElements), [selectedElements]);
+  const multiSelected = selectedElements.length > 1;
 
   const canvasMask = useMemo(() => canvasMaskOf(scene.canvas), [scene.canvas]);
   const canvasMaskWidth = canvasMask.width ?? scene.canvas.width;
@@ -843,6 +878,7 @@ function App() {
   }, [sceneImageAssetKey]);
 
   function undoScene() {
+    finishNudge();
     if (historyIndexRef.current <= 0) {
       return;
     }
@@ -857,6 +893,7 @@ function App() {
   }
 
   function redoScene() {
+    finishNudge();
     if (historyIndexRef.current >= historyRef.current.length - 1) {
       return;
     }
@@ -875,7 +912,7 @@ function App() {
     if (!element) {
       return true;
     }
-    return !element.closest("input, textarea, select, [contenteditable='true']");
+    return !editableTarget(element);
   }
 
   function getScenePointer(clientX: number, clientY: number) {
@@ -892,54 +929,147 @@ function App() {
     };
   }
 
+  function finishNudge() {
+    if (!nudgeRef.current) return;
+    nudgeRef.current = null;
+    commitHistory(sceneRef.current);
+  }
+
+  function cancelGesture() {
+    const start = gestureStartRef.current;
+    if (start) { replaceScene(start.scene); selectIds(start.selection); }
+    interactionRef.current = null; gestureStartRef.current = null;
+    setMarquee(null); setGuideLines([]);
+  }
+
+  function getSelectedItems() {
+    const ids = new Set(selectionRef.current);
+    return sceneRef.current.elements.filter(element=>ids.has(element.id));
+  }
+
+  function copySelected(cut = false) {
+    const items=getSelectedItems();
+    if (!items.length) return "";
+    clipboardRef.current=structuredClone(items);
+    pasteOffsetRef.current=0;
+    const text=JSON.stringify({format:"miliastra-editor-selection",elements:items});
+    if(cut) removeSelected();
+    setStatus(t(cut?"selection.cutStatus":"selection.copyStatus",{n:items.length}));
+    return text;
+  }
+
+  function copySelectionToClipboard() {
+    const text=copySelected();
+    if(text) void navigator.clipboard?.writeText(text).catch(()=>{ /* The in-page Paste button remains available. */ });
+  }
+
+  function pasteSelected(inPlace = false) {
+    finishNudge();
+    if(!clipboardRef.current.length)return;
+    const current=sceneRef.current;
+    const offset=inPlace?0:++pasteOffsetRef.current*10;
+    const clones=cloneSelection(clipboardRef.current,()=>crypto.randomUUID(),current.elements.length,offset);
+    commitScene({...current,elements:normalizeZIndex([...current.elements,...clones])});
+    selectIds(clones.map(e=>e.id));setQuickEdit(null);
+  }
+
+  function duplicateSelected() {
+    finishNudge();
+    const current=sceneRef.current,items=getSelectedItems();
+    if(!items.length)return;
+    const clones=cloneSelection(items,()=>crypto.randomUUID(),current.elements.length);
+    commitScene({...current,elements:normalizeZIndex([...current.elements,...clones])});
+    selectIds(clones.map(e=>e.id));setQuickEdit(null);
+  }
+
+  function selectClicked(id: string, event: {shiftKey:boolean;ctrlKey:boolean;metaKey:boolean}, range = false) {
+    finishNudge();
+    const toggle=event.ctrlKey||event.metaKey||(!range&&event.shiftKey);
+    const order=[...sceneRef.current.elements].sort((a,b)=>b.zIndex-a.zIndex).map(e=>e.id);
+    const ids=clickSelection(selectionRef.current,id,toggle,range&&event.shiftKey,order,selectionAnchorRef.current);
+    selectIds(ids,range&&event.shiftKey?undefined:id);setQuickEdit(null);
+  }
+
+  clipboardEventRef.current = event => {
+    if(document.querySelector("dialog[open]")||!canCaptureShortcut(event.target)||interactionRef.current||event.defaultPrevented)return;
+    finishNudge();
+    if(event.type==="copy"||event.type==="cut") {
+      if(!selectionRef.current.length)return;
+      // Clipboard events provide synchronous write access without permission prompts.
+      const text=copySelected(event.type==="cut");
+      event.clipboardData?.setData("text/plain",text);
+      event.preventDefault();
+    } else if(event.type==="paste") {
+      const text=event.clipboardData?.getData("text/plain");
+      if(!clipboardRef.current.length)return;
+      // Only reuse the in-page clipboard when the system still contains this selection.
+      if(text) {
+        try { const data=JSON.parse(text);if(data.format!=="miliastra-editor-selection"||JSON.stringify(data.elements)!==JSON.stringify(clipboardRef.current))return; }
+        catch {return;}
+      }
+      event.preventDefault();pasteSelected();
+    }
+  };
+
+  keyboardRef.current = event => {
+    if(event.defaultPrevented||event.isComposing||event.keyCode===229||document.querySelector("dialog[open]"))return;
+    const key=event.key.toLowerCase(),mod=event.ctrlKey||event.metaKey;
+    if(!canCaptureShortcut(event.target))return;
+    if(key==="escape") {
+      event.preventDefault();
+      if(interactionRef.current)cancelGesture();
+      else if(nudgeRef.current) {const start=nudgeRef.current;nudgeRef.current=null;replaceScene(start);}
+      else {selectIds([]);setQuickEdit(null);}
+      return;
+    }
+    if(event.code==="Space"&&!mod&&!event.altKey) {event.preventDefault();spaceRef.current=true;setSpacePanning(true);return;}
+    if(interactionRef.current)return;
+    if(key.startsWith("arrow")&&!mod&&!event.altKey) {
+      if(!selectionRef.current.length)return;
+      event.preventDefault();
+      if(!nudgeRef.current)nudgeRef.current=sceneRef.current;
+      const step=event.shiftKey?10:1;
+      const dx=key==="arrowleft"?-step:key==="arrowright"?step:0;
+      const dy=key==="arrowup"?-step:key==="arrowdown"?step:0;
+      replaceScene(current=>({...current,elements:translateSelection(current.elements,selectionRef.current,dx,dy,current.canvas)}));
+      return;
+    }
+    finishNudge();
+    if(key==="delete"||key==="backspace") {if(selectionRef.current.length){event.preventDefault();removeSelected();}return;}
+    if(key==="?"&&!mod) {event.preventDefault();setShortcutHelpOpen(true);return;}
+    if(!mod||event.altKey)return;
+    if(key==="a") {event.preventDefault();selectIds(sceneRef.current.elements.map(e=>e.id));setQuickEdit(null);}
+    else if(key==="d") {event.preventDefault();if(!event.repeat)duplicateSelected();}
+    else if(key==="z") {event.preventDefault();event.shiftKey?redoScene():undoScene();}
+    else if(key==="y") {event.preventDefault();redoScene();}
+    else if(key==="s") {event.preventDefault();void saveAndApplyRef.current();}
+    else if(event.code==="BracketLeft"||event.code==="BracketRight") {
+      event.preventDefault();moveLayer(event.code==="BracketRight"?(event.shiftKey?"top":"up"):(event.shiftKey?"bottom":"down"));
+    } else if(key==="0") {event.preventDefault();fitCanvasToStage();}
+    else if(key==="1") {event.preventDefault();handleZoomChange(1);}
+    else if(key==="+"||key==="=") {event.preventDefault();handleZoomChange(zoomRef.current+.1);}
+    else if(key==="-") {event.preventDefault();handleZoomChange(zoomRef.current-.1);}
+    else if(key==="v"&&event.shiftKey&&clipboardRef.current.length) {event.preventDefault();pasteSelected(true);}
+  };
+
   useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (document.querySelector("dialog[open]")) return;
-      const mod = event.ctrlKey || event.metaKey;
-
-      if (mod && event.key.toLowerCase() === "s") {
-        event.preventDefault();
-        saveAndApplyRef.current();
-        return;
-      }
-
-      if (!canCaptureShortcut(event.target)) {
-        return;
-      }
-
-      const key = event.key.toLowerCase();
-
-      if (key === "delete" || key === "backspace") {
-        const id = selectedIdRef.current;
-        if (id) {
-          event.preventDefault();
-          removeElementById(id);
-        }
-        return;
-      }
-
-      if (!mod) {
-        return;
-      }
-
-      if (key === "z") {
-        event.preventDefault();
-        if (event.shiftKey) {
-          redoScene();
-        } else {
-          undoScene();
-        }
-        return;
-      }
-
-      if (key === "y") {
-        event.preventDefault();
-        redoScene();
-      }
+    const handleKeyDown = (event: KeyboardEvent) => keyboardRef.current(event);
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.code === "Space") { spaceRef.current = false; setSpacePanning(false); }
+      if (event.key.startsWith("Arrow")) finishNudge();
     };
-
+    const handleClipboard = (event: ClipboardEvent) => clipboardEventRef.current(event);
+    const handleBlur = () => { spaceRef.current = false; setSpacePanning(false); finishNudge(); cancelGesture(); };
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("blur", handleBlur);
+    for (const name of ["copy", "cut", "paste"]) window.addEventListener(name, handleClipboard as EventListener);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("blur", handleBlur);
+      for (const name of ["copy", "cut", "paste"]) window.removeEventListener(name, handleClipboard as EventListener);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -956,23 +1086,28 @@ function App() {
         return;
       }
 
+      if (action.kind === "marquee") {
+        const pointer = getScenePointer(event.clientX, event.clientY);
+        if (!pointer || Math.hypot(event.clientX-action.startX,event.clientY-action.startY) < 3) return;
+        const rect = selectionRect(action.origin,pointer);
+        setMarquee(rect);
+        const matches = sceneRef.current.elements.filter(element=>intersectsSelection(element,rect)).map(element=>element.id);
+        selectIds(action.additive ? [...action.initial,...matches] : matches);
+        return;
+      }
+
       if (action.kind === "shape") {
+        const pointer = getScenePointer(event.clientX, event.clientY);
+        if (!pointer) return;
         const cfg = snapConfigRef.current;
-        let rawX = action.originX + (event.clientX - action.startX) / zoomRef.current;
-        let rawY = action.originY + (event.clientY - action.startY) / zoomRef.current;
+        let dx = pointer.x - action.startX;
+        let dy = pointer.y - action.startY;
 
         if (event.shiftKey) {
-          const dx = Math.abs(rawX - action.originX);
-          const dy = Math.abs(rawY - action.originY);
-          if (dx >= dy) {
-            rawY = action.originY;
-          } else {
-            rawX = action.originX;
-          }
+          if (Math.abs(dx) >= Math.abs(dy)) dy = 0; else dx = 0;
         }
-
-        let finalX = clamp(rawX, 0, sceneRef.current.canvas.width);
-        let finalY = clamp(rawY, 0, sceneRef.current.canvas.height);
+        const centerX=action.bounds.x+action.bounds.width/2,centerY=action.bounds.y+action.bounds.height/2;
+        let finalX=centerX+dx,finalY=centerY+dy;
         let guides: GuideLine[] = [];
 
         if (cfg.enabled) {
@@ -982,30 +1117,23 @@ function App() {
           }
 
           if (cfg.snapToElements) {
-            const movingEl = sceneRef.current.elements.find((el) => el.id === action.id);
-            if (movingEl) {
-              const others = sceneRef.current.elements.filter((el) => el.id !== action.id);
+              const others = sceneRef.current.elements.filter((el) => !action.ids.includes(el.id));
               const threshold = 6 / zoomRef.current;
               const snap = computeSnapGuides(
-                { x: finalX, y: finalY, width: movingEl.width, height: movingEl.height },
+                { x: finalX, y: finalY, width: action.bounds.width, height: action.bounds.height },
                 others,
                 threshold
               );
-              finalX = clamp(snap.x, 0, sceneRef.current.canvas.width);
-              finalY = clamp(snap.y, 0, sceneRef.current.canvas.height);
+              finalX = snap.x;
+              finalY = snap.y;
               guides = snap.guides;
-            }
           }
         }
 
         setGuideLines(guides);
         replaceScene((current) => ({
           ...current,
-          elements: current.elements.map((element) =>
-            element.id === action.id
-              ? { ...element, x: finalX, y: finalY }
-              : element
-          )
+          elements: translateSelection(action.source,action.ids,finalX-centerX,finalY-centerY,current.canvas)
         }));
         return;
       }
@@ -1061,10 +1189,12 @@ function App() {
     };
 
     const handleMouseUp = () => {
-      if (interactionRef.current && interactionRef.current.kind !== "pan") {
+      if (interactionRef.current && interactionRef.current.kind !== "pan" && interactionRef.current.kind !== "marquee") {
         commitHistory(sceneRef.current);
       }
       interactionRef.current = null;
+      gestureStartRef.current = null;
+      setMarquee(null);
       setGuideLines([]);
     };
 
@@ -1229,7 +1359,7 @@ function App() {
       if (missing) return { ok: false, error: `Element not found: ${missing}` };
       if (!removed.size) return { ok: true, count: 0 };
       commitScene({ ...current, elements: normalizeZIndex(current.elements.filter((element) => !removed.has(element.id)).sort((a, b) => a.zIndex - b.zIndex)) });
-      setSelectedId((id) => id && removed.has(id) ? null : id);
+      selectIds(selectionRef.current.filter(id => !removed.has(id)));
       setQuickEdit((edit) => edit && removed.has(edit.targetId) ? null : edit);
       return { ok: true, count: removed.size };
     },
@@ -1591,27 +1721,9 @@ function App() {
   }
 
   function moveLayer(direction: "up" | "down" | "top" | "bottom") {
-    if (!selectedId) {
-      return;
-    }
-    const list = [...orderedElements];
-    const index = list.findIndex((item) => item.id === selectedId);
-    if (index === -1) {
-      return;
-    }
-
-    const [item] = list.splice(index, 1);
-    let targetIndex = index;
-    if (direction === "up") targetIndex = Math.min(list.length, index + 1);
-    if (direction === "down") targetIndex = Math.max(0, index - 1);
-    if (direction === "top") targetIndex = list.length;
-    if (direction === "bottom") targetIndex = 0;
-    list.splice(targetIndex, 0, item);
-
-    commitScene((current) => ({
-      ...current,
-      elements: normalizeZIndex(list)
-    }));
+    finishNudge();
+    if(!selectionRef.current.length)return;
+    commitScene(current=>({...current,elements:reorderSelection(current.elements,selectionRef.current,direction)}));
   }
 
   function moveLayerToPosition(layerNumber: number) {
@@ -1635,6 +1747,7 @@ function App() {
   }
 
   function removeElementById(id: string) {
+    finishNudge();
     commitScene((current) => ({
       ...current,
       elements: normalizeZIndex(current.elements.filter((element) => element.id !== id))
@@ -1642,17 +1755,16 @@ function App() {
     if (quickEdit?.targetId === id) {
       setQuickEdit(null);
     }
-    if (selectedIdRef.current === id) {
-      setSelectedId(null);
-    }
+    selectIds(selectionRef.current.filter(value=>value!==id));
     setStatus(t("statusbar.elementDeleted"));
   }
 
   function removeSelected() {
-    if (!selectedId) {
-      return;
-    }
-    removeElementById(selectedId);
+    finishNudge();
+    const ids=new Set(selectionRef.current);
+    if(!ids.size)return;
+    commitScene(current=>({...current,elements:normalizeZIndex(current.elements.filter(e=>!ids.has(e.id)))}));
+    selectIds([]);setQuickEdit(null);setStatus(t("selection.deletedStatus",{n:ids.size}));
   }
 
   async function downloadExport(endpoint: string, filename: string) {
@@ -1832,22 +1944,39 @@ function App() {
   }
 
   function handleStageMouseDown(event: React.MouseEvent<HTMLDivElement>) {
-    if (event.button !== 0) {
+    if(!stageRef.current||![0,1].includes(event.button))return;
+    if((event.target as HTMLElement).closest(".shape")&&!spaceRef.current&&event.button!==1)return;
+    event.preventDefault();stageRef.current.focus({preventScroll:true});finishNudge();setQuickEdit(null);
+    if(spaceRef.current||event.button===1) {
+      interactionRef.current={kind:"pan",startX:event.clientX,startY:event.clientY,scrollLeft:stageRef.current.scrollLeft,scrollTop:stageRef.current.scrollTop};
       return;
     }
-    if ((event.target as HTMLElement).closest(".shape")) {
-      return;
+    const pointer=getScenePointer(event.clientX,event.clientY);
+    if(!pointer)return;
+    gestureStartRef.current={scene:sceneRef.current,selection:[...selectionRef.current]};
+    const initial=[...selectionRef.current],additive=event.shiftKey||event.ctrlKey||event.metaKey;
+    interactionRef.current={kind:"marquee",startX:event.clientX,startY:event.clientY,origin:pointer,initial,additive};
+    if(!additive)selectIds([]);
+  }
+
+  function startSelectionDrag(event: React.MouseEvent, element: SceneElement) {
+    if(event.button!==0||spaceRef.current)return;
+    event.preventDefault();event.stopPropagation();stageRef.current?.focus({preventScroll:true});finishNudge();setQuickEdit(null);
+    if(event.shiftKey||event.ctrlKey||event.metaKey) {selectClicked(element.id,event);return;}
+    const before=[...selectionRef.current];
+    let ids=before.includes(element.id)?before:[element.id];
+    gestureStartRef.current={scene:sceneRef.current,selection:before};
+    if(event.altKey) {
+      const current=sceneRef.current,chosen=new Set(ids);
+      const clones=cloneSelection(current.elements.filter(e=>chosen.has(e.id)),()=>crypto.randomUUID(),current.elements.length,0);
+      replaceScene({...current,elements:normalizeZIndex([...current.elements,...clones])});
+      ids=clones.map(e=>e.id);
     }
-    if (!stageRef.current) {
-      return;
-    }
-    interactionRef.current = {
-      kind: "pan",
-      startX: event.clientX,
-      startY: event.clientY,
-      scrollLeft: stageRef.current.scrollLeft,
-      scrollTop: stageRef.current.scrollTop
-    };
+    selectIds(ids,element.id);
+    const source=sceneRef.current.elements,chosen=new Set(ids);
+    const bounds=selectionBounds(source.filter(e=>chosen.has(e.id)));
+    const pointer=getScenePointer(event.clientX,event.clientY);
+    if(bounds&&pointer)interactionRef.current={kind:"shape",ids,source,bounds,startX:pointer.x,startY:pointer.y};
   }
 
   async function handleCanvasDrop(event: React.DragEvent<HTMLDivElement>) {
@@ -2010,6 +2139,7 @@ function App() {
             <Icon name="help" size={13} />
             <span>{t("topbar.tour")}</span>
           </button>
+          <button className="btn btn-ghost" onClick={() => setShortcutHelpOpen(true)} title={t("selection.shortcuts")}>{t("selection.shortcuts")}</button>
           <a className="icon-btn" href="https://github.com/1475505/Miliastra-image-editor-webui" target="_blank" rel="noreferrer" title={t("topbar.github")}>
             <Icon name="github" size={15} />
           </a>
@@ -2061,8 +2191,9 @@ function App() {
                   {listElements.map((element) => (
                     <button
                       key={element.id}
-                      className={`layer-row-item ${selectedId === element.id ? "selected" : ""}`}
-                      onClick={() => setSelectedId(element.id)}
+                      className={`layer-row-item ${selectedIds.has(element.id) ? "selected" : ""}`}
+                      aria-pressed={selectedIds.has(element.id)} data-element-id={element.id}
+                      onClick={event => selectClicked(element.id,event,true)}
                     >
                       <ShapeGlyph type={element.type} color={element.color} assetId={element.imageAssetId} tint={element.imageTint} prefabId={element.prefabId}
                         imageType={element.imageType} width={element.width} height={element.height} />
@@ -2409,12 +2540,11 @@ function App() {
 
           <div
             ref={stageRef}
-            className="canvas-stage"
+            tabIndex={0}
+            aria-label={t("selection.canvasLabel")}
+            className={`canvas-stage${spacePanning ? " is-panning" : ""}`}
             onMouseDown={handleStageMouseDown}
-            onClick={() => {
-              setSelectedId(null);
-              setQuickEdit(null);
-            }}
+            onAuxClick={event => { if(event.button===1)event.preventDefault(); }}
           >
             <div
               className="canvas-sizer"
@@ -2430,53 +2560,23 @@ function App() {
                   width: scene.canvas.width,
                   height: scene.canvas.height,
                   ...viewBackgroundCss(viewBackground, zoom),
-                  transform: `scale(${zoom})`,
-                  transformOrigin: "center center"
-                }}
+                   transform: `scale(${zoom})`,
+                    "--editor-pixel": `${1 / zoom}px`,
+                    transformOrigin: "center center"
+                  } as React.CSSProperties}
                 onDragOver={(event) => event.preventDefault()}
                 onDrop={handleCanvasDrop}
               >
                 {orderedElements.map((element) => (
                   <div
                     key={element.id}
+                    data-element-id={element.id}
                     className={`shape shape-${element.type}`}
                     style={{ left: element.x, top: element.y, width: element.width, height: element.height,
                       transform: "translate(-50%, -50%)", zIndex: element.zIndex }}
-                    onMouseDown={(event) => {
-                      if (event.button !== 0) {
-                        return;
-                      }
-                      event.stopPropagation();
-                      let dragId = element.id;
-                      let dragOriginX = element.x;
-                      let dragOriginY = element.y;
-                      if (event.altKey) {
-                        const cloneId = `el-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-                        const maxZ = sceneRef.current.elements.reduce((m, el) => Math.max(m, el.zIndex), 0);
-                        const cloned: SceneElement = { ...element, id: cloneId, zIndex: maxZ + 1 };
-                        commitScene((current) => ({
-                          ...current,
-                          elements: [...current.elements, cloned]
-                        }));
-                        dragId = cloneId;
-                        dragOriginX = element.x;
-                        dragOriginY = element.y;
-                        setSelectedId(cloneId);
-                      } else {
-                        setSelectedId(element.id);
-                      }
-                      interactionRef.current = {
-                        kind: "shape",
-                        id: dragId,
-                        startX: event.clientX,
-                        startY: event.clientY,
-                        originX: dragOriginX,
-                        originY: dragOriginY
-                      };
-                    }}
+                    onMouseDown={event => startSelectionDrag(event,element)}
                     onClick={(event) => {
                       event.stopPropagation();
-                      setSelectedId(element.id);
                     }}
                     onContextMenu={(event) => {
                       event.preventDefault();
@@ -2489,9 +2589,9 @@ function App() {
                       });
                     }}
                   >
-                    <LuaMaskPreview element={maskDraft?.id === element.id && maskDraft.source === element && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"
-                      ? { ...element, luaMask: maskDraft.mask } : element} appearance={shapeStyle(element)}
-                      guides={showMaskGuides && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"}>
+                    <LuaMaskPreview element={!multiSelected && maskDraft?.id === element.id && maskDraft.source === element && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"
+                      ? { ...element, luaMask: maskDraft.mask } : element} appearance={shapeStyle(element)} zoom={zoom}
+                      guides={showMaskGuides && !multiSelected && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"}>
                     {element.type === "triangle" ? <div className="triangle-fill" style={{ background: element.color }} /> : null}
                     {element.type === "four_point_star" ? <div className="star star-four" style={{ background: element.color }} /> : null}
                     {element.type === "five_point_star" ? <div className="star star-five" style={{ background: element.color }} /> : null}
@@ -2502,16 +2602,17 @@ function App() {
                     ) : null}
                     {element.type === "prefab" && element.prefabId ? <PrefabSprite prefabId={element.prefabId} color={element.color} /> : null}
                     </LuaMaskPreview>
-                    <div className={`shape-interaction ${selectedId === element.id ? "is-selected" : ""}`} style={{ transform: rotationCss(element) }}>
-                    {selectedId === element.id ? (
+                    <div className={`shape-interaction ${selectedIds.has(element.id) ? "is-selected" : ""}`} style={{ transform: rotationCss(element) }}>
+                    {!multiSelected && selectedId === element.id ? (
                       <>
                         <div className="rotate-stem" />
                         <div className="transform-handle rotate-handle"
                           onMouseDown={(event) => {
-                            if (event.button !== 0) {
+                            if (event.button !== 0 || spaceRef.current) {
                               return;
                             }
                             event.stopPropagation();
+                            event.preventDefault();finishNudge();gestureStartRef.current={scene:sceneRef.current,selection:[...selectionRef.current]};
                             const pointer = getScenePointer(event.clientX, event.clientY);
                             if (!pointer) {
                               return;
@@ -2532,10 +2633,11 @@ function App() {
                         />
                         <div className="transform-handle scale-handle"
                           onMouseDown={(event) => {
-                            if (event.button !== 0) {
+                            if (event.button !== 0 || spaceRef.current) {
                               return;
                             }
                             event.stopPropagation();
+                            event.preventDefault();finishNudge();gestureStartRef.current={scene:sceneRef.current,selection:[...selectionRef.current]};
                             interactionRef.current = {
                               kind: "resize",
                               id: element.id,
@@ -2552,6 +2654,8 @@ function App() {
                     </div>
                   </div>
                 ))}
+                {multiSelected && selectedBounds ? <div className="multi-selection-bounds" aria-hidden="true" style={{left:selectedBounds.x,top:selectedBounds.y,width:selectedBounds.width,height:selectedBounds.height}} /> : null}
+                {marquee ? <div className="selection-marquee" aria-hidden="true" style={{left:marquee.x,top:marquee.y,width:marquee.width,height:marquee.height}} /> : null}
                 {guideLines.map((guide, index) =>
                   guide.orientation === "vertical" ? (
                     <div
@@ -2748,7 +2852,28 @@ function App() {
                 </div>
               </div>
               <div className="panel-scroll stack">
-              {selectedElement && propsView === "element" ? (
+              {multiSelected && propsView === "element" ? <>
+                <div className="inspector-head"><div className="layer-info"><strong>{t("selection.count",{n:selectedElements.length})}</strong><span>{t("selection.hint")}</span></div></div>
+                <div className="selection-actions">
+                  <button className="btn btn-tonal" onClick={duplicateSelected}>{t("selection.duplicate")}</button>
+                  <button className="btn btn-ghost" onClick={copySelectionToClipboard}>{t("selection.copy")}</button>
+                  <button className="btn btn-ghost" onClick={()=>pasteSelected()}>{t("selection.paste")}</button>
+                  <button className="btn btn-danger-ghost" onClick={removeSelected}>{t("selection.delete")}</button>
+                </div>
+                {selectedBounds ? <>
+                  <div className="section-head"><span>{t("selection.position")}</span></div>
+                  <div className="grid-2">
+                    <NumField label="X" value={Math.round(selectedBounds.x+selectedBounds.width/2)} onChange={x=>commitScene(current=>({...current,elements:translateSelection(current.elements,selectionRef.current,x-(selectedBounds.x+selectedBounds.width/2),0,current.canvas)}))} />
+                    <NumField label="Y" value={Math.round(selectedBounds.y+selectedBounds.height/2)} onChange={y=>commitScene(current=>({...current,elements:translateSelection(current.elements,selectionRef.current,0,y-(selectedBounds.y+selectedBounds.height/2),current.canvas)}))} />
+                  </div>
+                </> : null}
+                <div className="section-head"><span>{t("selection.layers")}</span></div>
+                <div className="selection-actions">
+                  {(["top","up","down","bottom"] as const).map(direction=><button className="btn btn-ghost" key={direction} onClick={()=>moveLayer(direction)}>{t(`selection.${direction}`)}</button>)}
+                </div>
+                <p className="field-hint">{t("selection.batchHint")}</p>
+                <button className="btn btn-ghost" onClick={()=>selectIds([])}>{t("selection.clear")}</button>
+              </> : selectedElement && propsView === "element" ? (
                 <>
                   <div className="inspector-head">
                     {selectedElement.type === "image" && selectedElement.imageAssetId ? (
@@ -3154,6 +3279,7 @@ function App() {
         </div>
         <div className="status-right">
           <span>{t("statusbar.elements")} {orderedElements.length}</span>
+          {selectionIds.length ? <span>{t("selection.count",{n:selectionIds.length})}</span> : null}
           <i />
           <span>{Math.round(scene.canvas.width)} × {Math.round(scene.canvas.height)}</span>
           <i />
@@ -3204,6 +3330,7 @@ function App() {
         </div>
       ) : null}
       {luaDialogOpen ? <LuaScriptDialog scene={scene} returnFocusTo={exportButtonRef.current} onClose={() => setLuaDialogOpen(false)} /> : null}
+      {shortcutHelpOpen ? <ShortcutHelp onClose={()=>setShortcutHelpOpen(false)} /> : null}
       {welcomeOpen ? (
         <WelcomeDialog
           onClose={closeTour}

@@ -2302,18 +2302,6 @@ def format_points(points: list[tuple[float, float]]) -> str:
     return " ".join(f"{x:.2f},{y:.2f}" for x, y in points)
 
 
-def rotate_points(points: list[tuple[float, float]], cx: float, cy: float, degrees: float) -> list[tuple[float, float]]:
-    radians = math.radians(degrees)
-    cos_v = math.cos(radians)
-    sin_v = math.sin(radians)
-    rotated: list[tuple[float, float]] = []
-    for x, y in points:
-        dx = x - cx
-        dy = y - cy
-        rotated.append((cx + dx * cos_v - dy * sin_v, cy + dx * sin_v + dy * cos_v))
-    return rotated
-
-
 def draw_polygon(draw: ImageDraw.ImageDraw, points: list[tuple[float, float]], fill: tuple[int, int, int, int], element: SceneElementModel) -> None:
     # 使用尺寸盒中心；顶点均值是三角形的重心，旋转 180° 会错位 height/3。
     # PIL drawing happens in screen coordinates, so invert CCW-positive scene rotation.

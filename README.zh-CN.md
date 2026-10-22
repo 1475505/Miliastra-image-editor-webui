@@ -1,82 +1,90 @@
-# Miliastra Image Editor WebUI
+# 千星图片编辑器
 
-[English README](README.md)
+**中文** · [English](README.md) · [在线使用](https://qx.070077.xyz/)
 
-使用请遵守奇匠守则。不要生成任何不适宜的内容，不要侵权。
+在浏览器里用图形、游戏素材和文字拼出千星奇域 UI，再导出 GIA 或客户端 Lua 绘制脚本。支持手工编辑，也支持通过 WebMCP 让 AI 操作同一张画布。
 
-支持 SVG / CSS / JSON / Lua 场景数据导入，以及 GIA / SVG / CSS / JSON / Lua 导出。Lua 复用图元拟合工具的客户端绘制逻辑，可再次导入编辑；使用前填写图片控件模板索引。文本框仅保留在回导数据中，游戏内文字请用 GIA。需要将图片转为图元时，可使用[图元拟合工具](https://qx-img.070077.xyz/)。
+## 三步开始
 
-## 快速开始
+1. 打开[编辑器](https://qx.070077.xyz/)，从左侧图形库拖入或双击添加素材；已有 CSS、SVG、JSON 或支持的 Lua 可从「导入」继续编辑。
+2. 在画布移动、缩放、旋转图元；右侧调整文字、颜色、图片类型和蒙版。Shift 点选或在空白处拖框可多选。
+3. 「导出 → JSON」保存可继续编辑的作品；使用 GIA 或 Lua 将作品带入游戏编辑器。
 
-运行环境说明：当前仓库按 Python `3.13` 部署运行。由于项目使用了 Python 3.13 相关的 `.pyc` 构建产物，为避免跨版本兼容问题，请统一使用 Python `3.13`。
+**「保存并应用」会更新编辑器和已保存图元，不会保存文件。刷新或关闭页面前，请先导出作品。**
 
-### 1. Windows 本地启动
+## 主要功能
+
+- 矩形、圆形、三角形、星形、圆环拼图。
+- 游戏图片素材搜索、分类、基础／拉伸、染色与图层排序。
+- 可编辑文本框：富文本、字号自适应、描边和对齐。
+- 多选、框选、整体移动、复制粘贴、快捷键与撤销重做。
+- Lua 蒙版与羽化；虚线轮廓和半透明覆盖帮助查看被遮住的内容。
+- 按准确 ID 查询元件缩略图，保存 JSON 或导出 Lua 绘制。
+
+![蓝金渐变字示例](demo/gradient-text-preview.png)
+
+[打开渐变字示例](demo/gradient-text.md)。需要将位图转成图元，可使用配套的[图元拟合工具](https://qx-img.070077.xyz/)。
+
+## 如何选择导出格式
+
+| 格式 | 用途 | 注意事项 |
+|---|---|---|
+| JSON | 保存作品、继续编辑 | 保留场景设置和已保存图元 |
+| Lua | 在客户端 UI 中绘制原生图片与文字 | 填写真实控件模板索引，并映射、挂载脚本 |
+| GIA | 导入游戏编辑器的界面素材组 | 含元件或已启用图元蒙版的作品改用 Lua |
+| CSS / SVG | 分享或使用支持的图元子集 | SVG 会省略圆环，复杂 SVG 不保证无损回导 |
+| PNG | 通过 API 或 AI 工具获取渲染图 | 含元件或已启用图元蒙版时不可用 |
+
+画布背景仅用于查看。导出需要实色底时，添加铺满画布的矩形。网页蒙版效果为近似预览，最终效果请在游戏中检查。
+
+## 常用键盘操作
+
+Windows/Linux 使用 `Ctrl`，macOS 使用 `⌘`。
+
+- Shift 点选增减选择；图层列表 Shift 连选。
+- 空白拖动框选；空格拖动或中键拖动平移视图。
+- `Ctrl/⌘+A、C、X、V、D`：全选、复制、剪切、粘贴、创建副本。
+- 方向键微调 1px，Shift+方向键为 10px；Delete 删除所选。
+- `Ctrl/⌘+Z` 撤销，`Ctrl/⌘+Shift+Z` 或 `Ctrl/⌘+Y` 重做。
+- 顶部「快捷键」或 `?` 查看完整键位。输入框和弹窗保留自身按键。
+
+## WebMCP：让 AI 帮你拼图
+
+在能发现页面 WebMCP 工具的浏览器／AI 客户端中打开编辑器，让 AI 先列出当前页面工具，再描述目标，例如：
+
+> 保留现有作品，做一张 600×400 的标题卡：深色底、三个图片元素和居中标题。完成后导出 JSON。
+
+工具支持素材搜索、看图、批量编辑、导入导出和撤销。它们操作当前打开的页面；本项目不提供独立 MCP 服务。没有发现工具时，检查浏览器接入是否提供 `document.modelContext.registerTool`；普通浏览器仍可手工使用。
+
+[接入步骤与调用示例](docs/webmcp.md) · [可复用 AI 技能](skills/)
+
+## 本地运行
+
+准备 **Python 3.13** 和 **Node.js 20+**（含 npm），下载源码后在仓库根目录执行：
 
 ```powershell
-start.bat
+# Windows PowerShell
+.\start.bat
 ```
-
-启动后访问：`http://localhost:8439`
-
-### 2. Linux / macOS 本地启动
 
 ```bash
-chmod +x start.sh
-./start.sh
+# Linux / macOS
+bash start.sh
 ```
 
-启动后访问：`http://localhost:8439`
-
-### 3. Python 环境
-
-后端需要 Python 虚拟环境。`start.sh` 会自动创建 `.venv`，但如果你手动启动后端，需先执行：
+启动脚本安装依赖、构建前端并启动服务，访问 **http://localhost:8439**。也可直接使用 Docker，镜像构建会自动编译前端：
 
 ```bash
-cd backend
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+docker build -t miliastra-image-editor .
+docker run --rm -p 8439:8439 miliastra-image-editor
 ```
 
-> **注意：** 项目按 **Python 3.13** 设计。如果你的系统默认 Python 版本不同，请确保上面的 `python3` 指向 3.13。
+## 更多说明
 
-### 4. 前后端开发模式
+- [使用指南与文档导航](docs/README.md)
+- [多选、鼠标与快捷键](docs/editor-interaction.md)
+- [Lua 导出与蒙版](docs/lua-mask.md)
+- [开发和部署](docs/deploy.md)
+- [反馈问题](https://github.com/1475505/Miliastra-image-editor-webui/issues)
 
-后端：
-
-```powershell
-cd backend
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
-```
-
-前端：
-
-```powershell
-cd frontend
-npm install
-npm run dev
-```
-
-开发地址：
-
-- 前端：`http://localhost:5173`
-- 后端 API：`http://localhost:8000`
-
-### 4. 构建前端静态资源
-
-```powershell
-cd frontend
-npm install
-npm run build
-```
-
-构建产物会写入 `backend/app/static/`。
-
-> **部署注意：** 如果你要构建 Docker 镜像或部署到生产环境，请先执行此步骤，确保 `backend/app/static/` 中包含最新的前端构建产物。
-
-### 5. 更多文档
-
-- 项目主体说明：[docs/README.md](docs/README.md)
-- ClawCloud 部署说明：[docs/deploy.md](docs/deploy.md)
+使用请遵守奇匠守则，尊重他人版权。[许可证](LICENSE)。

@@ -1,81 +1,89 @@
-# Miliastra Image Editor WebUI
+# Miliastra Image Editor
 
-[中文 README](README.zh-CN.md)
+[中文](README.zh-CN.md) · **English** · [Open editor](https://qx.070077.xyz/)
 
-> TODO: 支持官方其他图片素材。
+Build artwork and UI for Miliastra Wonderland in your browser. Combine shapes, game image assets and editable text, then export a GIA file or a client Lua drawing script. You can edit by hand or ask a WebMCP-capable AI client to work on the same canvas.
 
-使用请遵守奇匠守则。不要生成任何不适宜的内容，不要侵权。
+## Start creating
 
-Import SVG / CSS / JSON / Lua scene data and export GIA / SVG / CSS / JSON / Lua. Lua reuses the primitive-shape client drawing runtime and preserves the editable scene for re-import. Set the image control template index before use. Textboxes are preserved as editor data only; use GIA for in-game text. See the [editor guide](docs/README.md) or use the [image fitting tool](https://qx-img.070077.xyz/) to convert an image to shapes.
+1. Open the [editor](https://qx.070077.xyz/). Drag an item from the library onto the canvas, or double-click to add it. Import existing CSS, SVG, JSON or supported Lua from **Import**.
+2. Move, resize and rotate elements. Use the properties panel for text, colors, image types and masks. Shift-click or drag on empty space to select several elements.
+3. Choose **Export → JSON** to save an editable copy. Choose **GIA** or **Lua** to use the result in the game editor.
 
-## How To Get Started
+**Save & Apply updates the editor and reusable library items; it does not save a file.** Export your work before reloading or closing the page.
 
-Runtime note: deploy with Python `3.13`. This repository currently assumes Python 3.13 compatibility for bundled Python build artifacts.
+## What you can make
 
-### 1. Local run on Windows
+- Artwork from rectangles, ellipses, triangles, stars and rings.
+- UI compositions using searchable game images, Basic/Stretch rendering, tinting and layers.
+- Native textboxes with rich text, font sizing, outline and alignment.
+- Lua-only image masks and feathered effects. A dashed contour and shaded overlay help you edit hidden areas.
+- Compositions with Prefab thumbnails found by their exact ID; JSON saving and Lua drawing are supported.
+
+![Blue-to-gold text example](demo/gradient-text-preview.png)
+
+[Try the gradient-text example](demo/gradient-text.md). Need to convert a bitmap to shapes? Use the separate [image fitting tool](https://qx-img.070077.xyz/).
+
+## Pick an export format
+
+| Format | Best for | Notes |
+|---|---|---|
+| JSON | Saving and continuing your work | Preserves scene settings and saved library items |
+| Lua | Drawing native images and text in a client UI | Requires your control template indices and script attachment |
+| GIA | Importing a UI asset group into the game editor | Scenes containing Prefabs or active element masks require Lua instead |
+| CSS / SVG | Sharing or using the supported artwork subset | SVG omits rings; complex SVG is not a lossless editing format |
+| PNG | Rendered image via the API or AI preview tool | Unavailable for Prefabs and active element masks |
+
+The canvas background is a viewing preference. Add a full-canvas rectangle if the exported artwork needs a solid background. Web mask previews are approximations; check the final result in the game.
+
+## Useful shortcuts
+
+Use `Ctrl` on Windows/Linux or `⌘` on macOS.
+
+- Shift-click: add/remove canvas selections; Shift-click in Layers: select a range.
+- Drag empty space: marquee selection. Space-drag or middle-drag: pan the view.
+- `Ctrl/⌘+A`, `C`, `X`, `V`, `D`: select all, copy, cut, paste, duplicate.
+- Arrow keys: move 1px; Shift+arrow: 10px. Delete removes selected elements.
+- `Ctrl/⌘+Z`: undo; `Ctrl/⌘+Shift+Z` or `Ctrl/⌘+Y`: redo.
+- Click **Shortcuts** or press `?` for the full list. Text fields and dialogs keep their own keys.
+
+## Use with AI / WebMCP
+
+Open the editor in a browser connected to an AI client that can discover page WebMCP tools. Ask it to list the tools on the current page, then try:
+
+> Make a 600×400 title card with a dark background, three image elements and a centered title. Keep the existing artwork, and export JSON when finished.
+
+Tools cover asset search, previews, batch editing, import/export and undo. They edit the open page; this project does not provide a standalone MCP server. If tools are not listed, check that the browser integration exposes `document.modelContext.registerTool`. Ordinary browsers can still use the editor manually.
+
+[WebMCP setup and examples](docs/webmcp.md) · [Reusable AI skills](skills/)
+
+## Run locally
+
+Install **Python 3.13** and **Node.js 20+** (with npm), clone the repository, then run:
 
 ```powershell
-start.bat
+# Windows PowerShell, from the repository root
+.\start.bat
 ```
-
-The app will start at `http://localhost:8439`.
-
-### 2. Local run on Linux / macOS
 
 ```bash
-chmod +x start.sh
-./start.sh
+# Linux / macOS, from the repository root
+bash start.sh
 ```
 
-The app will start at `http://localhost:8439`.
-
-### 3. Python environment
-
-The backend requires a Python virtual environment. `start.sh` will create `.venv` automatically, but if you are starting the backend manually, create it first:
+The launchers install dependencies, build the frontend and serve the app at **http://localhost:8439**. Docker builds include the frontend:
 
 ```bash
-cd backend
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+docker build -t miliastra-image-editor .
+docker run --rm -p 8439:8439 miliastra-image-editor
 ```
 
-> **Note:** The project is designed for **Python 3.13**. If your system default is a different version, make sure the `python3` used above points to 3.13.
+## More help
 
-### 4. Frontend development mode
+- [User guide and document index](docs/README.md) (Chinese)
+- [Keyboard and mouse operations](docs/editor-interaction.md)
+- [Lua export and masks](docs/lua-mask.md)
+- [Local development and deployment](docs/deploy.md)
+- [Report an issue](https://github.com/1475505/Miliastra-image-editor-webui/issues)
 
-Backend:
-
-```powershell
-cd backend
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
-```
-
-Frontend:
-
-```powershell
-cd frontend
-npm install
-npm run dev
-```
-
-Development URLs:
-
-- Frontend: `http://localhost:5173`
-- Backend API: `http://localhost:8000`
-
-### 4. Build frontend static files
-
-```powershell
-cd frontend
-npm install
-npm run build
-```
-
-This writes the built frontend into `backend/app/static/`.
-
-> **Deployment note:** If you are building a Docker image or deploying to production, run this step first to ensure `backend/app/static/` contains the latest frontend assets.
-
-More documentation is in [docs/README.md](docs/README.md) and [docs/deploy.md](docs/deploy.md).
+Please follow the game's creator rules and respect others' rights. [License](LICENSE).

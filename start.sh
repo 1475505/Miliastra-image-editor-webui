@@ -15,18 +15,9 @@ if ! command -v npm >/dev/null 2>&1; then
     fi
 fi
 
-# 构建前端（输出到 backend/app/static），禁止静默跳过导致 HTML 与资源不匹配。
-if [ -f "$FRONTEND_DIR/package.json" ]; then
-    if ! command -v npm >/dev/null 2>&1; then
-        echo "Error: npm not found. Install Node.js or refresh PM2 PATH with pm2 restart qx-img --update-env." >&2
-        exit 1
-    fi
-    echo "Building frontend..."
-    cd "$FRONTEND_DIR"
-    if [ ! -d "node_modules" ]; then
-        npm ci --no-audit --no-fund
-    fi
-    npm run build
+if ! command -v npm >/dev/null 2>&1; then
+    echo "Error: npm not found. Install Node.js 20+ or refresh PM2 PATH with pm2 restart qx-img --update-env." >&2
+    exit 1
 fi
 
 cd "$BACKEND_DIR"
@@ -37,11 +28,14 @@ if [ ! -d "$VENV_DIR" ]; then
     python3 -m venv "$VENV_DIR"
 fi
 
-# 首次启动时安装后端依赖；日常 PM2 重启不重复安装。
-if [ ! -x "$VENV_DIR/bin/python" ]; then
-    echo "Installing dependencies..."
-    "$VENV_DIR/bin/pip" install -r "$REQ_FILE"
-fi
+# pip skips already satisfied requirements and installs missing dependencies.
+"$VENV_DIR/bin/python" -m pip install -r "$REQ_FILE"
+
+echo "Building frontend..."
+cd "$FRONTEND_DIR"
+npm ci --no-audit --no-fund
+npm run build
+cd "$BACKEND_DIR"
 
 # 启动服务
 echo "Starting uvicorn on 0.0.0.0:8439..."

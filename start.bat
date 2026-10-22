@@ -1,13 +1,27 @@
 @echo off
+setlocal
 chcp 65001 >nul
 
-rem 构建前端（输出到 backend/app/static）
 where npm >nul 2>nul
-if %errorlevel%==0 (
-    cd /d "%~dp0frontend"
-    call npm install --no-audit --no-fund
-    call npm run build
+if errorlevel 1 (
+    echo Node.js and npm are required. Install Node.js 20 or newer.
+    exit /b 1
 )
 
 cd /d "%~dp0backend"
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8439
+if not exist ".venv\Scripts\python.exe" (
+    python -m venv .venv
+    if errorlevel 1 exit /b 1
+)
+".venv\Scripts\python.exe" -m pip install -r requirements.txt
+if errorlevel 1 exit /b 1
+
+cd /d "%~dp0frontend"
+call npm ci --no-audit --no-fund
+if errorlevel 1 exit /b 1
+call npm run build
+if errorlevel 1 exit /b 1
+
+cd /d "%~dp0backend"
+".venv\Scripts\python.exe" -m uvicorn app.main:app --host 0.0.0.0 --port 8439
+exit /b %errorlevel%

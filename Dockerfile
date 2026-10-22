@@ -6,7 +6,6 @@ COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 
 COPY frontend ./
-COPY backend/app/static /app/backend/app/static
 RUN npm run build
 
 FROM python:3.13-slim
