@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StrictBool, StrictInt
 from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFont, PngImagePlugin
 
-from . import image_library, image_stretch, lua_scene, prefab_library
+from . import client_ui_export, image_library, image_stretch, lua_scene, prefab_library
 from .image_library import fetch_sprite_bytes, sprite_url
 from .rotation import rotation_matrix
 from .lua_mask import LuaMaskModel, mask_active
@@ -537,6 +537,19 @@ def export_gia(request: ExportRequest) -> Response:
     gia_json = scene_to_gia_document(scene, request.giaGroupName)
     gia_bytes = convert_scene_to_gia_bytes(gia_json)
     headers = {"Content-Disposition": 'attachment; filename="scene.gia"'}
+    return Response(content=gia_bytes, media_type="application/octet-stream", headers=headers)
+
+
+@app.post("/api/export/container-node")
+def export_container_node(request: ExportRequest) -> Response:
+    """导出客户端「容器节点」控件模板 GIA，不是服务端「客户端控件容器」。"""
+    scene = normalize_scene(request.scene)
+    require_supported_draw_format(scene, "客户端容器节点 GIA")
+    try:
+        gia_bytes = client_ui_export.build_container_node_gia(scene.model_dump(), request.giaGroupName)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    headers = {"Content-Disposition": 'attachment; filename="scene_container_node.gia"'}
     return Response(content=gia_bytes, media_type="application/octet-stream", headers=headers)
 
 

@@ -440,6 +440,8 @@ export const translations: Record<Lang, TranslationDict> = {
 
     // 导出格式描述
     "export.gia.desc": "游戏素材格式",
+    "export.containerNode.label": "容器节点 GIA",
+    "export.containerNode.desc": "客户端控件模板 · 无需脚本",
     "export.css.desc": "Web 样式代码",
     "export.svg.desc": "矢量图形",
     "export.json.desc": "场景源数据",
@@ -870,6 +872,8 @@ export const translations: Record<Lang, TranslationDict> = {
 
     // Export format descriptions
     "export.gia.desc": "Game asset format",
+    "export.containerNode.label": "Container node GIA",
+    "export.containerNode.desc": "Client control template · no script needed",
     "export.css.desc": "Web style code",
     "export.svg.desc": "Vector graphics",
     "export.json.desc": "Scene source data",

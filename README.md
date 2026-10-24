@@ -31,6 +31,7 @@ Build artwork and UI for Miliastra Wonderland in your browser. Combine shapes, g
 | JSON | Saving and continuing your work | Preserves scene settings and saved library items |
 | Lua | Drawing native images and text in a client UI | Requires your control template indices and script attachment |
 | GIA | Importing a UI asset group into the game editor | Scenes containing Prefabs or active element masks require Lua instead |
+| Container node GIA | Importing as a client control template with image children | No script needed; textboxes, Prefabs and circular canvas masks are not exported |
 | CSS / SVG | Sharing or using the supported artwork subset | SVG omits rings; complex SVG is not a lossless editing format |
 | PNG | Rendered image via the API or AI preview tool | Unavailable for Prefabs and active element masks |
 

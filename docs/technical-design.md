@@ -59,12 +59,16 @@
 
 拉伸样本 SHA-256：`10f04eba8af9d18a3ada66e88f328e15bbccacf0567c4cf1070e76707fcaaf6b`；仓库模板：`212633c935566155ede68d5b9b4bb9feec1b5d98152c3646d91b5bad6f9fede3`。
 
+### 客户端「容器节点」GIA
+
+`/api/export/container-node` 由 `backend/app/client_ui_export.py` 生成控件模板，不复用素材组 `json_to_gia` 链路。根资产是 `UIControlTemplate(70)`（preset=25、中心锚点、画布像素宽高）；图元为其图片子控件 `which=15`，基础形状与图片素材直接引用 `100001`–`100006` 或自带素材 ID，sibling 按底→顶写入。禁止生成服务端 `UIControlGroup(21)` 包装层、preset=24 或根引用槽 62/82。画布矩形遮罩生成透明遮罩父图片并重算子控件相对位置；圆形遮罩、文本框、元件暂不导出。控件坐标为容器中心原点、Y 向上、Z 逆时针，旋转轴直接沿用场景值。四平台 RectTransform 同步写入 float32；根/新建子控件各自登记独立 Info.index。测试覆盖纯 Python 结构断言，并可在设置 `UGC_GIA_CODEC` 后用 ugc-tool 独立编解码器复核。
+
 Lua API 核对来源为[官方页面](https://act.mihoyo.com/ys/ugc/tutorial/detail/mhtakr07vej4)的本地加工快照，SHA-256 `4a43f93f2b322be8336ff33d9cb07b3bc3a8d4c8a931a45d18f90e4e64941bab`；原始快照标记 `2026-08-26T2213_rev223`。上述运行观察来自 MASK v1、ROTXY2；不是本项目每个新导出文件的真机验收。维护时按测试断言保留边界，不把浏览器或 VM 通过写成真机通过。
 
 ## 接口入口
 
 `POST /api/import` 接收 `{sourceType,content,sourceName?}`，返回 `{scene,warnings}`。
 
-`POST /api/export/{json|css|svg|lua|png|gia}` 接收 `{scene,giaGroupName?}`。普通场景可经 PNG 出口验证导入后的渲染；受限场景查看网页截图。
+`POST /api/export/{json|css|svg|lua|png|gia|container-node}` 接收 `{scene,giaGroupName?}`。`container-node` 返回客户端「容器节点」控件模板 GIA；`gia` 仍是素材组资产。普通场景可经 PNG 出口验证导入后的渲染；受限场景查看网页截图。
 
 素材目录、元数据、PNG 代理、总览和 ZIP 由 `/api/library/*` 提供；元件目录和 ID 查询由 `/api/prefabs/*` 提供。具体使用见 [WebMCP](webmcp.md)、[图片源](image-library-upload.md)、[元件源](prefab-library-upload.md)。

@@ -1,6 +1,6 @@
 # Agent 开发入口
 
-本仓库是千星图片编辑器：React/TypeScript/Vite 前端，FastAPI/Pillow 后端；生产服务同时提供静态页面和 `/api`，默认端口 8439。
+本仓库是千星图片编辑器：React/TypeScript/Vite 前端，FastAPI/Pillow 后端；生产服务同时提供静态页面和 `/api`，默认端口 8439。导出包含素材组 GIA、客户端「容器节点」GIA、Lua、CSS、SVG、JSON 与 PNG。
 
 ## 开工
 
@@ -8,6 +8,7 @@
 - 用户文档入口：[中文 README](README.zh-CN.md)、[English README](README.md)、[使用指南](docs/README.md)、[WebMCP](docs/webmcp.md)。改变功能时同步相关说明。
 - 源码分工、兼容契约与证据边界见 [维护说明](docs/technical-design.md)。Lua/API、GIA 映射和预览近似不能混为真机事实。
 - `backend/vendor/primitive_shape/` 为按原样保留的上游源码，许可证与来源不可删改；扩展在应用适配层实现。
+- 客户端「容器节点」GIA 由 `backend/app/client_ui_export.py` 独立编码（根资产 UIControlTemplate(70)，不是素材组链路）；协议边界见 [维护说明](docs/technical-design.md)。
 
 ## 检查
 

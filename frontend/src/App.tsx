@@ -415,13 +415,29 @@ export const DEFAULT_TEXTBOX: TextBoxSettings = {
   pivotY: 0.5
 };
 
-const EXPORT_FORMATS = [
-  { endpoint: "/api/export/gia", ext: "gia", label: "GIA" },
-  { endpoint: "/api/export/lua", ext: "lua", label: "Lua" },
-  { endpoint: "/api/export/css", ext: "css", label: "CSS" },
-  { endpoint: "/api/export/svg", ext: "svg", label: "SVG" },
-  { endpoint: "/api/export/json", ext: "json", label: "JSON" }
-] as const;
+type ExportFormat = {
+  endpoint: string;
+  ext: string;
+  label?: string;
+  labelKey?: string;
+  descKey: string;
+  suffix?: string;
+};
+
+const EXPORT_FORMATS: ExportFormat[] = [
+  { endpoint: "/api/export/gia", ext: "gia", label: "GIA", descKey: "export.gia.desc" },
+  {
+    endpoint: "/api/export/container-node", ext: "gia", labelKey: "export.containerNode.label",
+    descKey: "export.containerNode.desc", suffix: "_container_node"
+  },
+  { endpoint: "/api/export/lua", ext: "lua", label: "Lua", descKey: "export.lua.desc" },
+  { endpoint: "/api/export/css", ext: "css", label: "CSS", descKey: "export.css.desc" },
+  { endpoint: "/api/export/svg", ext: "svg", label: "SVG", descKey: "export.svg.desc" },
+  { endpoint: "/api/export/json", ext: "json", label: "JSON", descKey: "export.json.desc" }
+];
+
+/** 含元件或 Lua 蒙版的场景只能导出这些格式。 */
+const LUA_SAFE_ENDPOINTS = new Set(["/api/export/lua", "/api/export/json"]);
 
 function App() {
   const { t, lang, toggleLang } = useI18n();
@@ -1776,7 +1792,7 @@ function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         scene,
-        giaGroupName: endpoint === "/api/export/gia" || endpoint === "/api/export/lua" ? giaGroupName : undefined
+        giaGroupName: ["/api/export/gia", "/api/export/lua", "/api/export/container-node"].includes(endpoint) ? giaGroupName : undefined
       })
     });
     if (!response.ok) {
@@ -2105,21 +2121,24 @@ function App() {
             </button>
             {exportOpen ? (
               <div className="menu" onClick={(event) => event.stopPropagation()}>
-                {EXPORT_FORMATS.map((item) => (
-                  <button
-                    key={item.ext}
-                    className="menu-item"
-                    disabled={luaOnly && item.ext !== "lua" && item.ext !== "json"}
-                    title={luaOnly && item.ext !== "lua" && item.ext !== "json" ? luaOnlyHint : undefined}
-                    onClick={() => downloadExport(item.endpoint, `${exportFileName}.${item.ext}`)}
-                  >
-                    <Icon name="download" size={14} />
-                    <div>
-                      <strong>{item.label}</strong>
-                      <span>{t(`export.${item.ext}.desc`)}</span>
-                    </div>
-                  </button>
-                ))}
+                {EXPORT_FORMATS.map((item) => {
+                  const blocked = luaOnly && !LUA_SAFE_ENDPOINTS.has(item.endpoint);
+                  return (
+                    <button
+                      key={item.endpoint}
+                      className="menu-item"
+                      disabled={blocked}
+                      title={blocked ? luaOnlyHint : undefined}
+                      onClick={() => downloadExport(item.endpoint, `${exportFileName}${item.suffix ?? ""}.${item.ext}`)}
+                    >
+                      <Icon name="download" size={14} />
+                      <div>
+                        <strong>{item.labelKey ? t(item.labelKey) : item.label}</strong>
+                        <span>{t(item.descKey)}</span>
+                      </div>
+                    </button>
+                  );
+                })}
                 <button className="menu-item" aria-haspopup="dialog" aria-label={t("luaDialog.open")}
                   onClick={() => { setExportOpen(false); setLuaDialogOpen(true); }}>
                   <Icon name="copy" size={14} />
