@@ -386,6 +386,7 @@ a:focus-visible {
   font-size: 12px;
   font-weight: 550;
   cursor: pointer;
+  text-decoration: none;
 }
 
 .link-btn:hover {
@@ -2111,6 +2112,7 @@ input[type="range"]::-moz-range-thumb {
 .welcome-steps strong { font-weight: 600; }
 .welcome-steps p { margin: 4px 0 0; color: var(--text-2); font-size: 12px; line-height: 1.6; }
 .welcome-footer { display: flex; gap: 16px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding-top: 12px; }
+.welcome-links { display: flex; gap: 12px; flex-wrap: wrap; }
 .welcome-footer a { color: var(--accent-strong); font-size: 12px; text-underline-offset: 4px; }
 .welcome-actions { display: flex; gap: 8px; margin-left: auto; }
 

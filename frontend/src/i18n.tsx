@@ -164,13 +164,14 @@ export const translations: Record<Lang, TranslationDict> = {
 
     // 画布空状态
     "canvas.empty.title": "画布还是空的",
-    "canvas.empty.desc": "拖入形状，或导入已有作品。",
+    "canvas.empty.desc": "拖入形状、图片或元件，或导入已有作品。",
     "canvas.empty.sizeTitle": "画布尺寸，也可稍后在右侧「属性 → 画布」中修改",
     "canvas.empty.size": "画布尺寸",
     "canvas.empty.widthAria": "画布宽度",
     "canvas.empty.heightAria": "画布高度",
     "canvas.empty.watchTour": "快速上手",
     "canvas.empty.sample": "或先试试示例场景 →",
+    "canvas.empty.ai": "AI 接入（WebMCP）↗",
     "canvas.metaTitle": "画布尺寸，点击编辑画布属性",
 
     // 右侧面板 tabs
@@ -465,12 +466,15 @@ export const translations: Record<Lang, TranslationDict> = {
     "welcome.title": "从一个图元开始",
     "welcome.subtitle": "拼出你的画面，带进千星奇域。",
     "welcome.create": "添加素材",
-    "welcome.createHint": "从左侧拖入形状，或导入已有作品。",
+    "welcome.createHint": "形状、图片与元件，拖入即用。",
     "welcome.edit": "调整画面",
-    "welcome.editHint": "拖动、缩放、旋转；右侧精调属性。",
+    "welcome.editHint": "多选、三轴旋转与 Lua 蒙版；右侧精调。",
     "welcome.export": "导出作品",
-    "welcome.exportHint": "右上角选择格式，下载后即可使用。",
+    "welcome.exportHint": "GIA（含容器节点）、Lua、SVG 或 JSON。",
+    "welcome.ai": "AI 接入",
+    "welcome.aiHint": "WebMCP：浏览器中的 AI 工具可操作当前画布。",
     "welcome.docs": "编辑器使用说明 ↗",
+    "welcome.aiDocs": "WebMCP 接入说明 ↗",
     "welcome.import": "导入作品",
     "welcome.start": "开始创作"
   },
@@ -596,13 +600,14 @@ export const translations: Record<Lang, TranslationDict> = {
 
     // Canvas empty state
     "canvas.empty.title": "Canvas is empty",
-    "canvas.empty.desc": "Drag in a shape or import your artwork.",
+    "canvas.empty.desc": "Drag in shapes, images or prefabs, or import your artwork.",
     "canvas.empty.sizeTitle": "Canvas size. Can also be changed later in \"Properties → Canvas\" on the right.",
     "canvas.empty.size": "Canvas size",
     "canvas.empty.widthAria": "Canvas width",
     "canvas.empty.heightAria": "Canvas height",
     "canvas.empty.watchTour": "Quick start",
     "canvas.empty.sample": "Or try the sample scene →",
+    "canvas.empty.ai": "AI access (WebMCP) ↗",
     "canvas.metaTitle": "Canvas size. Click to edit canvas properties.",
 
     // Right panel tabs
@@ -896,13 +901,16 @@ export const translations: Record<Lang, TranslationDict> = {
     "welcome.close": "Close quick start",
     "welcome.title": "Start with a shape",
     "welcome.subtitle": "Build your artwork. Bring it into Miliastra.",
-    "welcome.create": "Add something",
-    "welcome.createHint": "Drag a shape from the library or import your work.",
-    "welcome.edit": "Make it yours",
-    "welcome.editHint": "Move, resize and rotate. Fine-tune on the right.",
-    "welcome.export": "Take it with you",
-    "welcome.exportHint": "Choose a format in Export and download your work.",
+    "welcome.create": "Add assets",
+    "welcome.createHint": "Shapes, images and prefabs; drag in or double-click.",
+    "welcome.edit": "Shape the scene",
+    "welcome.editHint": "Multi-select, XYZ rotation, Lua masks; fine-tune on the right.",
+    "welcome.export": "Export",
+    "welcome.exportHint": "GIA (incl. container node), Lua, SVG or JSON.",
+    "welcome.ai": "AI access",
+    "welcome.aiHint": "WebMCP: AI tools in supported browsers can use this canvas.",
     "welcome.docs": "Editor guide ↗",
+    "welcome.aiDocs": "WebMCP guide ↗",
     "welcome.import": "Import work",
     "welcome.start": "Start creating"
   }

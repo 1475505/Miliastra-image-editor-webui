@@ -1959,12 +1959,24 @@ function App() {
     setWelcomeOpen(true);
   }
 
+  function beginPan(clientX: number, clientY: number) {
+    const stage = stageRef.current;
+    if (!stage) return;
+    interactionRef.current = {
+      kind: "pan",
+      startX: clientX,
+      startY: clientY,
+      scrollLeft: stage.scrollLeft,
+      scrollTop: stage.scrollTop
+    };
+  }
+
   function handleStageMouseDown(event: React.MouseEvent<HTMLDivElement>) {
     if(!stageRef.current||![0,1].includes(event.button))return;
     if((event.target as HTMLElement).closest(".shape")&&!spaceRef.current&&event.button!==1)return;
     event.preventDefault();stageRef.current.focus({preventScroll:true});finishNudge();setQuickEdit(null);
     if(spaceRef.current||event.button===1) {
-      interactionRef.current={kind:"pan",startX:event.clientX,startY:event.clientY,scrollLeft:stageRef.current.scrollLeft,scrollTop:stageRef.current.scrollTop};
+      beginPan(event.clientX, event.clientY);
       return;
     }
     const pointer=getScenePointer(event.clientX,event.clientY);
@@ -2782,7 +2794,16 @@ function App() {
             <div className="canvas-empty">
               <div
                 className="canvas-empty-card"
-                onMouseDown={(event) => event.stopPropagation()}
+                onMouseDown={(event) => {
+                  // 空画布卡片不在舞台内，需自行接管中键/空格平移，否则事件无法冒泡到舞台
+                  if (event.button === 1 || spaceRef.current) {
+                    event.preventDefault();
+                    stageRef.current?.focus({preventScroll:true});
+                    beginPan(event.clientX, event.clientY);
+                    return;
+                  }
+                  if (event.button === 0) event.stopPropagation();
+                }}
                 onClick={(event) => event.stopPropagation()}
                 onDragOver={(event) => event.preventDefault()}
                 onDrop={handleCanvasDrop}
@@ -2819,6 +2840,7 @@ function App() {
                   <button className="btn btn-ghost" onClick={openTour}>{t("canvas.empty.watchTour")}</button>
                 </div>
                 <button className="link-btn" onClick={loadSampleScene}>{t("canvas.empty.sample")}</button>
+                <a className="link-btn" href="https://github.com/1475505/Miliastra-image-editor-webui/blob/main/docs/webmcp.md" target="_blank" rel="noreferrer">{t("canvas.empty.ai")}</a>
               </div>
             </div>
           ) : null}
@@ -3482,12 +3504,15 @@ function WelcomeDialog({ onClose, onStart }: {
       <h2 id="welcome-title">{t("welcome.title")}</h2>
       <p className="welcome-subtitle">{t("welcome.subtitle")}</p>
       <ol className="welcome-steps">
-        {["create", "edit", "export"].map((step, index) => (
+        {["create", "edit", "export", "ai"].map((step, index) => (
           <li key={step}><span>{index + 1}</span><div><strong>{t(`welcome.${step}`)}</strong><p>{t(`welcome.${step}Hint`)}</p></div></li>
         ))}
       </ol>
       <div className="welcome-footer">
-        <a href="https://github.com/1475505/Miliastra-image-editor-webui/blob/main/docs/README.md" target="_blank" rel="noreferrer">{t("welcome.docs")}</a>
+        <div className="welcome-links">
+          <a href="https://github.com/1475505/Miliastra-image-editor-webui/blob/main/docs/README.md" target="_blank" rel="noreferrer">{t("welcome.docs")}</a>
+          <a href="https://github.com/1475505/Miliastra-image-editor-webui/blob/main/docs/webmcp.md" target="_blank" rel="noreferrer">{t("welcome.aiDocs")}</a>
+        </div>
         <div className="welcome-actions">
           <button className="btn btn-ghost" onClick={() => onStart("import")}>{t("welcome.import")}</button>
           <button className="btn btn-primary" onClick={() => onStart("library")} autoFocus>{t("welcome.start")}<Icon name="plus" size={15} /></button>
