@@ -33,7 +33,8 @@ fi
 
 echo "Building frontend..."
 cd "$FRONTEND_DIR"
-npm ci --no-audit --no-fund
+# 启动时需要 TypeScript/Vite；即使 NODE_ENV=production 也必须安装构建依赖。
+npm ci --include=dev --no-audit --no-fund
 npm run build
 cd "$BACKEND_DIR"
 

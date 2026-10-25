@@ -17,7 +17,8 @@ if not exist ".venv\Scripts\python.exe" (
 if errorlevel 1 exit /b 1
 
 cd /d "%~dp0frontend"
-call npm ci --no-audit --no-fund
+rem Build tools are required even when NODE_ENV=production.
+call npm ci --include=dev --no-audit --no-fund
 if errorlevel 1 exit /b 1
 call npm run build
 if errorlevel 1 exit /b 1
