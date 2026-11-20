@@ -204,6 +204,36 @@ class ContainerNodeGiaTests(unittest.TestCase):
             self.assertAlmostEqual(x + 10, source["x"] - 100, places=5)
             self.assertAlmostEqual(y + 15, 80 - source["y"], places=5)
 
+    def test_progress_fill_writes_enable_shape_and_integer_percent(self):
+        scene = sample_scene()
+        scene["elements"][1]["luaMask"] = {"enableFill": True, "fillType": "vertical", "fillAmount": .71}
+        _, _, units = decode(client_ui_export.build_container_node_gia(scene))
+        config = body(units[2], 97, 85)
+        self.assertEqual(_get(config, 514), 1)
+        self.assertEqual(_get(config, 515), 2)  # Vertical
+        self.assertEqual(_get(config, 508), 71)
+        # Inactive elements keep the template defaults byte-for-byte.
+        inactive = body(units[1], 97, 85)
+        self.assertFalse(_get(inactive, 514))
+        self.assertEqual((_get(inactive, 515), _get(inactive, 508)), (1, 100))
+        scene["elements"][1]["luaMask"]["fillAmount"] = .715
+        with self.assertRaises(ValueError):
+            client_ui_export.build_container_node_gia(scene)
+        scene["elements"][1]["luaMask"].update(fillAmount=.5, fillType="unused")
+        _, _, units = decode(client_ui_export.build_container_node_gia(scene))
+        unused = body(units[2], 97, 85)
+        self.assertFalse(_get(unused, 514))
+
+    def test_fill_only_scene_exports_to_container_node_endpoint(self):
+        scene = sample_scene()
+        scene["elements"][1]["luaMask"] = {"enableFill": True, "fillType": "radial360", "fillAmount": .5}
+        response = export_container_node(ExportRequest(scene=SceneDocumentModel(**scene)))
+        self.assertEqual(response.status_code, 200)
+        scene["elements"][1]["luaMask"]["enabled"] = True
+        with self.assertRaises(HTTPException) as raised:
+            export_container_node(ExportRequest(scene=SceneDocumentModel(**scene)))
+        self.assertIn("蒙版", raised.exception.detail)
+
     def test_background_sorted_below_and_image_asset_mapping(self):
         scene = sample_scene()
         scene["elements"][2]["isBackground"] = True  # 背景图元永远在最底层。

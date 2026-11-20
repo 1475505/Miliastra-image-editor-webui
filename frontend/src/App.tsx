@@ -559,6 +559,8 @@ function App() {
   const hasPrefabs = scene.elements.some((element) => element.type === "prefab");
   const hasLuaMasks = scene.elements.some(element => luaMaskActive(element.luaMask));
   const luaOnly = hasPrefabs || hasLuaMasks;
+  // Progress fill is the only luaMask effect that container-node GIA supports.
+  const containerExportAllowed = !hasPrefabs && !scene.elements.some(element => Boolean(element.luaMask?.enabled || element.luaMask?.enableSoftEdge));
   const luaOnlyHint = hasLuaMasks ? t("luaMask.exportHint") : t("prefab.luaOnly");
 
   const selectedElement = useMemo(
@@ -1785,7 +1787,8 @@ function App() {
 
   async function downloadExport(endpoint: string, filename: string) {
     setExportOpen(false);
-    if (luaOnly && endpoint !== "/api/export/lua" && endpoint !== "/api/export/json") { setStatus(luaOnlyHint); return; }
+    if (luaOnly && endpoint !== "/api/export/lua" && endpoint !== "/api/export/json"
+        && !(endpoint === "/api/export/container-node" && containerExportAllowed)) { setStatus(luaOnlyHint); return; }
     setStatus(t("statusbar.preparing", { name: filename }));
     const response = await fetch(endpoint, {
       method: "POST",
@@ -2134,7 +2137,8 @@ function App() {
             {exportOpen ? (
               <div className="menu" onClick={(event) => event.stopPropagation()}>
                 {EXPORT_FORMATS.map((item) => {
-                  const blocked = luaOnly && !LUA_SAFE_ENDPOINTS.has(item.endpoint);
+                  const blocked = luaOnly && !LUA_SAFE_ENDPOINTS.has(item.endpoint)
+                    && !(item.endpoint === "/api/export/container-node" && containerExportAllowed);
                   return (
                     <button
                       key={item.endpoint}
@@ -2937,6 +2941,7 @@ function App() {
                   {elementTab === "advanced" ? (
                     selectedElement.type === "other" ? <div className="tip-box">{t("luaMask.unsupported")}</div> :
                     <LuaMaskInspector key={selectedElement.id} mask={selectedElement.luaMask}
+                      supportsFill={selectedElement.type !== "textbox"}
                       width={selectedElement.width * Math.abs(selectedElement.type === "textbox" ? selectedElement.textBox?.scaleX ?? 1 : 1)}
                       height={selectedElement.height * Math.abs(selectedElement.type === "textbox" ? selectedElement.textBox?.scaleY ?? 1 : 1)}
                       showGuides={showMaskGuides} onShowGuides={setShowMaskGuides}

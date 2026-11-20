@@ -176,7 +176,7 @@ const elementProperties = {
   imageType: { type: "string", enum: ["basic", "stretch"], description: "Image rendering mode: basic scales the whole sprite; stretch uses its m_Border slices. Nonzero borders default to stretch and also allow basic; missing/zero borders only allow basic. get_asset_info returns supported modes and default size. Rendering always uses the original sprite, never the fixed stretchPreviewUrl thumbnail. Switching modes preserves current dimensions." },
   prefabId: { type: "integer", minimum: 1, maximum: 4294967295, description: "Required for prefab: exact catalog entity ID; Lua drawing only" },
   prefabVariable: { type: "string", minLength: 1, maxLength: 128, description: "Name in the script-local PREFAB_IDS configuration table, default prefab_<ID>; no client script parameter is required" },
-  luaMask: { type: ["object", "null"], additionalProperties: false, description: "Lua-only image parent mask. imageId defaults to 100001 (rectangle). Canvas previews six basic shapes or same-origin sprite alpha, Basic/Stretch, inward contour feathering and inversion. Percentage ranges are central opaque spans (0-100, 100 hard). These are preview policies, not verified device math. Loading failures show original content plus a notice. JSON preserves settings; active effects disable other drawing exports. Fields merge on update; null clears settings. Lua exports native values unchanged.", properties: {
+  luaMask: { type: ["object", "null"], additionalProperties: false, description: "Lua-only image parent mask plus progress fill. imageId defaults to 100001 (rectangle). Canvas previews six basic shapes or same-origin sprite alpha, Basic/Stretch, inward contour feathering and inversion, and progress fill (image controls only). Percentage ranges are central opaque spans (0-100, 100 hard). These are preview policies, not verified device math. Loading failures show original content plus a notice. JSON preserves settings; active masks/feather disable other drawing exports, while fill-only scenes can also export container-node GIA. Fields merge on update; null clears settings. Lua exports native values unchanged; fillAmount is 0-1 and container-node GIA rounds it to an integer percentage.", properties: {
     enabled: { type: "boolean" }, reverseMaskArea: { type: "boolean" }, enableSoftEdge: { type: "boolean" },
     imageId: { type: "integer", minimum: 1, maximum: 2147483647, default: 100001, description: "Mask StaticReference image asset ID, independent of the content image and IMAGE_PREFAB_ID. Custom contours require device verification." },
     imageType: { type: ["string", "null"], enum: ["basic", "stretch", null], default: null, description: "Mask image type only; null leaves native type unchanged for legacy compatibility. Lua attempts explicit Basic/Stretch after binding; unsupported writes/readbacks log once per image ID/type and continue with the current type. Does not resize the content or imply verified custom contour rendering." },
@@ -185,7 +185,14 @@ const elementProperties = {
     height: { type: ["number", "null"], minimum: 0, description: "null follows content height; zero gives empty coverage" },
     softEdgeMode: { type: "string", enum: ["Pixel", "Percentage"] },
     softEdgeWidthX: numberProp("Native horizontal feather width"), softEdgeWidthY: numberProp("Native vertical feather width"),
-    horizontalSoftRange: numberProp("Native horizontal feather range"), verticalSoftRange: numberProp("Native vertical feather range")
+    horizontalSoftRange: numberProp("Native horizontal feather range"), verticalSoftRange: numberProp("Native vertical feather range"),
+    enableFill: { type: "boolean", description: "Enable progress fill on image controls (not textboxes); fillType must not be unused. Lua calls SetFillHorizontal/Vertical/Radial90/180/360 with the documented enums." },
+    fillType: { type: "string", enum: ["unused", "horizontal", "vertical", "radial90", "radial180", "radial360"], description: "Fill shape. unused disables fill even when enableFill is true." },
+    fillHorizontalType: { type: "string", enum: ["left", "right"] },
+    fillVerticalType: { type: "string", enum: ["bottom", "top"] },
+    fillRadial90Type: { type: "string", enum: ["bottomLeft", "topLeft", "topRight", "bottomRight"] },
+    fillRadialType: { type: "string", enum: ["bottom", "left", "top", "right"], description: "Origin for radial180 and radial360; Lua has no clockwise flag, the sweep is always clockwise." },
+    fillAmount: numberProp("Progress from 0 to 1. Container-node GIA requires an integer percentage, so 0.855 is rejected.", 0, 1)
   } }
 };
 const addProperties = {

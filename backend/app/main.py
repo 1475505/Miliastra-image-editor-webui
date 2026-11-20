@@ -26,7 +26,7 @@ from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFont, PngImagePlu
 from . import client_ui_export, image_library, image_stretch, lua_scene, prefab_library
 from .image_library import fetch_sprite_bytes, sprite_url
 from .rotation import rotation_matrix
-from .lua_mask import LuaMaskModel, mask_active
+from .lua_mask import LuaMaskModel, fill_active, mask_active
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 STATIC_DIR = ROOT_DIR / "backend" / "app" / "static"
@@ -544,7 +544,7 @@ def export_gia(request: ExportRequest) -> Response:
 def export_container_node(request: ExportRequest) -> Response:
     """导出客户端「容器节点」控件模板 GIA，不是服务端「客户端控件容器」。"""
     scene = normalize_scene(request.scene)
-    require_supported_draw_format(scene, "客户端容器节点 GIA")
+    require_supported_draw_format(scene, "客户端容器节点 GIA", allow_fill=True)
     try:
         gia_bytes = client_ui_export.build_container_node_gia(scene.model_dump(), request.giaGroupName)
     except ValueError as exc:
@@ -655,8 +655,10 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
 
     for index, element in enumerate(sorted_elements):
         shape_type = element.type if element.type in SHAPE_TYPES else "rectangle"
-        if shape_type == "other" and mask_active(element.luaMask):
-            raise HTTPException(status_code=400, detail="此图元类型不支持 Lua 蒙版和羽化。")
+        if shape_type == "other" and (mask_active(element.luaMask) or fill_active(element.luaMask)):
+            raise HTTPException(status_code=400, detail="此图元类型不支持 Lua 蒙版、羽化和填充。")
+        if shape_type == "textbox" and fill_active(element.luaMask):
+            raise HTTPException(status_code=400, detail="文本框暂不支持进度填充；填充仅作用于图片类图元。")
         prefab_id, prefab_variable = normalize_prefab_binding(element) if shape_type == "prefab" else (None, None)
         image_asset_id: int | None = None
         image_tint = False
@@ -745,9 +747,11 @@ def normalize_prefab_binding(element: SceneElementModel) -> tuple[int, str]:
     return element.prefabId, name.strip()
 
 
-def require_supported_draw_format(scene: SceneDocumentModel, format_name: str) -> None:
+def require_supported_draw_format(scene: SceneDocumentModel, format_name: str, allow_fill: bool = False) -> None:
     if any(mask_active(element.luaMask) for element in scene.elements):
         raise HTTPException(status_code=400, detail=f"蒙版和羽化仅 Lua 可用；{format_name} 暂不支持。JSON 可保存配置。")
+    if not allow_fill and any(fill_active(element.luaMask) for element in scene.elements):
+        raise HTTPException(status_code=400, detail=f"进度填充仅 Lua 和容器节点 GIA 可用；{format_name} 暂不支持。JSON 可保存配置。")
     if any(element.type == "prefab" for element in scene.elements):
         raise HTTPException(status_code=400, detail=f"Prefab images support Lua drawing only; {format_name} is unavailable. JSON can preserve the scene.")
 

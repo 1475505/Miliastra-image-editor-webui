@@ -27,7 +27,7 @@
 - 查看背景不进场景，导出透明底；实底用矩形图元。`canvas.mask` 是 GIA 素材组遮罩，与 `luaMask` 分开。
 - JSON 保留完整规范化场景。缺少画布的简化 JSON 根据内容拟合画布；不接受嵌套 `center/size` 替代扁平几何。
 - CSS 画布支持 `-miliastra-canvas-size` 和 `-miliastra-canvas-fit: lock|expand|fit`。SVG 是有限子集，圆环导出省略并警告。详细生成约束留在对应 [CSS](../skills/miliastra-image-css-builder/SKILL.md) / [SVG](../skills/miliastra-image-svg-builder/SKILL.md) 技能。
-- 含元件或活动 `luaMask` 的绘图出口只支持 Lua；JSON 始终可保存。浏览器辅助轮廓、候选蒙版、选择集合与撤销历史不序列化。
+- 含元件或活动 `luaMask` 的绘图出口只支持 Lua；JSON 始终可保存。仅进度填充（无蒙版/羽化）的场景还允许容器节点 GIA。浏览器辅助轮廓、候选蒙版、选择集合与撤销历史不序列化。
 - 手工编辑与 WebMCP 共用 `commitScene`。批量修改先校验再原子提交，原值操作不创建历史。鼠标事务和方向键长按在结束时提交一次；历史保留最近 100 次编辑。
 
 ## Lua 兼容
@@ -47,6 +47,9 @@
 - 正交投影采用 Z-X-Y（`Ry * Rx * Rz`）；单轴图片压缩/翻面有真机观察，混合轴及其它控件不据此宣称已通过。
 - 矩形遮罩裁切后代、透明着色仍遮罩、Pixel 羽化向内有 MASK v1 真机观察。非矩形轮廓、百分比、反转及精确合成仍待验。网页以图片 alpha、扫描线向内羽化和 alpha 补集近似；辅助虚线来自原轮廓，非羽化等值线。
 - 百分比网页过渡宽度为 `轴尺寸 × (1-clamp(range,0,100)/100)/2`，不回写原参数。不能当作原生公式。
+- 进度填充的 Lua 写入使用官方脚本 API 的 `SetFillHorizontal/Vertical/Radial90/Radial180/Radial360`（属性 `fillType/fillAmount` 与方向枚举均有文档，不是 GIA 推断）；API 没有 enableFill 或顺时针开关，`fillType` 决定方式、扫描固定顺时针。网页横向/纵向为精确半平面，环绕按 ugc-tool 的 CSS conic 近似，均非真机公式。
+- 填充的容器节点 GIA 只写 `enable_fill(514)`、`fill_type(515)`、`field508` 整数百分比；方向/起点（503/504/505/506/507）尚无真机证据，保持模板默认值。`03_客户端控件字段表` 仅确认 515=1/4 与默认进度，2/3/5 及 508≠100 仍在 `probes/image-fill-gia` 待回收。
+- 旧 Lua 的 `IMAGE_MASKS/TEXT_MASKS` 只在填充组偏离默认时写入；`validate_mask` 只回显输入中出现的填充键，保持 `MILIASTRA_EDITOR_SCENE_V1` 摘要不变。
 - 预览缓冲最长边 2048、轮廓 1536、辅助轮廓提取 768。辅助轮廓先排除近透明噪声（全图峰值 1%，至少 alpha=1），分离连通图案，再按各图案自身峰值的 50% 插值；避免约半透明素材的 127/129 像素被固定 128 阈值割裂。此处理只用于辅助线，不改变实际蒙版 alpha。辅助描边、选框及手柄按视图缩放补偿屏幕尺寸。素材请求共享缓存、失败可重试，迟到结果不覆盖新选择。
 
 ### 必须保留的 GIA 差异
@@ -61,7 +64,7 @@
 
 ### 客户端「容器节点」GIA
 
-`/api/export/container-node` 由 `backend/app/client_ui_export.py` 生成控件模板，不复用素材组 `json_to_gia` 链路。根资产是 `UIControlTemplate(70)`（preset=25、中心锚点、画布像素宽高）；图元为其图片子控件 `which=15`，基础形状与图片素材直接引用 `100001`–`100006` 或自带素材 ID，sibling 按底→顶写入。禁止生成服务端 `UIControlGroup(21)` 包装层、preset=24 或根引用槽 62/82。画布矩形遮罩生成透明遮罩父图片并重算子控件相对位置；圆形遮罩、文本框、元件暂不导出。控件坐标为容器中心原点、Y 向上、Z 逆时针，旋转轴直接沿用场景值。四平台 RectTransform 同步写入 float32；根/新建子控件各自登记独立 Info.index。测试覆盖纯 Python 结构断言，并可在设置 `UGC_GIA_CODEC` 后用 ugc-tool 独立编解码器复核。
+`/api/export/container-node` 由 `backend/app/client_ui_export.py` 生成控件模板，不复用素材组 `json_to_gia` 链路。根资产是 `UIControlTemplate(70)`（preset=25、中心锚点、画布像素宽高）；图元为其图片子控件 `which=15`，基础形状与图片素材直接引用 `100001`–`100006` 或自带素材 ID，sibling 按底→顶写入。禁止生成服务端 `UIControlGroup(21)` 包装层、preset=24 或根引用槽 62/82。画布矩形遮罩生成透明遮罩父图片并重算子控件相对位置；圆形遮罩、文本框、元件暂不导出。图片图元可写进度填充 `514/515/508`（整数百分比），方向与起点不写。控件坐标为容器中心原点、Y 向上、Z 逆时针，旋转轴直接沿用场景值。四平台 RectTransform 同步写入 float32；根/新建子控件各自登记独立 Info.index。测试覆盖纯 Python 结构断言，并可在设置 `UGC_GIA_CODEC` 后用 ugc-tool 独立编解码器复核。
 
 Lua API 核对来源为[官方页面](https://act.mihoyo.com/ys/ugc/tutorial/detail/mhtakr07vej4)的本地加工快照，SHA-256 `4a43f93f2b322be8336ff33d9cb07b3bc3a8d4c8a931a45d18f90e4e64941bab`；原始快照标记 `2026-08-26T2213_rev223`。上述运行观察来自 MASK v1、ROTXY2；不是本项目每个新导出文件的真机验收。维护时按测试断言保留边界，不把浏览器或 VM 通过写成真机通过。
 

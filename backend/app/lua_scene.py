@@ -7,7 +7,7 @@ import json
 import math
 from pathlib import Path
 import re
-from .lua_mask import LuaMaskModel, RUNTIME as MASK_RUNTIME, mask_active, validate_mask
+from .lua_mask import RUNTIME as MASK_RUNTIME, dump_mask, mask_active, validate_mask
 
 MAX_CONTENT_SIZE = 10 * 1024 * 1024
 MAX_DEPTH = 64
@@ -388,7 +388,7 @@ def _control_script(scene, gia_data, name):
     variables = {}
     for item in sorted(scene["elements"], key=lambda item: (0 if item["isBackground"] else 1, item["zIndex"])):
         if item["type"] == "textbox":
-            text_masks.append(LuaMaskModel.model_validate(item.get("luaMask") or {}).model_dump(exclude_none=True))
+            text_masks.append(dump_mask(item.get("luaMask")))
             textboxes.append({key: item[key] for key in ("name", "x", "y", "width", "height", "rotation", "textBox")})
             textboxes[-1].update({key: item[key] for key in ("rotationX", "rotationY") if item.get(key)})
             order.append([2, len(textboxes)])
@@ -396,7 +396,7 @@ def _control_script(scene, gia_data, name):
         if not _is_image_element(item):
             continue
         order.append([1, len(rows) + 1])
-        image_masks.append(LuaMaskModel.model_validate(item.get("luaMask") or {}).model_dump(exclude_none=True))
+        image_masks.append(dump_mask(item.get("luaMask")))
         rotations.append([item.get("rotationX", 0), item.get("rotationY", 0)])
         image_types.append(item.get("imageType", "basic") if item["type"] == "image" else "stretch")
         if item["type"] != "prefab":
@@ -490,7 +490,7 @@ def _control_script(scene, gia_data, name):
 ''' + image_body.replace("game.InstantiateClientUIControl(IMAGE_PREFAB_ID, parent)",
                          "game.InstantiateClientUIControl(IMAGE_PREFAB_ID, frame and frame.control or parent)"))
         image_body = image_body.replace("            image:SetAsLastSibling()", '''            image.enableMask, image.enableSoftEdge, image.reverseMaskArea = false, false, false
-            image:SetFillUnused()
+            ApplyFill(image, IMAGE_MASKS[index])
             FitMaskedContent(image, frame, item[4], item[5], item[2], item[3],
                 item[8], item[9], item[10], item[11], item[6], item[7])
             image:SetActive(true)

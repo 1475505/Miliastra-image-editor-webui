@@ -27,6 +27,9 @@ _ASSETS = {
 }
 # 容器节点只承载图片类图元；文本框需要原生文本控件字段，暂不支持。
 _IMAGE_TYPES = frozenset(_ASSETS) | {"image"}
+# 填充方式顺序与 ugc-tool / 官方 ImageFillType 枚举一致；GIA 只写已验证的开关、
+# 方式和进度，方向与起点字段尚无真机证据，保持模板默认值。
+_FILL_TYPES = {"unused": 0, "horizontal": 1, "vertical": 2, "radial90": 3, "radial180": 4, "radial360": 5}
 # tag: (Data.field501, Data.field502, Details.field501)
 _SLOTS = {73: (63, 83, 65), 77: (67, 90, 69),
           78: (68, 91, 70), 83: (73, 96, 75), 84: (74, 97, 76)}
@@ -116,9 +119,27 @@ def _transform(guid, preset, offset=(0, 0), size=(0, 0), pivot=(.5, .5),
             + _blob(503, _details(guid, 4, 12, _blob(13, transform))))
 
 
-def _image_config(mask=False):
-    # 保留原生图片 B 槽默认值；图元关闭遮罩、羽化、进度填充。
+def _fill_config(fill):
+    """Inactive fill keeps the template defaults; active fill writes 514/515/508."""
+    if not isinstance(fill, dict) or not fill.get("enableFill") or fill.get("fillType") in (None, "unused"):
+        return {}
+    fill_type = _FILL_TYPES.get(str(fill.get("fillType")))
+    if fill_type is None:
+        raise ValueError(f"未知的填充方式：{fill.get('fillType')}")
+    amount = _number(fill.get("fillAmount", .5), "填充量")
+    if not 0 <= amount <= 1:
+        raise ValueError("填充量必须在 0～1 之间")
+    percent = amount * 100
+    # GIA stores an integer percentage; reject half steps instead of rounding silently.
+    if abs(percent - round(percent)) > 1e-6:
+        raise ValueError("填充量必须能换算为整数百分比，例如 0.71 而不是 0.715")
+    return {514: 1, 515: fill_type, 508: int(round(percent))}
+
+
+def _image_config(mask=False, fill=None):
+    # 保留原生图片 B 槽默认值；遮罩父控件关闭填充，内容图元按场景写入填充。
     values = {502: 1, 504: 1, 505: 1, 507: 2, 508: 100, 510: 1, 515: 1}
+    values.update(_fill_config(fill))
     return ((_uint(501, 1) if mask else b"")
             + b"".join(_uint(tag, value) for tag, value in values.items())
             + _blob(511, _vector((8, 8)))
@@ -147,14 +168,14 @@ def _unit(guid, name, components, children=(), parent=None, template=False):
 
 def _control(guid, name, tag, children=(), parent=None, offset=(0, 0), size=(0, 0),
              pivot=(.5, .5), rotation=(0, 0, 0), color=0xFFFFFFFF, asset=100001, mask=False,
-             template=False):
+             template=False, fill=None):
     components = [_name_component(name), _type_component(guid),
                   _transform(guid, 25 if tag == 78 else 23, offset, size, pivot, rotation),
                   _slot(guid, 73)]
     if tag == 83:
         # A.504=Stretch，依据 ugc-tool 原生图片字段映射（不在旧 proto 快照中）。
         components += [_slot(guid, 83, _uint(502, color) + _uint(503, asset) + _uint(504, 1)),
-                       _slot(guid, 84, _image_config(mask))]
+                       _slot(guid, 84, _image_config(mask, fill))]
     else:
         components.append(_slot(guid, 78))
     components.append(_slot(guid, 77))
@@ -260,7 +281,7 @@ def build_container_node_gia(scene, name=""):
         units.append(_control(guid, str(index), 83, parent=parent_id,
                               offset=(cx - mask_x, cy - mask_y), size=(w, h),
                               rotation=_rotation(element), color=_packed_color(element),
-                              asset=asset))
+                              asset=asset, fill=element.get("luaMask")))
 
     # 主资产就是容器节点模板；附件只含它的后代，不添加服务端包装层。
     payload = (_blob(1, units[0]) + b"".join(_blob(2, unit) for unit in units[1:])

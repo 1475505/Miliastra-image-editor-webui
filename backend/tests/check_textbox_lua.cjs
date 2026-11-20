@@ -25,6 +25,7 @@ const typedMasks = maskSlots.filter(({ cfg }) => cfg.imageType != null);
 const quote = value => '"' + value.replace(/[\x00-\x1f\x7f\\"]/g, char =>
   char === '\\' || char === '"' ? '\\' + char : '\\' + char.charCodeAt(0).toString().padStart(3,'0')) + '"';
 const literal = value => typeof value === 'string' ? quote(value) : String(value);
+const pascal = value => value.charAt(0).toUpperCase() + value.slice(1);
 
 function vm(script) {
   const L = lauxlib.luaL_newstate();
@@ -61,6 +62,11 @@ function control(kind)
             values.imageSource = source; values.imageId = asset
         end
         c.SetFillUnused = function(self) values.fillType = 'Unused' end
+        c.SetFillHorizontal = function(self, direction, amount) values.fillType='Horizontal'; values.fillDirection=direction; values.fillAmount=amount end
+        c.SetFillVertical = function(self, direction, amount) values.fillType='Vertical'; values.fillDirection=direction; values.fillAmount=amount end
+        c.SetFillRadial90 = function(self, direction, amount) values.fillType='Radial90'; values.fillDirection=direction; values.fillAmount=amount end
+        c.SetFillRadial180 = function(self, direction, amount) values.fillType='Radial180'; values.fillDirection=direction; values.fillAmount=amount end
+        c.SetFillRadial360 = function(self, direction, amount) values.fillType='Radial360'; values.fillDirection=direction; values.fillAmount=amount end
         c.SetSoftEdgeWidth = function(self, x, y) values.softEdgeWidthX=x; values.softEdgeWidthY=y end
     end
     return setmetatable(c, {
@@ -100,6 +106,10 @@ game = {
 }
 Enum = {ImageSource={StaticReference="static", Prefab="prefab"}, ImageType={Basic="basic", Stretch="stretch"},
     ImageMaskSoftEdgeMode={Pixel="Pixel", Percentage="Percentage"},
+    ImageFillHorizontalType={Left="Left", Right="Right"},
+    ImageFillVerticalType={Bottom="Bottom", Top="Top"},
+    ImageFillRadial90Type={BottomLeft="BottomLeft", TopLeft="TopLeft", TopRight="TopRight", BottomRight="BottomRight"},
+    ImageFillRadialType={Bottom="Bottom", Left="Left", Top="Top", Right="Right"},
     TextHorizontalAlignment={Left="left", Middle="center", Right="right"},
     TextVerticalAlignment={Top="top", Middle="middle", Bottom="bottom"}}
 Color = {FromRGBA=function(...) return {...} end}
@@ -164,6 +174,14 @@ assert(math.abs(m.SetAnchoredPositionValue[2]+c.SetAnchoredPositionValue[2]+mh*(
     run(`assert(${c}.id == 1234 and ${c}.asset == ${element.prefabId ?? element.imageAssetId ?? assets[element.type]})`);
     run(`assert(${c}.source == ${quote(element.type === 'prefab' ? 'prefab' : 'static')})`);
     if (element.type === 'image') run(`assert(${c}.imageType == ${quote(element.imageType ?? 'basic')})`);
+    if (hasMaskData) {
+      const cfg = element.luaMask || {};
+      if (cfg.enableFill && cfg.fillType && cfg.fillType !== 'unused') {
+        const direction = {horizontal: cfg.fillHorizontalType, vertical: cfg.fillVerticalType,
+          radial90: cfg.fillRadial90Type, radial180: cfg.fillRadialType, radial360: cfg.fillRadialType}[cfg.fillType];
+        run(`assert(${c}.fillType == ${quote(pascal(cfg.fillType))} and math.abs(${c}.fillAmount - ${cfg.fillAmount}) < 1e-9 and ${c}.fillDirection == ${quote(pascal(direction))}, 'fill')`);
+      } else run(`assert(${c}.fillType == 'Unused')`);
+    }
     continue;
   }
   const box = element.textBox;

@@ -12,9 +12,9 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 from app import lua_scene
 from app.lua_mask import LuaMaskModel
-from app.main import (ExportRequest, SceneDocumentModel, export_lua, normalize_scene,
-                      parse_json_scene, parse_lua_scene, scene_to_css, scene_to_svg,
-                      scene_to_png_bytes, scene_to_gia_document)
+from app.main import (ExportRequest, SceneDocumentModel, export_container_node, export_lua,
+                      normalize_scene, parse_json_scene, parse_lua_scene, scene_to_css,
+                      scene_to_svg, scene_to_png_bytes, scene_to_gia_document)
 
 
 def scene():
@@ -166,9 +166,61 @@ class LuaMaskTests(unittest.TestCase):
         self.assertFalse(any('edited' in warning for warning in restored.meta.warnings))
         self.assertEqual(parse_lua_scene(body).elements[0].luaMask.imageId, 100001)
 
+    def test_progress_fill_roundtrip_and_validation(self):
+        source = scene()
+        mask = source.elements[0].luaMask
+        mask.enableFill = True
+        mask.fillType = 'radial360'
+        mask.fillAmount = 0.71
+        mask.fillRadialType = 'left'
+        mask.fillHorizontalType = 'right'
+        mask.fillVerticalType = 'bottom'
+        mask.fillRadial90Type = 'topRight'
+        script = export_lua(ExportRequest(scene=source)).body.decode()
+        self.assertIn('ApplyFill(image, IMAGE_MASKS[index])', script)
+        self.assertIn('SetFillRadial360(Enum.ImageFillRadialType[FillEnumName(entry.fillRadialType)], amount)', script)
+        self.assertIn('["enableFill"]=true', script)
+        self.assertIn('["fillType"]="radial360"', script)
+        self.assertEqual(parse_lua_scene(script).elements, source.elements)
+        bare = parse_lua_scene(script.split(lua_scene.METADATA_PREFIX)[0])
+        restored = bare.elements[0].luaMask
+        self.assertEqual((restored.enableFill, restored.fillType, restored.fillAmount), (True, 'radial360', 0.71))
+        self.assertEqual((restored.fillRadialType, restored.fillRadial90Type), ('left', 'topRight'))
+        # Scenes that only use masks keep the previous literal shape and digest.
+        plain = export_lua(ExportRequest(scene=scene())).body.decode()
+        self.assertNotIn('enableFill', lua_scene.read_drawing(plain)['imageMasks'][0])
+        for patch in ({'fillAmount': 1.5}, {'fillAmount': -0.1}, {'fillType': 'radial45'},
+                      {'fillHorizontalType': 'top'}, {'fillVerticalType': 'left'},
+                      {'fillRadial90Type': 'center'}, {'fillRadialType': 'center'},
+                      {'enableFill': 1}, {'fillAmount': '0.5'}):
+            with self.subTest(patch=patch), self.assertRaises(ValidationError):
+                LuaMaskModel.model_validate(patch)
+
+    def test_fill_only_exports_to_container_node_but_not_other_formats(self):
+        shape = dict(id='shape', name='Shape', type='rectangle', x=80, y=70, width=90, height=60,
+                     zIndex=0, luaMask=dict(enableFill=True, fillType='horizontal', fillAmount=0.25))
+        source = normalize_scene(SceneDocumentModel.model_validate(
+            {'canvas': {'width': 320, 'height': 240}, 'elements': [shape]}))
+        for encode in (scene_to_css, scene_to_svg, scene_to_png_bytes, scene_to_gia_document):
+            with self.subTest(encode=encode.__name__), self.assertRaises(HTTPException) as caught:
+                encode(source)
+            self.assertIn('填充', caught.exception.detail)
+        self.assertEqual(export_container_node(ExportRequest(scene=source)).status_code, 200)
+        script = export_lua(ExportRequest(scene=source)).body.decode()
+        self.assertIn('SetFillHorizontal(', script)
+        self.assertIn('IMAGE_MASKS', script)
+        self.assertEqual(parse_lua_scene(script).elements[0].luaMask.fillType, 'horizontal')
+
+    def test_textbox_progress_fill_is_rejected(self):
+        text = dict(id='t', name='T', type='textbox', x=20, y=20, width=100, height=30,
+                    zIndex=0, luaMask=dict(enableFill=True, fillType='vertical'))
+        with self.assertRaises(HTTPException) as caught:
+            normalize_scene(SceneDocumentModel.model_validate(
+                {'canvas': {'width': 200, 'height': 120}, 'elements': [text]}))
+        self.assertIn('文本框', caught.exception.detail)
+
     def test_mask_image_id_validation(self):
         self.assertEqual(LuaMaskModel().imageId, 100001)
-        self.assertEqual(LuaMaskModel(imageId=0x7fffffff).imageId, 0x7fffffff)
         script = export_lua(ExportRequest(scene=scene())).body.decode()
         for value in (0, -1, True, None, 100002.5, '100002', 0x80000000):
             with self.subTest(value=value), self.assertRaises(ValidationError):
@@ -201,6 +253,10 @@ class LuaMaskTests(unittest.TestCase):
         mixed = scene()
         mixed.elements[0].luaMask.imageId = 100002
         mixed.elements[0].luaMask.imageType = 'basic'
+        mixed.elements[0].luaMask.enableFill = True
+        mixed.elements[0].luaMask.fillType = 'radial180'
+        mixed.elements[0].luaMask.fillAmount = 0.71
+        mixed.elements[0].luaMask.fillRadialType = 'right'
         mixed.elements[1].luaMask.imageId = 106030
         mixed.elements[1].luaMask.imageType = 'stretch'
         mixed.elements.append(mixed.elements[0].model_copy(update={"id": "prefab", "type": "prefab", "prefabId": 1, "zIndex": 3}))

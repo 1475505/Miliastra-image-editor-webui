@@ -5,7 +5,7 @@ import ts from 'typescript';
 const js = ts.transpileModule(readFileSync(new URL('../src/luaMask.ts', import.meta.url), 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext }
 }).outputText;
-const { luaMaskOf, luaMaskActive, parseLuaMaskPatch, scaleLuaMask } = await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);
+const { luaMaskOf, luaMaskActive, parseLuaMaskPatch, scaleLuaMask, fillActive } = await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);
 const asModule = source => `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
 const transpile = path => ts.transpileModule(readFileSync(new URL(path, import.meta.url), 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext }
@@ -15,7 +15,7 @@ const previewJs = transpile('../src/maskPreview.ts').replace('"./luaMask"', JSON
   .replace('"./maskShapes"', JSON.stringify(asModule(transpile('../src/maskShapes.ts'))))
   .replace('"./maskGuides"', JSON.stringify(asModule(transpile('../src/maskGuides.ts'))))
   .replace('"./imageStretch"', JSON.stringify(asModule(transpile('../src/imageStretch.ts'))));
-const { previewCoverage, previewFeatherWidths, previewMaskSupported, maskPreviewBounds, featherMaskAlpha } = await import(asModule(previewJs));
+const { previewCoverage, previewFeatherWidths, previewMaskSupported, maskPreviewBounds, featherMaskAlpha, fillCoverage } = await import(asModule(previewJs));
 
 test('mask mode changes preserve all raw values; feather-only enables the Lua gate', () => {
   const original = luaMaskOf({ softEdgeWidthX: 13.5, horizontalSoftRange: 81, width: 0 });
@@ -154,4 +154,69 @@ test('contour feather respects transparent holes, independent axes and original 
   const both = featherMaskAlpha(alpha, 5, 5, 2, 2);
   assert.equal(both[11], 64);
   assert.equal(alpha[11], 255, 'source was not mutated');
+});
+
+test('progress fill activates only with enableFill and a concrete shape', () => {
+  assert.equal(fillActive(null), false);
+  assert.equal(fillActive(luaMaskOf()), false);
+  assert.equal(fillActive(luaMaskOf({ enableFill: true })), true);
+  assert.equal(fillActive(luaMaskOf({ enableFill: false, fillType: 'radial360' })), false);
+  assert.equal(fillActive(luaMaskOf({ enableFill: true, fillType: 'unused' })), false);
+  assert.equal(luaMaskActive(luaMaskOf({ enableFill: true })), true, 'fill-only needs a preview and export gate');
+  assert.equal(luaMaskActive(luaMaskOf({ enableFill: false, fillType: 'radial360' })), false);
+  assert.equal(scaleLuaMask(luaMaskOf({ enableFill: true, fillAmount: .71 }), 2).fillAmount, .71, 'ratio is not scaled');
+  assert.equal(parseLuaMaskPatch({ fillAmount: .71 }).fillAmount, .71);
+  for (const fillAmount of [-0.01, 1.01, Infinity, NaN, '0.5', true]) {
+    assert.throws(() => parseLuaMaskPatch({ fillAmount }));
+  }
+  for (const patch of [{ fillType: 'radial45' }, { fillHorizontalType: 'top' },
+    { fillVerticalType: 'left' }, { fillRadial90Type: 'center' }, { fillRadialType: 'center' }, { enableFill: 1 }]) {
+    assert.throws(() => parseLuaMaskPatch(patch));
+  }
+  assert.equal(previewMaskSupported({ enableFill: true }, null), true, 'fill-only preview needs no mask image');
+});
+
+test('horizontal and vertical fill coverage follow direction and clamp the amount', () => {
+  const left = luaMaskOf({ enableFill: true, fillType: 'horizontal', fillHorizontalType: 'left', fillAmount: .25 });
+  assert.equal(fillCoverage(-50, 0, left, 100, 60), 1);
+  assert.equal(fillCoverage(-26, 0, left, 100, 60), 1);
+  assert.equal(fillCoverage(-24, 0, left, 100, 60), 0);
+  assert.equal(fillCoverage(49, 0, left, 100, 60), 0);
+  const right = { ...left, fillHorizontalType: 'right' };
+  assert.equal(fillCoverage(49, 0, right, 100, 60), 1);
+  assert.equal(fillCoverage(-49, 0, right, 100, 60), 0);
+  const top = luaMaskOf({ enableFill: true, fillType: 'vertical', fillVerticalType: 'top', fillAmount: .5 });
+  assert.equal(fillCoverage(0, -29, top, 100, 60), 1);
+  assert.equal(fillCoverage(0, -1, top, 100, 60), 1);
+  assert.equal(fillCoverage(0, 1, top, 100, 60), 0);
+  const bottom = { ...top, fillVerticalType: 'bottom' };
+  assert.equal(fillCoverage(0, 29, bottom, 100, 60), 1);
+  assert.equal(fillCoverage(0, -29, bottom, 100, 60), 0);
+  assert.equal(fillCoverage(0, 0, { ...left, fillAmount: 0 }, 100, 60), 0);
+  assert.equal(fillCoverage(0, 0, { ...left, fillAmount: 1 }, 100, 60), 1);
+  assert.equal(fillCoverage(0, 0, { ...left, fillAmount: 5 }, 100, 60), 1, 'preview clamps oversized amounts');
+  assert.equal(fillCoverage(0, 0, { ...left, fillAmount: -5 }, 100, 60), 0);
+  assert.equal(fillCoverage(0, 0, luaMaskOf(), 100, 60), 1, 'inactive fill covers everything');
+});
+
+test('radial fill coverage sweeps clockwise from the selected origin', () => {
+  const quarter = luaMaskOf({ enableFill: true, fillType: 'radial90', fillRadial90Type: 'bottomLeft', fillAmount: 1 });
+  assert.equal(fillCoverage(-49, 29, quarter, 100, 60), 1, 'near the corner');
+  assert.equal(fillCoverage(49, -29, quarter, 100, 60), 1, 'far corner still inside a 90° wedge');
+  assert.equal(fillCoverage(49, 29, quarter, 100, 60), 1, 'clockwise edge at 90°');
+  const half = { ...quarter, fillAmount: .5 };
+  assert.equal(fillCoverage(-49, -29, half, 100, 60), 1);
+  assert.equal(fillCoverage(49, -29, half, 100, 60), 0, 'outside a 45° sweep');
+  const otherCorner = { ...quarter, fillRadial90Type: 'topRight', fillAmount: .5 };
+  assert.equal(fillCoverage(49, -29, otherCorner, 100, 60), 1);
+  assert.equal(fillCoverage(-49, 29, otherCorner, 100, 60), 0);
+  const radial180 = luaMaskOf({ enableFill: true, fillType: 'radial180', fillRadialType: 'top', fillAmount: .5 });
+  // Start 90° (right) and sweep 90° clockwise: the right half is filled.
+  assert.equal(fillCoverage(40, 0, radial180, 100, 60), 1);
+  assert.equal(fillCoverage(-40, 0, radial180, 100, 60), 0);
+  assert.equal(fillCoverage(0, 0, radial180, 100, 60), 1, 'center is the origin');
+  const radial360 = luaMaskOf({ enableFill: true, fillType: 'radial360', fillRadialType: 'top', fillAmount: .25 });
+  assert.equal(fillCoverage(0, -40, radial360, 100, 60), 1);
+  assert.equal(fillCoverage(40, 40, radial360, 100, 60), 0, '135° is outside a 90° sweep');
+  assert.equal(fillCoverage(40, 40, { ...radial360, fillAmount: 1 }, 100, 60), 1);
 });

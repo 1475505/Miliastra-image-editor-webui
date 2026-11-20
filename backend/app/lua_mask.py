@@ -4,6 +4,13 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator
 
 
+FILL_FIELDS = ("enableFill", "fillType", "fillHorizontalType", "fillVerticalType",
+               "fillRadial90Type", "fillRadialType", "fillAmount")
+FILL_DEFAULTS = {"enableFill": False, "fillType": "horizontal", "fillHorizontalType": "left",
+                 "fillVerticalType": "top", "fillRadial90Type": "bottomLeft",
+                 "fillRadialType": "top", "fillAmount": 0.5}
+
+
 class LuaMaskModel(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
@@ -21,9 +28,16 @@ class LuaMaskModel(BaseModel):
     softEdgeWidthY: float = 0
     horizontalSoftRange: float = 85
     verticalSoftRange: float = 85
+    enableFill: StrictBool = False
+    fillType: Literal["unused", "horizontal", "vertical", "radial90", "radial180", "radial360"] = "horizontal"
+    fillHorizontalType: Literal["left", "right"] = "left"
+    fillVerticalType: Literal["bottom", "top"] = "top"
+    fillRadial90Type: Literal["bottomLeft", "topLeft", "topRight", "bottomRight"] = "bottomLeft"
+    fillRadialType: Literal["bottom", "left", "top", "right"] = "top"
+    fillAmount: float = Field(default=0.5, ge=0, le=1)
 
     @field_validator("offsetX", "offsetY", "width", "height", "softEdgeWidthX", "softEdgeWidthY",
-                     "horizontalSoftRange", "verticalSoftRange", mode="before")
+                     "horizontalSoftRange", "verticalSoftRange", "fillAmount", mode="before")
     @classmethod
     def numeric(cls, value, info):
         if value is None and info.field_name in ("width", "height"):
@@ -41,6 +55,15 @@ def mask_active(mask) -> bool:
     return mask.enabled or mask.enableSoftEdge
 
 
+def fill_active(mask) -> bool:
+    """Progress fill is enabled by enableFill plus a concrete fill shape."""
+    if mask is None:
+        return False
+    if isinstance(mask, dict):
+        return bool(mask.get("enableFill")) and mask.get("fillType", "horizontal") != "unused"
+    return mask.enableFill and mask.fillType != "unused"
+
+
 def validate_mask(value):
     result = LuaMaskModel.model_validate(value).model_dump()
     # Keep the old literal-table digest unchanged when loading older mask Lua.
@@ -50,6 +73,22 @@ def validate_mask(value):
     # None means leave the native type unchanged, and is omitted by Lua export.
     if result["imageType"] is None:
         result.pop("imageType")
+    for key in FILL_FIELDS:
+        if key not in value:
+            result.pop(key, None)
+    return result
+
+
+def dump_mask(value) -> dict:
+    """Serialize one mask record, omitting the fill group when it is all defaults.
+
+    Keeps Lua output and drawing digests byte-identical for scenes that only use
+    masks or feathering.
+    """
+    result = LuaMaskModel.model_validate(value or {}).model_dump(exclude_none=True)
+    if all(result.get(key) == default for key, default in FILL_DEFAULTS.items()):
+        for key in FILL_FIELDS:
+            result.pop(key, None)
     return result
 
 
@@ -58,6 +97,32 @@ def validate_mask(value):
 # so changing the wrapper size cannot re-layout the source control.
 RUNTIME = '''
 local maskImageTypeWarnings = {}
+
+local function FillEnumName(value)
+    if type(value) ~= "string" then return nil end
+    return string.upper(string.sub(value, 1, 1)) .. string.sub(value, 2)
+end
+
+-- API names come from the documented client UI script reference; fill has no
+-- enable flag or clockwise field there, so fillType alone selects the setter.
+local function ApplyFill(image, entry)
+    if entry == nil or not entry.enableFill or entry.fillType == nil or entry.fillType == "unused" then
+        image:SetFillUnused()
+        return
+    end
+    local amount = entry.fillAmount
+    if entry.fillType == "horizontal" then
+        image:SetFillHorizontal(Enum.ImageFillHorizontalType[FillEnumName(entry.fillHorizontalType)], amount)
+    elseif entry.fillType == "vertical" then
+        image:SetFillVertical(Enum.ImageFillVerticalType[FillEnumName(entry.fillVerticalType)], amount)
+    elseif entry.fillType == "radial90" then
+        image:SetFillRadial90(Enum.ImageFillRadial90Type[FillEnumName(entry.fillRadial90Type)], amount)
+    elseif entry.fillType == "radial180" then
+        image:SetFillRadial180(Enum.ImageFillRadialType[FillEnumName(entry.fillRadialType)], amount)
+    else
+        image:SetFillRadial360(Enum.ImageFillRadialType[FillEnumName(entry.fillRadialType)], amount)
+    end
+end
 
 local function CreateMask(entry, parent, centerX, centerY, contentWidth, contentHeight)
     if entry == nil or not (entry.enabled or entry.enableSoftEdge) then return nil end

@@ -1,4 +1,4 @@
-import { luaMaskActive, luaMaskOf, type LuaMask } from "./luaMask";
+import { fillActive, luaMaskActive, luaMaskOf, type LuaMask } from "./luaMask";
 import { rotationMatrix } from "./rotation";
 import { drawBasicMask, isBasicMask } from "./maskShapes";
 import { rasterSliceRegions, supportsImageStretch } from "./imageStretch";
@@ -24,7 +24,8 @@ export function maskPreviewBounds(element: PreviewGeometry) {
 }
 
 export function previewMaskSupported(mask?: Partial<LuaMask> | null, asset?: MaskAsset) {
-  return luaMaskActive(mask) && (isBasicMask(mask?.imageId ?? 100001) || Boolean(asset));
+  const needsMaskImage = Boolean(mask?.enabled || mask?.enableSoftEdge);
+  return luaMaskActive(mask) && (!needsMaskImage || isBasicMask(mask?.imageId ?? 100001) || Boolean(asset));
 }
 
 /** Preview policy only: Percentage range is the full-opacity central span.
@@ -72,6 +73,47 @@ export function featherMaskAlpha(alpha: Uint8ClampedArray, width: number, height
   };
   scan(true, featherX); scan(false, featherY);
   return Uint8ClampedArray.from(result, value => Math.round(value * 255));
+}
+
+/** Progress-fill coverage in centered, Y-down content coordinates.
+ * Horizontal/vertical are exact halves; radial wedges mirror the editor's
+ * CSS conic-gradient preview, which is an approximation of native filling.
+ * The wedge always sweeps clockwise; native Lua has no direction flag.
+ */
+export function fillCoverage(x: number, y: number, mask: LuaMask, width: number, height: number) {
+  if (!fillActive(mask)) return 1;
+  const amount = Math.max(0, Math.min(1, mask.fillAmount));
+  const halfW = width / 2, halfH = height / 2;
+  if (mask.fillType === "horizontal") {
+    if (width <= 0) return 0;
+    const u = ((mask.fillHorizontalType === "right" ? -x : x) + halfW) / width;
+    return u <= amount ? 1 : 0;
+  }
+  if (mask.fillType === "vertical") {
+    if (height <= 0) return 0;
+    const v = ((mask.fillVerticalType === "top" ? y : -y) + halfH) / height;
+    return v <= amount ? 1 : 0;
+  }
+  let degrees: number, originX: number, originY: number, start: number;
+  if (mask.fillType === "radial90") {
+    degrees = 90;
+    [originX, originY, start] = {
+      bottomLeft: [-halfW, halfH, 0], topLeft: [-halfW, -halfH, 90],
+      topRight: [halfW, -halfH, 180], bottomRight: [halfW, halfH, 270]
+    }[mask.fillRadial90Type];
+  } else if (mask.fillType === "radial180") {
+    degrees = 180;
+    [originX, originY, start] = {
+      bottom: [0, halfH, 270], left: [-halfW, 0, 0],
+      top: [0, -halfH, 90], right: [halfW, 0, 180]
+    }[mask.fillRadialType];
+  } else if (mask.fillType === "radial360") {
+    degrees = 360; originX = 0; originY = 0;
+    start = { bottom: 180, left: 270, top: 0, right: 90 }[mask.fillRadialType];
+  } else return 1;
+  // CSS conic angles: 0° up, clockwise positive.
+  const angle = (Math.atan2(x - originX, -(y - originY)) * 180 / Math.PI % 360 + 360) % 360;
+  return (angle - start + 360) % 360 <= degrees * amount ? 1 : 0;
 }
 
 function contourCanvas(mask: LuaMask, width: number, height: number, feather: { x: number; y: number }, asset?: MaskAsset, guides = false) {
@@ -136,8 +178,9 @@ export function createMaskPreview(element: PreviewGeometry, value?: LuaMask | nu
   canvas.height = Math.max(1, Math.ceil(bounds.height * ratio));
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
+  const maskActive = Boolean(mask.enabled || mask.enableSoftEdge);
   let outline: { path: string; width: number; height: number } | undefined;
-  if (mask.imageId !== 100001 && width > 0 && height > 0) {
+  if (maskActive && mask.imageId !== 100001 && width > 0 && height > 0) {
     const contour = contourCanvas(mask, width, height, feather, asset, guides);
     if (!contour) return null;
     outline = contour.outline;
@@ -146,15 +189,25 @@ export function createMaskPreview(element: PreviewGeometry, value?: LuaMask | nu
       (bounds.height / 2 + mask.offsetY - height / 2) * canvas.height / bounds.height,
       width * canvas.width / bounds.width, height * canvas.height / bounds.height);
   }
-  const pixels = mask.imageId === 100001 ? ctx.createImageData(canvas.width, canvas.height) : ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const pixels = maskActive && mask.imageId !== 100001 ? ctx.getImageData(0, 0, canvas.width, canvas.height) : ctx.createImageData(canvas.width, canvas.height);
+  // Fill rotates with the content control; the mask window itself does not.
+  const matrix = rotationMatrix(element), determinant = matrix.a * matrix.d - matrix.b * matrix.c;
+  const inverse = Math.abs(determinant) > 1e-8;
   for (let py = 0; py < canvas.height; py++) {
     const y = (py + .5) * bounds.height / canvas.height - bounds.height / 2;
     for (let px = 0; px < canvas.width; px++) {
       const x = (px + .5) * bounds.width / canvas.width - bounds.width / 2;
       const i = (py * canvas.width + px) * 4;
       pixels.data[i] = pixels.data[i + 1] = pixels.data[i + 2] = 255;
-      const alpha = mask.imageId === 100001 ? Math.round(255 * coverage(x, y, mask, width, height, feather)) : pixels.data[i + 3];
-      pixels.data[i + 3] = mask.reverseMaskArea ? 255 - alpha : alpha;
+      // Fill belongs to the content image, so it limits visibility even when the
+      // mask is reversed. Mask inversion therefore applies before multiplying fill.
+      const masked = maskActive
+        ? (mask.imageId === 100001 ? Math.round(255 * coverage(x, y, mask, width, height, feather)) : pixels.data[i + 3])
+        : 255;
+      const alpha = maskActive && mask.reverseMaskArea ? 255 - masked : masked;
+      const fillX = inverse ? (matrix.d * x - matrix.c * y) / determinant : x;
+      const fillY = inverse ? (-matrix.b * x + matrix.a * y) / determinant : y;
+      pixels.data[i + 3] = Math.round(alpha * fillCoverage(fillX, fillY, mask, bounds.contentWidth, bounds.contentHeight));
     }
   }
   ctx.putImageData(pixels, 0, 0);
