@@ -38,12 +38,26 @@ export const DEFAULT_LUA_MASK: LuaMask = {
   fillRadial90Type: "bottomLeft", fillRadialType: "top", fillAmount: 0.5
 };
 
-export function fillActive(mask?: Partial<LuaMask> | null): boolean {
+/** 填充已配置（不管是否启用）；数据层判断用。 */
+export function fillConfigured(mask?: Partial<LuaMask> | null): boolean {
   return Boolean(mask?.enableFill) && (mask?.fillType ?? "horizontal") !== "unused";
 }
 
+/** 「启用蒙版」是整个分区的生效开关：羽化与填充也随它生效并导出。 */
+export function fillActive(mask?: Partial<LuaMask> | null): boolean {
+  return Boolean(mask?.enabled) && fillConfigured(mask);
+}
+
 export function luaMaskActive(mask?: Partial<LuaMask> | null): boolean {
-  return Boolean(mask?.enabled || mask?.enableSoftEdge || fillActive(mask));
+  return Boolean(mask?.enabled);
+}
+
+/** 未启用时，配置偏离默认（可能有可见效果）才进入选中图元的编辑预览。 */
+export function maskPreviewable(mask?: Partial<LuaMask> | null): boolean {
+  const value = { ...DEFAULT_LUA_MASK, ...mask };
+  return value.imageId !== DEFAULT_LUA_MASK.imageId || value.imageType !== null
+    || value.offsetX !== 0 || value.offsetY !== 0 || value.width !== null || value.height !== null
+    || value.reverseMaskArea || value.enableSoftEdge || fillConfigured(value);
 }
 
 export function parseLuaMaskPatch(value: unknown): Partial<LuaMask> | null {

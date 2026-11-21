@@ -17,7 +17,7 @@ Build artwork and UI for Miliastra Wonderland in your browser. Combine shapes, g
 - Artwork from rectangles, ellipses, triangles, stars and rings.
 - UI compositions using searchable game images, Basic/Stretch rendering, tinting and layers.
 - Native textboxes with rich text, font sizing, outline and alignment.
-- Lua-only image masks and feathered effects. A dashed contour and shaded overlay help you edit hidden areas.
+- Image masks, feathering and progress fill, exported with Lua or container-node GIA. A dashed contour and shaded overlay help you edit hidden areas.
 - Compositions with Prefab thumbnails found by their exact ID; JSON saving and Lua drawing are supported.
 
 ![Blue-to-gold text example](demo/gradient-text-preview.png)
@@ -30,8 +30,8 @@ Build artwork and UI for Miliastra Wonderland in your browser. Combine shapes, g
 |---|---|---|
 | JSON | Saving and continuing your work | Preserves scene settings and saved library items |
 | Lua | Drawing native images and text in a client UI | Requires your control template indices and script attachment |
-| GIA | Importing a UI asset group into the game editor | Scenes containing Prefabs or active element masks require Lua instead |
-| Container node GIA | Importing as a client control template with image children | No script needed; textboxes, Prefabs and circular canvas masks are not exported |
+| GIA | Importing a UI asset group into the game editor | Scenes containing Prefabs or active element masks require Lua or container-node GIA instead |
+| Container node GIA | Importing as a client control template with image children | No script needed; element masks and progress fill are included; textboxes, Prefabs and circular canvas masks are not exported |
 | CSS / SVG | Sharing or using the supported artwork subset | SVG omits rings; complex SVG is not a lossless editing format |
 | PNG | Rendered image via the API or AI preview tool | Unavailable for Prefabs and active element masks |
 

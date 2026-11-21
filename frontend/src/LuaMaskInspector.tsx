@@ -1,10 +1,10 @@
 import { useI18n } from "./i18n";
-import { luaMaskActive, luaMaskOf, type LuaMask } from "./luaMask";
+import { luaMaskOf, type LuaMask } from "./luaMask";
 import { MaskImagePicker } from "./MaskImagePicker";
 import { ImageTypeSelect, useSpriteMetadata } from "./ImageAssetControls";
 import { loadSpriteMeta } from "./imageLibrary";
 import { resolveOptionalImageType } from "./imageStretch";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 
 export function LuaMaskInspector({ mask, width, height, supportsFill = true, onChange, onPreview, showGuides, onShowGuides }: {
   mask?: LuaMask | null; width: number; height: number; supportsFill?: boolean;
@@ -14,6 +14,7 @@ export function LuaMaskInspector({ mask, width, height, supportsFill = true, onC
 }) {
   const { t } = useI18n();
   const value = luaMaskOf(mask);
+  const fillPercent = Math.round(value.fillAmount * 100);
   const update = (patch: Partial<LuaMask>) => onChange({ ...value, ...patch });
   const metadata = useSpriteMetadata(value.imageId);
   const selection = useRef(0), currentValue = useRef(value);
@@ -35,27 +36,23 @@ export function LuaMaskInspector({ mask, width, height, supportsFill = true, onC
   useEffect(() => setDraftId(String(value.imageId)), [value.imageId]);
   const id = Number(draftId), validId = draftId.trim() !== "" && Number.isInteger(id) && id > 0 && id <= 0x7fffffff;
   const commitId = () => { if (validId && id !== value.imageId) void selectImage(id); };
-  const number = (key: "offsetX" | "offsetY" | "width" | "height" | "softEdgeWidthX" | "softEdgeWidthY" | "horizontalSoftRange" | "verticalSoftRange" | "fillAmount", label: string, limits?: { min?: number; max?: number; step?: number }) => (
-    <label className="num-field"><span>{label}</span><input type="number" step={limits?.step ?? "any"}
-      min={limits?.min ?? (key === "width" || key === "height" ? 0 : undefined)}
-      max={limits?.max}
+  const number = (key: "offsetX" | "offsetY" | "width" | "height" | "softEdgeWidthX" | "softEdgeWidthY" | "horizontalSoftRange" | "verticalSoftRange", label: string) => (
+    <label className="num-field"><span>{label}</span><input type="number" step="any"
+      min={key === "width" || key === "height" ? 0 : undefined}
       value={value[key] ?? (key === "width" ? width : height)}
       onChange={e => { const n = e.target.valueAsNumber; if (Number.isFinite(n)) {
-        let next = key === "width" || key === "height" ? Math.max(0, n) : n;
-        if (limits?.min !== undefined) next = Math.max(limits.min, next);
-        if (limits?.max !== undefined) next = Math.min(limits.max, next);
-        update({ [key]: next });
+        update({ [key]: key === "width" || key === "height" ? Math.max(0, n) : n });
       } }} /></label>
   );
   return <>
     <div className="tip-box">{t("luaMask.only")}</div>
-    {!luaMaskActive(value) ? <p className="field-hint">{t("luaMask.disabledHint")}</p> : null}
-    {value.enableSoftEdge && value.softEdgeMode === "Pixel" && value.softEdgeWidthX === 0 && value.softEdgeWidthY === 0 ?
+    {value.enabled && value.enableSoftEdge && value.softEdgeMode === "Pixel" && value.softEdgeWidthX === 0 && value.softEdgeWidthY === 0 ?
       <p className="field-hint">{t("luaMask.zeroFeather")}</p> : null}
-    <div className="section-head"><span>{t("luaMask.mask")}</span></div>
+    <div className="section-head"><span>{t("luaMask.mask")}</span>{!value.enabled ? <em>{t("luaMask.previewBadge")}</em> : null}</div>
+    <label className="check-row"><input type="checkbox" checked={value.enabled} onChange={e => update({ enabled: e.target.checked })}/><span>{t("luaMask.enable")}</span></label>
+    {!value.enabled ? <p className="field-hint">{t("luaMask.disabledHint")}</p> : null}
     <label className="check-row"><input type="checkbox" checked={showGuides} onChange={e => onShowGuides(e.target.checked)} /><span>{t("luaMask.previewOnCanvas")}</span></label>
     <p className="field-hint">{t("luaMask.guidesHint")}</p>
-    <label className="check-row"><input type="checkbox" checked={value.enabled} onChange={e => update({ enabled: e.target.checked })}/><span>{t("luaMask.enable")}</span></label>
     <MaskImagePicker value={value} width={width} height={height} onPreview={onPreview} showGuides={showGuides} onShowGuides={onShowGuides}
       onChange={patch => update(patch)} onSelectImage={imageId => void selectImage(imageId)} />
     <label className="field"><span>{t("luaMask.imageId")}</span>
@@ -69,12 +66,10 @@ export function LuaMaskInspector({ mask, width, height, supportsFill = true, onC
     <ImageTypeSelect label={t("luaMask.imageType")} value={value.imageType} metadata={metadata.meta} allowDefault
       loading={metadata.loading} error={metadata.error} onRetry={metadata.retry} onChange={imageType => update({ imageType })} />
     <p className="field-hint">{t("luaMask.imageTypeHint")}</p>
-    <label className="check-row"><input type="checkbox" checked={value.reverseMaskArea} onChange={e => update({ reverseMaskArea: e.target.checked })}/><span>{t("luaMask.reverse")}</span></label>
     <label className="check-row"><input type="checkbox" checked={value.width === null && value.height === null}
       onChange={e => update(e.target.checked ? { width: null, height: null } : { width, height })}/><span>{t("luaMask.follow")}</span></label>
     <div className="grid-2">{number("offsetX", t("luaMask.offsetX"))}{number("offsetY", t("luaMask.offsetY"))}</div>
     <div className="grid-2">{number("width", t("props.width"))}{number("height", t("props.height"))}</div>
-    <div className="section-head"><span>{t("luaMask.feather")}</span></div>
     <label className="check-row"><input type="checkbox" checked={value.enableSoftEdge} onChange={e => update({ enableSoftEdge: e.target.checked })}/><span>{t("luaMask.enableFeather")}</span></label>
     <label className="field"><span>{t("luaMask.mode")}</span><select value={value.softEdgeMode} onChange={e => update({ softEdgeMode: e.target.value as LuaMask["softEdgeMode"] })}>
       <option value="Pixel">{t("luaMask.pixel")}</option><option value="Percentage">{t("luaMask.percentage")}</option>
@@ -85,14 +80,7 @@ export function LuaMaskInspector({ mask, width, height, supportsFill = true, onC
       <div className="grid-2">{number("horizontalSoftRange", `${t("luaMask.rangeX")} (%)`)}{number("verticalSoftRange", `${t("luaMask.rangeY")} (%)`)}</div>
       <p className="field-hint">{t("luaMask.percentageHint")}</p>
     </>}
-    <details className="lua-mask-native-values" key={value.softEdgeMode}>
-      <summary>{t("luaMask.preservedValues")}</summary>
-      <div className="grid-2">{value.softEdgeMode === "Pixel"
-        ? <>{number("horizontalSoftRange", t("luaMask.rangeX"))}{number("verticalSoftRange", t("luaMask.rangeY"))}</>
-        : <>{number("softEdgeWidthX", t("luaMask.widthX"))}{number("softEdgeWidthY", t("luaMask.widthY"))}</>}</div>
-    </details>
     {supportsFill ? <>
-      <div className="section-head"><span>{t("luaMask.fill")}</span></div>
       <label className="check-row"><input type="checkbox" checked={value.enableFill}
         onChange={e => update({ enableFill: e.target.checked, ...(e.target.checked && value.fillType === "unused" ? { fillType: "horizontal" as const } : {}) })}/><span>{t("luaMask.enableFill")}</span></label>
       {value.enableFill ? <>
@@ -123,10 +111,21 @@ export function LuaMaskInspector({ mask, width, height, supportsFill = true, onC
             <option value="bottom">{t("luaMask.fillOriginBottom")}</option><option value="left">{t("luaMask.fillOriginLeft")}</option>
             <option value="top">{t("luaMask.fillOriginTop")}</option><option value="right">{t("luaMask.fillOriginRight")}</option>
           </select></label> : null}
-        {number("fillAmount", t("luaMask.fillAmount"), { min: 0, max: 1, step: 0.01 })}
+        <div className="field">
+          <span>{t("luaMask.fillAmount")}</span>
+          <div className="row">
+            <input className="fill-range" type="range" min="0" max="100" step="1" value={fillPercent}
+              style={{ "--fill-pct": `${fillPercent}%` } as CSSProperties}
+              onChange={e => update({ fillAmount: Number(e.target.value) / 100 })} />
+            <input className="pct-input" type="number" min="0" max="100" step="1"
+              value={fillPercent}
+              onChange={e => { const n = e.target.valueAsNumber; if (Number.isFinite(n)) update({ fillAmount: Math.min(100, Math.max(0, n)) / 100 }); }} />
+          </div>
+        </div>
         <p className="field-hint">{t("luaMask.fillHint")}</p>
       </> : null}
     </> : null}
+    <label className="check-row"><input type="checkbox" checked={value.reverseMaskArea} onChange={e => update({ reverseMaskArea: e.target.checked })}/><span>{t("luaMask.reverse")}</span></label>
     <details className="lua-mask-native-values">
       <summary>{t("luaMask.notesSummary")}</summary>
       <p className="field-hint">{t("luaMask.previewHint")}</p>

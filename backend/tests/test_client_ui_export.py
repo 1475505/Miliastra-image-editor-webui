@@ -10,11 +10,12 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from app import client_ui_export
-from app.main import ExportRequest, SceneDocumentModel, export_container_node
+from app.main import ExportRequest, SceneDocumentModel, export_container_node, scene_to_css
 from vendor.primitive_shape.gia_lua import (
     _children,
     _components,
     _fields,
+    _float,
     _get,
     _message,
     _messages,
@@ -204,15 +205,32 @@ class ContainerNodeGiaTests(unittest.TestCase):
             self.assertAlmostEqual(x + 10, source["x"] - 100, places=5)
             self.assertAlmostEqual(y + 15, 80 - source["y"], places=5)
 
-    def test_progress_fill_writes_enable_shape_and_integer_percent(self):
+    def test_progress_fill_writes_enable_shape_direction_and_integer_percent(self):
         scene = sample_scene()
-        scene["elements"][1]["luaMask"] = {"enableFill": True, "fillType": "vertical", "fillAmount": .71}
+        scene["elements"][1]["luaMask"] = {"enabled": True, "enableFill": True, "fillType": "vertical",
+                                           "fillVerticalType": "bottom", "fillAmount": .71}
         _, _, units = decode(client_ui_export.build_container_node_gia(scene))
-        config = body(units[2], 97, 85)
+        # 启用的蒙版把图元包进父控件，内容图元在 units[3]。
+        config = body(units[3], 97, 85)
         self.assertEqual(_get(config, 514), 1)
         self.assertEqual(_get(config, 515), 2)  # Vertical
+        self.assertEqual(_get(config, 504), 0)  # Bottom-to-top
         self.assertEqual(_get(config, 508), 71)
+        directions = (("horizontal", "fillHorizontalType", "right", 503, 1),
+                      ("radial90", "fillRadial90Type", "topRight", 506, 2),
+                      ("radial180", "fillRadialType", "left", 507, 1))
+        for fill_type, key, value, tag, expected in directions:
+            scene["elements"][1]["luaMask"] = {"enabled": True, "enableFill": True, "fillType": fill_type,
+                                               key: value, "fillAmount": .5}
+            _, _, units = decode(client_ui_export.build_container_node_gia(scene))
+            self.assertEqual(_get(body(units[3], 97, 85), tag), expected)
+        # Fill without the mask master switch stays preview data and is not written.
+        scene["elements"][1]["luaMask"] = {"enableFill": True, "fillType": "horizontal", "fillAmount": .5}
+        _, _, units = decode(client_ui_export.build_container_node_gia(scene))
+        self.assertFalse(_get(body(units[2], 97, 85), 514))
         # Inactive elements keep the template defaults byte-for-byte.
+        scene["elements"][1]["luaMask"] = {"enabled": True, "enableFill": True, "fillType": "horizontal", "fillAmount": .5}
+        _, _, units = decode(client_ui_export.build_container_node_gia(scene))
         inactive = body(units[1], 97, 85)
         self.assertFalse(_get(inactive, 514))
         self.assertEqual((_get(inactive, 515), _get(inactive, 508)), (1, 100))
@@ -221,17 +239,54 @@ class ContainerNodeGiaTests(unittest.TestCase):
             client_ui_export.build_container_node_gia(scene)
         scene["elements"][1]["luaMask"].update(fillAmount=.5, fillType="unused")
         _, _, units = decode(client_ui_export.build_container_node_gia(scene))
-        unused = body(units[2], 97, 85)
+        unused = body(units[3], 97, 85)
         self.assertFalse(_get(unused, 514))
 
-    def test_fill_only_scene_exports_to_container_node_endpoint(self):
+    def test_element_mask_wraps_content_with_transparent_parent_and_fields(self):
         scene = sample_scene()
-        scene["elements"][1]["luaMask"] = {"enableFill": True, "fillType": "radial360", "fillAmount": .5}
+        scene["elements"][1]["luaMask"] = {
+            "enabled": True, "imageId": 100002, "imageType": "stretch",
+            "offsetX": 6, "offsetY": -4, "width": 30, "height": 40,
+            "enableSoftEdge": True, "softEdgeMode": "Percentage",
+            "softEdgeWidthX": 5, "softEdgeWidthY": 6,
+            "horizontalSoftRange": 80, "verticalSoftRange": 70,
+            "reverseMaskArea": True,
+        }
+        _, main, units = decode(client_ui_export.build_container_node_gia(scene))
+        root, background, wrapper, circle, triangle = units
+        # 无蒙版的图元保持平铺；有蒙版的图元包进透明父图片控件。
+        self.assertEqual(_children(content(main)), [guid(background), guid(wrapper), guid(triangle)])
+        self.assertEqual(_children(content(wrapper)), [guid(circle)])
+        self.assertEqual(_get(content(circle), 504), guid(wrapper))
+        image = body(wrapper, 96, 84)
+        self.assertEqual((_get(image, 502), _get(image, 503)), (0x00FFFFFF, 100002))
+        config = body(wrapper, 97, 85)
+        self.assertEqual((_get(config, 501), _get(config, 509)), (1, 1))
+        self.assertEqual(_get(config, 510), 0)  # Percentage
+        self.assertEqual(_vector(config, 511), [5, 6])
+        self.assertEqual((_float(config, 512), _float(config, 513)), (80, 70))
+        self.assertEqual(_get(config, 516), 1)
+        rect = layouts(wrapper)[1][0][1]
+        # 蒙版中心 = 图元中心 + 偏移；偏移 Y 在场景中向下，控件空间向上取反。
+        self.assertEqual(_vector(rect, 504), [26, -6])
+        self.assertEqual(_vector(rect, 505), [30, 40])
+        child = layouts(circle)[1][0][1]
+        self.assertEqual(_vector(child, 504), [-6, -4])
+        self.assertEqual(_vector(child, 508, (1, 2, 3), (0, 0, 0)), [5, 90, 30])
+
+    def test_mask_and_fill_scene_exports_to_container_node_endpoint(self):
+        scene = sample_scene()
+        scene["elements"][1]["luaMask"] = {"enabled": True, "imageId": 100001,
+                                           "enableFill": True, "fillType": "radial360",
+                                           "fillAmount": .5}
         response = export_container_node(ExportRequest(scene=SceneDocumentModel(**scene)))
         self.assertEqual(response.status_code, 200)
-        scene["elements"][1]["luaMask"]["enabled"] = True
+        _, _, units = decode(response.body)
+        self.assertEqual(len(units), 5)  # 根、两个平铺图元、蒙版父控件与受遮罩图元
+        self.assertEqual(_children(content(units[2]))[0], guid(units[3]))
+        # 蒙版、羽化和填充不再阻止容器节点导出，但仍阻止其他绘图格式。
         with self.assertRaises(HTTPException) as raised:
-            export_container_node(ExportRequest(scene=SceneDocumentModel(**scene)))
+            scene_to_css(SceneDocumentModel(**scene))
         self.assertIn("蒙版", raised.exception.detail)
 
     def test_background_sorted_below_and_image_asset_mapping(self):

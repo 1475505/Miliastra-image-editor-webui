@@ -559,8 +559,8 @@ function App() {
   const hasPrefabs = scene.elements.some((element) => element.type === "prefab");
   const hasLuaMasks = scene.elements.some(element => luaMaskActive(element.luaMask));
   const luaOnly = hasPrefabs || hasLuaMasks;
-  // Progress fill is the only luaMask effect that container-node GIA supports.
-  const containerExportAllowed = !hasPrefabs && !scene.elements.some(element => Boolean(element.luaMask?.enabled || element.luaMask?.enableSoftEdge));
+  // Masks, feathering and fill all export to container-node GIA; prefabs stay Lua-only.
+  const containerExportAllowed = !hasPrefabs;
   const luaOnlyHint = hasLuaMasks ? t("luaMask.exportHint") : t("prefab.luaOnly");
 
   const selectedElement = useMemo(
@@ -2626,6 +2626,7 @@ function App() {
                   >
                     <LuaMaskPreview element={!multiSelected && maskDraft?.id === element.id && maskDraft.source === element && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"
                       ? { ...element, luaMask: maskDraft.mask } : element} appearance={shapeStyle(element)} zoom={zoom}
+                      editing={!multiSelected && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"}
                       guides={showMaskGuides && !multiSelected && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"}>
                     {element.type === "triangle" ? <div className="triangle-fill" style={{ background: element.color }} /> : null}
                     {element.type === "four_point_star" ? <div className="star star-four" style={{ background: element.color }} /> : null}
@@ -2896,6 +2897,14 @@ function App() {
                   </button>
                 </div>
               </div>
+              {selectedElement && propsView === "element" && !multiSelected ? (
+                <div className="props-subtabs">
+                  <div className="seg seg-compact" role="tablist" aria-label={t("props.element")}>
+                    <button role="tab" aria-selected={elementTab === "basic"} className={elementTab === "basic" ? "active" : ""} onClick={() => setElementTab("basic")}>{t("props.basic")}</button>
+                    <button role="tab" aria-selected={elementTab === "advanced"} className={elementTab === "advanced" ? "active" : ""} onClick={() => setElementTab("advanced")}>{t("props.advanced")}</button>
+                  </div>
+                </div>
+              ) : null}
               <div className="panel-scroll stack">
               {multiSelected && propsView === "element" ? <>
                 <div className="inspector-head"><div className="layer-info"><strong>{t("selection.count",{n:selectedElements.length})}</strong><span>{t("selection.hint")}</span></div></div>
@@ -2934,10 +2943,6 @@ function App() {
                     </div>
                   </div>
 
-                  <div className="seg seg-compact" role="tablist" aria-label={t("props.element")}>
-                    <button role="tab" aria-selected={elementTab === "basic"} className={elementTab === "basic" ? "active" : ""} onClick={() => setElementTab("basic")}>{t("props.basic")}</button>
-                    <button role="tab" aria-selected={elementTab === "advanced"} className={elementTab === "advanced" ? "active" : ""} onClick={() => setElementTab("advanced")}>{t("props.advanced")}</button>
-                  </div>
                   {elementTab === "advanced" ? (
                     selectedElement.type === "other" ? <div className="tip-box">{t("luaMask.unsupported")}</div> :
                     <LuaMaskInspector key={selectedElement.id} mask={selectedElement.luaMask}

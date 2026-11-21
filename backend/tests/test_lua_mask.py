@@ -196,19 +196,33 @@ class LuaMaskTests(unittest.TestCase):
             with self.subTest(patch=patch), self.assertRaises(ValidationError):
                 LuaMaskModel.model_validate(patch)
 
-    def test_fill_only_exports_to_container_node_but_not_other_formats(self):
+    def test_fill_without_enabled_is_preview_data_and_enabled_fill_exports(self):
         shape = dict(id='shape', name='Shape', type='rectangle', x=80, y=70, width=90, height=60,
                      zIndex=0, luaMask=dict(enableFill=True, fillType='horizontal', fillAmount=0.25))
         source = normalize_scene(SceneDocumentModel.model_validate(
             {'canvas': {'width': 320, 'height': 240}, 'elements': [shape]}))
+        # 未启用的填充只是编辑预览数据：不阻止其他格式，也不写入导出。
         for encode in (scene_to_css, scene_to_svg, scene_to_png_bytes, scene_to_gia_document):
-            with self.subTest(encode=encode.__name__), self.assertRaises(HTTPException) as caught:
+            with self.subTest(encode=encode.__name__, enabled=False):
                 encode(source)
-            self.assertIn('填充', caught.exception.detail)
+        script = export_lua(ExportRequest(scene=source)).body.decode()
+        # 运行时按 enabled 门控填充；配置仍随脚本保存以便回导。
+        self.assertIn('not entry.enabled or not entry.enableFill', script)
+        self.assertEqual(parse_lua_scene(script).elements[0].luaMask.enableFill, True)
+        self.assertEqual(export_container_node(ExportRequest(scene=source)).status_code, 200)
+        # 启用蒙版后，填充随分区一并生效并导出。
+        shape['luaMask']['enabled'] = True
+        source = normalize_scene(SceneDocumentModel.model_validate(
+            {'canvas': {'width': 320, 'height': 240}, 'elements': [shape]}))
+        for encode in (scene_to_css, scene_to_svg, scene_to_png_bytes, scene_to_gia_document):
+            with self.subTest(encode=encode.__name__, enabled=True), self.assertRaises(HTTPException) as caught:
+                encode(source)
+            self.assertIn('蒙版', caught.exception.detail)
         self.assertEqual(export_container_node(ExportRequest(scene=source)).status_code, 200)
         script = export_lua(ExportRequest(scene=source)).body.decode()
         self.assertIn('SetFillHorizontal(', script)
-        self.assertIn('IMAGE_MASKS', script)
+        # Lua API takes the 0–1 amount; the 0–100 panel value is display-only.
+        self.assertIn('["fillAmount"]=0.25', script)
         self.assertEqual(parse_lua_scene(script).elements[0].luaMask.fillType, 'horizontal')
 
     def test_textbox_progress_fill_is_rejected(self):
@@ -240,13 +254,17 @@ class LuaMaskTests(unittest.TestCase):
                 item.luaMask.enabled = item.luaMask.enableSoftEdge = False
         self.assertTrue(scene_to_gia_document(source)["elements"])
         self.assertTrue(scene_to_png_bytes(source).startswith(b"\x89PNG"))
-        # A feather-only selection still needs a parent mask and an image template.
+        # 蒙版未启用时，羽化配置只是预览数据：不创建父蒙版，也无需图片模板。
         text = source.elements[1]
         text.luaMask.enableSoftEdge = True
         text_only = source.model_copy(update={"elements": [text]})
         script = export_lua(ExportRequest(scene=text_only)).body.decode()
-        self.assertIn('if true and (type(IMAGE_PREFAB_ID)', script)
+        self.assertIn('if #ELEMENTS > 0 and (type(IMAGE_PREFAB_ID)', script)
         self.assertEqual(parse_lua_scene(script).elements[0].luaMask, text.luaMask)
+        # 启用蒙版后恢复父蒙版与图片模板要求。
+        text.luaMask.enabled = True
+        script = export_lua(ExportRequest(scene=text_only)).body.decode()
+        self.assertIn('if true and (type(IMAGE_PREFAB_ID)', script)
 
     @unittest.skipUnless(os.environ.get("FENGARI_MODULE_PATH"), "set FENGARI_MODULE_PATH for the Lua VM")
     def test_exported_lua_executes_parenting_geometry_raw_values_and_cleanup(self):

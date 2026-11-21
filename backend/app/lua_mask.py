@@ -48,20 +48,21 @@ class LuaMaskModel(BaseModel):
 
 
 def mask_active(mask) -> bool:
+    """「启用蒙版」是整个分区的生效开关；羽化/填充未随它启用时仅为编辑预览数据。"""
     if mask is None:
         return False
     if isinstance(mask, dict):
-        return bool(mask.get("enabled") or mask.get("enableSoftEdge"))
-    return mask.enabled or mask.enableSoftEdge
+        return bool(mask.get("enabled"))
+    return mask.enabled
 
 
 def fill_active(mask) -> bool:
-    """Progress fill is enabled by enableFill plus a concrete fill shape."""
+    """Progress fill exports only with the mask master switch on."""
     if mask is None:
         return False
     if isinstance(mask, dict):
-        return bool(mask.get("enableFill")) and mask.get("fillType", "horizontal") != "unused"
-    return mask.enableFill and mask.fillType != "unused"
+        return bool(mask.get("enabled") and mask.get("enableFill")) and mask.get("fillType", "horizontal") != "unused"
+    return mask.enabled and mask.enableFill and mask.fillType != "unused"
 
 
 def validate_mask(value):
@@ -103,10 +104,10 @@ local function FillEnumName(value)
     return string.upper(string.sub(value, 1, 1)) .. string.sub(value, 2)
 end
 
--- API names come from the documented client UI script reference; fill has no
--- enable flag or clockwise field there, so fillType alone selects the setter.
+-- API names come from the documented client UI script reference; the API has no
+-- fill enable flag or clockwise field. enabled is the editor's section master.
 local function ApplyFill(image, entry)
-    if entry == nil or not entry.enableFill or entry.fillType == nil or entry.fillType == "unused" then
+    if entry == nil or not entry.enabled or not entry.enableFill or entry.fillType == nil or entry.fillType == "unused" then
         image:SetFillUnused()
         return
     end
@@ -125,7 +126,7 @@ local function ApplyFill(image, entry)
 end
 
 local function CreateMask(entry, parent, centerX, centerY, contentWidth, contentHeight)
-    if entry == nil or not (entry.enabled or entry.enableSoftEdge) then return nil end
+    if entry == nil or not entry.enabled then return nil end
     local mask = game.InstantiateClientUIControl(IMAGE_PREFAB_ID, parent)
     if mask == nil then error("蒙版图片模板无法实例化") end
     table.insert(created, mask)
@@ -192,7 +193,7 @@ local function FitMaskedContent(control, frame, width, height, x, y, minX, minY,
 end
 
 local function MaskFrame(entry, parent, w, h, x, y, minX, minY, maxX, maxY, px, py, sx, sy, rx, ry, rz)
-    if entry == nil or not (entry.enabled or entry.enableSoftEdge) then return nil end
+    if entry == nil or not entry.enabled then return nil end
     local width = w + ROOT[3] * (maxX - minX)
     local height = h + ROOT[4] * (maxY - minY)
     local dx, dy = (0.5 - px) * width * sx, (0.5 - py) * height * sy

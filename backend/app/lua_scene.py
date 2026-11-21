@@ -435,7 +435,7 @@ def _control_script(scene, gia_data, name):
     if any(item["type"] == "image" for item in scene["elements"]):
         lines.append("local IMAGE_TYPES = " + _lua_literal(image_types))
     if has_mask_data:
-        lines += ["-- 蒙版和羽化仅 Lua 可用；四个羽化数值原样传入，不换算百分比。",
+        lines += ["-- 蒙版和羽化仅在 Lua / 容器节点 GIA 导出中支持；四个羽化数值原样传入，不换算百分比。",
                   "local IMAGE_MASKS = " + _lua_literal(image_masks),
                   "local TEXT_MASKS = " + _lua_literal(text_masks)]
     runtime = gia._RUNTIME

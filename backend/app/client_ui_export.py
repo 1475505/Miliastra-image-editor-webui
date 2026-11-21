@@ -14,6 +14,8 @@ Miliastra-toolbox-primitive-shape 的 `client_ui_export.py`。
 import math
 import struct
 
+from .lua_mask import mask_active
+
 FIRST_GUID = 1073741825
 GAME_VERSION = "7.1.0"
 # 基础图元对应的静态图片资产；图片图元使用自带的素材 id。
@@ -27,9 +29,13 @@ _ASSETS = {
 }
 # 容器节点只承载图片类图元；文本框需要原生文本控件字段，暂不支持。
 _IMAGE_TYPES = frozenset(_ASSETS) | {"image"}
-# 填充方式顺序与 ugc-tool / 官方 ImageFillType 枚举一致；GIA 只写已验证的开关、
-# 方式和进度，方向与起点字段尚无真机证据，保持模板默认值。
+# 填充与蒙版字段编号、枚举顺序对齐 ugc-tool 的 84 组件映射。
 _FILL_TYPES = {"unused": 0, "horizontal": 1, "vertical": 2, "radial90": 3, "radial180": 4, "radial360": 5}
+_FILL_HORIZONTAL = {"left": 0, "right": 1}
+_FILL_VERTICAL = {"bottom": 0, "top": 1}
+_FILL_RADIAL90 = {"bottomLeft": 0, "topLeft": 1, "topRight": 2, "bottomRight": 3}
+_FILL_RADIAL = {"bottom": 0, "left": 1, "top": 2, "right": 3}
+_SOFT_EDGE_MODES = {"Percentage": 0, "Pixel": 1}
 # tag: (Data.field501, Data.field502, Details.field501)
 _SLOTS = {73: (63, 83, 65), 77: (67, 90, 69),
           78: (68, 91, 70), 83: (73, 96, 75), 84: (74, 97, 76)}
@@ -119,9 +125,17 @@ def _transform(guid, preset, offset=(0, 0), size=(0, 0), pivot=(.5, .5),
             + _blob(503, _details(guid, 4, 12, _blob(13, transform))))
 
 
+def _enum(value, mapping, label):
+    try:
+        return mapping[str(value)]
+    except KeyError:
+        raise ValueError(f"未知的{label}：{value}") from None
+
+
 def _fill_config(fill):
-    """Inactive fill keeps the template defaults; active fill writes 514/515/508."""
-    if not isinstance(fill, dict) or not fill.get("enableFill") or fill.get("fillType") in (None, "unused"):
+    """Active fill writes the switch, shape, direction/origin and progress."""
+    if not isinstance(fill, dict) or not fill.get("enabled") or not fill.get("enableFill") \
+            or fill.get("fillType") in (None, "unused"):
         return {}
     fill_type = _FILL_TYPES.get(str(fill.get("fillType")))
     if fill_type is None:
@@ -133,17 +147,44 @@ def _fill_config(fill):
     # GIA stores an integer percentage; reject half steps instead of rounding silently.
     if abs(percent - round(percent)) > 1e-6:
         raise ValueError("填充量必须能换算为整数百分比，例如 0.71 而不是 0.715")
-    return {514: 1, 515: fill_type, 508: int(round(percent))}
+    values = {514: 1, 515: fill_type}
+    if fill_type == 1:
+        values[503] = _enum(fill.get("fillHorizontalType", "left"), _FILL_HORIZONTAL, "水平填充方向")
+    elif fill_type == 2:
+        values[504] = _enum(fill.get("fillVerticalType", "top"), _FILL_VERTICAL, "垂直填充方向")
+    elif fill_type == 3:
+        values[506] = _enum(fill.get("fillRadial90Type", "bottomLeft"), _FILL_RADIAL90, "90° 环绕起点")
+    else:
+        values[507] = _enum(fill.get("fillRadialType", "top"), _FILL_RADIAL, "环绕起点")
+    values[508] = int(round(percent))
+    return values
 
 
-def _image_config(mask=False, fill=None):
+def _mask_config(mask):
+    values = {501: 1,
+              510: _enum(mask.get("softEdgeMode", "Pixel"), _SOFT_EDGE_MODES, "羽化模式")}
+    if mask.get("enableSoftEdge"):
+        values[509] = 1
+    if mask.get("reverseMaskArea"):
+        values[516] = 1
+    return values
+
+
+def _image_config(mask=False, fill=None, soft=None):
     # 保留原生图片 B 槽默认值；遮罩父控件关闭填充，内容图元按场景写入填充。
     values = {502: 1, 504: 1, 505: 1, 507: 2, 508: 100, 510: 1, 515: 1}
+    widths, ranges = (8, 8), (85, 85)
+    if soft is not None:
+        values.update(_mask_config(soft))
+        widths = (_number(soft.get("softEdgeWidthX", 0), "羽化宽度"),
+                  _number(soft.get("softEdgeWidthY", 0), "羽化宽度"))
+        ranges = (_number(soft.get("horizontalSoftRange", 85), "羽化范围"),
+                  _number(soft.get("verticalSoftRange", 85), "羽化范围"))
     values.update(_fill_config(fill))
     return ((_uint(501, 1) if mask else b"")
             + b"".join(_uint(tag, value) for tag, value in values.items())
-            + _blob(511, _vector((8, 8)))
-            + _vector((85, 85), (512, 513)))
+            + _blob(511, _vector(widths))
+            + _vector(ranges, (512, 513)))
 
 
 def _unit(guid, name, components, children=(), parent=None, template=False):
@@ -168,14 +209,14 @@ def _unit(guid, name, components, children=(), parent=None, template=False):
 
 def _control(guid, name, tag, children=(), parent=None, offset=(0, 0), size=(0, 0),
              pivot=(.5, .5), rotation=(0, 0, 0), color=0xFFFFFFFF, asset=100001, mask=False,
-             template=False, fill=None):
+             template=False, fill=None, soft=None, stretch=True):
     components = [_name_component(name), _type_component(guid),
                   _transform(guid, 25 if tag == 78 else 23, offset, size, pivot, rotation),
                   _slot(guid, 73)]
     if tag == 83:
         # A.504=Stretch，依据 ugc-tool 原生图片字段映射（不在旧 proto 快照中）。
-        components += [_slot(guid, 83, _uint(502, color) + _uint(503, asset) + _uint(504, 1)),
-                       _slot(guid, 84, _image_config(mask, fill))]
+        components += [_slot(guid, 83, _uint(502, color) + _uint(503, asset) + _uint(504, 1 if stretch else 0)),
+                       _slot(guid, 84, _image_config(mask, fill, soft))]
     else:
         components.append(_slot(guid, 78))
     components.append(_slot(guid, 77))
@@ -251,17 +292,35 @@ def build_container_node_gia(scene, name=""):
             asset = element.get("imageAssetId")
             if isinstance(asset, bool) or not isinstance(asset, int) or not 0 < asset <= 0xFFFFFFFF:
                 raise ValueError(f"第 {index} 个图元的素材 ID 无效")
+        entry = element.get("luaMask")
+        if mask_active(entry):
+            mask_asset = entry.get("imageId", 100001)
+            if isinstance(mask_asset, bool) or not isinstance(mask_asset, int) or not 0 < mask_asset <= 0x7FFFFFFF:
+                raise ValueError(f"第 {index} 个图元的蒙版图片 ID 无效")
 
-    root_id = FIRST_GUID
-    parent_id = root_id + 1 if masked else root_id
-    first_image_id = parent_id + 1
-    image_ids = [first_image_id + index for index in range(len(ordered))]
-    if image_ids[-1] > 2147483647:
+    # 每个图元按自身蒙版分配独立控件；蒙版用透明父图片承载，与 Lua 导出同一结构。
+    next_id = FIRST_GUID
+    root_id = next_id
+    next_id += 1
+    canvas_mask_id = None
+    if masked:
+        canvas_mask_id = next_id
+        next_id += 1
+    plans = []
+    for element in ordered:
+        entry = element.get("luaMask")
+        wrapper_id = None
+        if mask_active(entry):
+            wrapper_id = next_id
+            next_id += 1
+        plans.append((element, entry, wrapper_id, next_id))
+        next_id += 1
+    if next_id - 1 > 2147483647:
         raise ValueError("图元数量超出 GIA 控件编号范围")
 
-    root_children = [parent_id] if masked else image_ids
-    units = [_control(root_id, label, 78, children=root_children, size=(width, height),
-                      template=True)]
+    top_ids = [wrapper_id or element_id for _, _, wrapper_id, element_id in plans]
+    units = [_control(root_id, label, 78, children=[canvas_mask_id] if masked else top_ids,
+                      size=(width, height), template=True)]
     mask_x, mask_y = 0.0, 0.0
     if masked:
         mask_x = _number(mask.get("x", 0), "裁剪中心 X")
@@ -271,17 +330,35 @@ def build_container_node_gia(scene, name=""):
             _number(height if mask.get("height") is None else mask["height"], "裁剪高度", positive=True),
         )
         # 透明图片仍可遮罩后代，不引入可见的白色裁剪背景。
-        units.append(_control(parent_id, "裁剪区域", 83, children=image_ids, parent=root_id,
+        units.append(_control(canvas_mask_id, "裁剪区域", 83, children=top_ids, parent=root_id,
                               offset=(mask_x, mask_y), size=mask_size,
                               color=0x00FFFFFF, mask=True))
 
-    for index, (guid, element) in enumerate(zip(image_ids, ordered), 1):
+    for index, (element, entry, wrapper_id, element_id) in enumerate(plans, 1):
         cx, cy, w, h = _element_geometry(element, width, height, index)
         asset = element.get("imageAssetId") if element.get("type") == "image" else _ASSETS[element["type"]]
-        units.append(_control(guid, str(index), 83, parent=parent_id,
-                              offset=(cx - mask_x, cy - mask_y), size=(w, h),
+        if wrapper_id is not None:
+            mask_center = (cx + _number(entry.get("offsetX", 0), "蒙版偏移 X"),
+                           cy - _number(entry.get("offsetY", 0), "蒙版偏移 Y"))
+            mask_size = (
+                _number(w if entry.get("width") is None else entry["width"], "蒙版宽度"),
+                _number(h if entry.get("height") is None else entry["height"], "蒙版高度"),
+            )
+            units.append(_control(wrapper_id, f"{index}-mask", 83, children=[element_id],
+                                  parent=canvas_mask_id if masked else root_id,
+                                  offset=(mask_center[0] - mask_x, mask_center[1] - mask_y),
+                                  size=mask_size, color=0x00FFFFFF,
+                                  asset=entry.get("imageId", 100001), mask=True, soft=entry,
+                                  stretch=entry.get("imageType") != "basic"))
+            parent_id = wrapper_id
+            offset = (cx - mask_center[0], cy - mask_center[1])
+        else:
+            parent_id = canvas_mask_id if masked else root_id
+            offset = (cx - mask_x, cy - mask_y)
+        units.append(_control(element_id, str(index), 83, parent=parent_id,
+                              offset=offset, size=(w, h),
                               rotation=_rotation(element), color=_packed_color(element),
-                              asset=asset, fill=element.get("luaMask")))
+                              asset=asset, fill=entry))
 
     # 主资产就是容器节点模板；附件只含它的后代，不添加服务端包装层。
     payload = (_blob(1, units[0]) + b"".join(_blob(2, unit) for unit in units[1:])

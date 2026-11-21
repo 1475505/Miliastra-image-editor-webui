@@ -6,7 +6,7 @@ import type { MaskAsset } from "./maskAssets";
 import { alphaContourPath } from "./maskGuides";
 
 export type MaskPreview = { image: string; width: number; height: number;
-  guides?: { hiddenImage: string; path: string; pathWidth: number; pathHeight: number;
+  guides?: { path: string; pathWidth: number; pathHeight: number;
     x: number; y: number; width: number; height: number } };
 
 export type PreviewGeometry = { width: number; height: number; rotation: number; rotationX?: number; rotationY?: number;
@@ -213,10 +213,7 @@ export function createMaskPreview(element: PreviewGeometry, value?: LuaMask | nu
   ctx.putImageData(pixels, 0, 0);
   const result: MaskPreview = { image: `url("${canvas.toDataURL()}")`, width: bounds.width, height: bounds.height };
   if (guides) {
-    // Auxiliary tint uses the exact complement, so feathering and reverse stay aligned.
-    for (let i = 3; i < pixels.data.length; i += 4) pixels.data[i] = 255 - pixels.data[i];
-    ctx.putImageData(pixels, 0, 0);
-    result.guides = { hiddenImage: `url("${canvas.toDataURL()}")`, path: outline?.path ?? "",
+    result.guides = { path: outline?.path ?? "",
       pathWidth: outline?.width ?? 1, pathHeight: outline?.height ?? 1,
       x: mask.offsetX - width / 2, y: mask.offsetY - height / 2, width, height };
   }
