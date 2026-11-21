@@ -179,6 +179,7 @@ export function createMaskPreview(element: PreviewGeometry, value?: LuaMask | nu
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
   const maskActive = Boolean(mask.enabled || mask.enableSoftEdge);
+  const reversed = maskActive && mask.reverseMaskArea;
   let outline: { path: string; width: number; height: number } | undefined;
   if (maskActive && mask.imageId !== 100001 && width > 0 && height > 0) {
     const contour = contourCanvas(mask, width, height, feather, asset, guides);
@@ -199,12 +200,17 @@ export function createMaskPreview(element: PreviewGeometry, value?: LuaMask | nu
       const x = (px + .5) * bounds.width / canvas.width - bounds.width / 2;
       const i = (py * canvas.width + px) * 4;
       pixels.data[i] = pixels.data[i + 1] = pixels.data[i + 2] = 255;
+      // Reversing coverage can only reveal pixels inside the mask rectangle.
+      if (reversed && (Math.abs(x - mask.offsetX) >= width / 2 || Math.abs(y - mask.offsetY) >= height / 2)) {
+        pixels.data[i + 3] = 0;
+        continue;
+      }
       // Fill belongs to the content image, so it limits visibility even when the
       // mask is reversed. Mask inversion therefore applies before multiplying fill.
       const masked = maskActive
         ? (mask.imageId === 100001 ? Math.round(255 * coverage(x, y, mask, width, height, feather)) : pixels.data[i + 3])
         : 255;
-      const alpha = maskActive && mask.reverseMaskArea ? 255 - masked : masked;
+      const alpha = reversed ? 255 - masked : masked;
       const fillX = inverse ? (matrix.d * x - matrix.c * y) / determinant : x;
       const fillY = inverse ? (-matrix.b * x + matrix.a * y) / determinant : y;
       pixels.data[i + 3] = Math.round(alpha * fillCoverage(fillX, fillY, mask, bounds.contentWidth, bounds.contentHeight));
