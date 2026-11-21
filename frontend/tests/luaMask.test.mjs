@@ -15,7 +15,7 @@ const previewJs = transpile('../src/maskPreview.ts').replace('"./luaMask"', JSON
   .replace('"./maskShapes"', JSON.stringify(asModule(transpile('../src/maskShapes.ts'))))
   .replace('"./maskGuides"', JSON.stringify(asModule(transpile('../src/maskGuides.ts'))))
   .replace('"./imageStretch"', JSON.stringify(asModule(transpile('../src/imageStretch.ts'))));
-const { previewCoverage, previewFeatherWidths, previewMaskSupported, maskPreviewBounds, featherMaskAlpha, fillCoverage } = await import(asModule(previewJs));
+const { createMaskPreview, previewCoverage, previewFeatherWidths, previewMaskSupported, maskPreviewBounds, featherMaskAlpha, fillCoverage } = await import(asModule(previewJs));
 
 test('mask mode changes preserve all raw values; feathering follows the master switch', () => {
   const original = luaMaskOf({ softEdgeWidthX: 13.5, horizontalSoftRange: 81, width: 0 });
@@ -89,6 +89,47 @@ test('Pixel preview clips and feathers against the axis-aligned mask, without mo
   assert.equal(previewMaskSupported({ ...mask, reverseMaskArea: true }), true);
   assert.equal(previewMaskSupported(null), false);
   assert.equal(mask.softEdgeWidthX, 20);
+});
+
+test('reversed mask preview clips to the offset mask rectangle', t => {
+  const originalDocument = globalThis.document;
+  t.after(() => { globalThis.document = originalDocument; });
+  let pixels;
+  const context = {
+    createImageData(width, height) {
+      return { width, height, data: new Uint8ClampedArray(width * height * 4) };
+    },
+    putImageData(image) { pixels = image; }
+  };
+  globalThis.document = {
+    createElement: () => ({ getContext: () => context, toDataURL: () => 'data:,' })
+  };
+
+  const element = { width: 100, height: 60, rotation: 0 };
+  const mask = luaMaskOf({ enabled: true, reverseMaskArea: true, width: 40, height: 30 });
+  function assertEmpty(rotation, patch, message) {
+    assert.ok(createMaskPreview({ ...element, rotation }, { ...mask, ...patch }));
+    assert.ok(pixels.data.every((channel, index) => index % 4 !== 3 || channel === 0), message);
+  }
+  for (const rotation of [0, 45, 90]) {
+    assertEmpty(rotation, { offsetX: 120 }, `a disjoint mask at ${rotation}° reveals nothing`);
+  }
+  assertEmpty(0, { width: 0 }, 'a zero-width mask reveals nothing');
+  assertEmpty(0, { height: 0 }, 'a zero-height mask reveals nothing');
+
+  const preview = createMaskPreview({ ...element, rotation: 45 }, {
+    ...mask, offsetX: 10, offsetY: -5, enableSoftEdge: true, softEdgeWidthX: 10
+  });
+  assert.ok(preview);
+  function alphaAt(x, y) {
+    const column = Math.floor((0.5 + x / preview.width) * pixels.width);
+    const row = Math.floor((0.5 + y / preview.height) * pixels.height);
+    return pixels.data[(row * pixels.width + column) * 4 + 3];
+  }
+  assert.deepEqual([alphaAt(-12, -5), alphaAt(32, -5), alphaAt(10, -24), alphaAt(10, 12)], [0, 0, 0, 0]);
+  assert.equal(alphaAt(10, -5), 0, 'the fully covered center is hidden');
+  const featherAlpha = alphaAt(-5, -5);
+  assert.ok(featherAlpha > 0 && featherAlpha < 255, 'the feathered edge keeps partial alpha inside the rectangle');
 });
 
 test('Percentage preview uses separate horizontal/vertical opaque spans and scales with mask size', () => {
