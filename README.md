@@ -2,27 +2,30 @@
 
 [中文](README.zh-CN.md) · **English** · [Open editor](https://qx.070077.xyz/)
 
-Build artwork and UI for Miliastra Wonderland in your browser. Combine shapes, game image assets and editable text, then export a GIA file or a client Lua drawing script. You can edit by hand or ask a WebMCP-capable AI client to work on the same canvas.
+A small drawing tool that runs in your browser, made for Miliastra Wonderland creators. Place the game's built-in image assets, basic shapes and editable text on one canvas, then export the result for the game editor as a GIA interface asset or a Lua drawing script.
+
+Open the page and start; there is nothing to install. Edit by hand, or let a WebMCP-capable AI client work on the canvas for you.
+
+![The editor](docs/screenshot.png)
 
 ## Start creating
 
-1. Open the [editor](https://qx.070077.xyz/). Drag an item from the library onto the canvas, or double-click to add it. Import existing CSS, SVG, JSON or supported Lua from **Import**.
-2. Move, resize and rotate elements. Use the properties panel for text, colors, image types and masks. Shift-click or drag on empty space to select several elements.
-3. Choose **Export → JSON** to save an editable copy. Choose **GIA** or **Lua** to use the result in the game editor.
+1. Open the [editor](https://qx.070077.xyz/). Drag a shape or game asset from the **Library** onto the canvas, or double-click to add it. To continue an existing CSS, SVG, JSON or Lua file, use **Import**.
+2. Drag, resize and rotate elements on the canvas. Edit text, colors, image types and masks in the **Properties** panel. Shift-click or drag on empty space to select several elements.
+3. Choose **Export → JSON** to keep an editable copy. Choose **GIA** or **Lua** to use the result in the game editor.
 
-**Save & Apply updates the editor and reusable library items; it does not save a file.** Export your work before reloading or closing the page.
+The **Quick start** tour opens on your first visit. Reopen it any time with **Help** in the top bar.
+
+> **The editor does not save your work automatically.** **Save & Apply** (also `Ctrl/⌘+S`) only syncs the elements on the canvas to the code preview and the library's **Saved Elements**, so you can reuse them later. It does not write a file. Export your work before you reload or close the page.
 
 ## What you can make
 
-- Artwork from rectangles, ellipses, triangles, stars and rings.
-- UI compositions using searchable game images, Basic/Stretch rendering, tinting and layers.
-- Native textboxes with rich text, font sizing, outline and alignment.
-- Image masks, feathering and progress fill, exported with Lua or container-node GIA. A dashed contour and shaded overlay help you edit hidden areas.
-- Compositions with Prefab thumbnails found by their exact ID; JSON saving and Lua drawing are supported.
-
-![Blue-to-gold text example](demo/gradient-text-preview.png)
-
-[Try the gradient-text example](demo/gradient-text.md). Need to convert a bitmap to shapes? Use the separate [image fitting tool](https://qx-img.070077.xyz/).
+- **Basic shapes**: rectangles, ellipses, triangles, stars and rings.
+- **Game image assets**: a built-in library with search and category filters, Basic/Stretch image types, tinting for monochrome assets, and layer ordering.
+- **Editable textboxes**: rich text, font sizing, outline and alignment, exported as native textboxes in the game.
+- **Comfortable editing**: multi-select, marquee selection, group moves, copy and paste, undo and redo, with shortcuts for common actions.
+- **Image masks**: masks, feathering and progress fill are exported with Lua or container-node GIA. A dashed contour and shaded overlay show you what is hidden.
+- **Prefabs**: look up a thumbnail by prefab ID and drag it onto the canvas for drawing with Lua.
 
 ## Pick an export format
 
@@ -50,11 +53,11 @@ Use `Ctrl` on Windows/Linux or `⌘` on macOS.
 
 ## Use with AI / WebMCP
 
-Open the editor in a browser connected to an AI client that can discover page WebMCP tools. Ask it to list the tools on the current page, then try:
+If your browser or AI client supports WebMCP, you can hand the canvas over to an AI. It can search assets, look at the canvas, edit in bulk, import, export and undo. Once the editor is open, ask it to list the tools on the current page, then describe what you want, for example:
 
-> Make a 600×400 title card with a dark background, three image elements and a centered title. Keep the existing artwork, and export JSON when finished.
+> Keep the existing artwork and make a 600×400 title card with a dark background, three image elements and a centered title. Export JSON when finished.
 
-Tools cover asset search, previews, batch editing, import/export and undo. They edit the open page; this project does not provide a standalone MCP server. If tools are not listed, check that the browser integration exposes `document.modelContext.registerTool`. Ordinary browsers can still use the editor manually.
+The AI works on the open page; this project does not provide a standalone MCP server. If the AI does not find any tools, check that the browser integration exposes `document.modelContext.registerTool`. Ordinary browsers can still use the editor manually.
 
 [WebMCP setup and examples](docs/webmcp.md) · [Reusable AI skills](skills/)
 
@@ -72,7 +75,7 @@ Install **Python 3.13** and **Node.js 20+** (with npm), clone the repository, th
 bash start.sh
 ```
 
-The launchers install dependencies, build the frontend and serve the app at **http://localhost:8439**. Docker builds include the frontend:
+The launcher installs dependencies, builds the frontend and serves the app at **http://localhost:8439**. Docker works too, and the image build compiles the frontend for you:
 
 ```bash
 docker build -t miliastra-image-editor .
@@ -85,6 +88,7 @@ docker run --rm -p 8439:8439 miliastra-image-editor
 - [Keyboard and mouse operations](docs/editor-interaction.md)
 - [Lua export and masks](docs/lua-mask.md)
 - [Local development and deployment](docs/deploy.md)
+- [Image fitting tool](https://qx-img.070077.xyz/): turn an existing bitmap into shapes
 - [Report an issue](https://github.com/1475505/Miliastra-image-editor-webui/issues)
 
 Please follow the game's creator rules and respect others' rights. [License](LICENSE).
